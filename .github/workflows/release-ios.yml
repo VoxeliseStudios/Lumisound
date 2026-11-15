@@ -426,21 +426,42 @@ jobs:
         run: |
           git config user.email "actions@github.com"
           git config user.name "GitHub Actions"
-          # The "Stamp version into project.yml" step left project.yml modified in
-          # the working tree; discard it so the rebase fallback isn't blocked by
-          # "cannot rebase: you have unstaged changes".
-          git checkout -- ios/project.yml || true
-          git add ios/altstore-source.json
-          if git diff --cached --quiet; then
-            echo "No changes to commit"
-            exit 0
-          fi
-          git commit -m "chore(ios): update altstore-source.json to v${{ steps.version.outputs.version }} [skip ci]"
-          for i in 1 2 3; do
-            git push origin HEAD:main && break
-            git fetch origin main
-            git rebase origin/main || git rebase --abort
+          VERSION="${{ steps.version.outputs.version }}"
+          # The entry this release added (top of the file edited above).
+          ENTRY=$(python3 -c "import json; print(json.dumps(json.load(open('ios/altstore-source.json'))['apps'][0]['versions'][0]))")
+          # Apply the entry to main's CURRENT file instead of rebasing a file
+          # edited at the tag: two releases close together (2.0.0.45 / .46)
+          # both edited the same lines and the rebase conflicted, so .46 never
+          # reached the repo source. Versions are kept newest first.
+          git reset -q --hard
+          for i in 1 2 3 4 5; do
+            git fetch -q origin main
+            git checkout -q -B altstore-update origin/main
+            ENTRY="$ENTRY" python3 - <<'PY'
+          import json, os
+          path = "ios/altstore-source.json"
+          entry = json.loads(os.environ["ENTRY"])
+          with open(path) as f:
+              source = json.load(f)
+          app = source["apps"][0]
+          versions = [v for v in app.get("versions", []) if v.get("version") != entry["version"]] + [entry]
+          def key(v):
+              return tuple(int(x) if x.isdigit() else 0 for x in str(v.get("version", "0")).split("."))
+          app["versions"] = sorted(versions, key=key, reverse=True)
+          with open(path, "w") as f:
+              json.dump(source, f, indent=2)
+              f.write("\n")
+          PY
+            git add ios/altstore-source.json
+            if git diff --cached --quiet; then
+              echo "altstore-source.json already has v$VERSION"
+              exit 0
+            fi
+            git commit -q -m "chore(ios): update altstore-source.json to v${VERSION} [skip ci]"
+            git push origin HEAD:main && exit 0
+            echo "push raced another commit; retrying on the new main"
           done
+          echo "::warning::could not push altstore-source.json for v$VERSION"
 
       - name: Cleanup signing credentials
         if: always() && steps.signing.outputs.signed == 'true'
