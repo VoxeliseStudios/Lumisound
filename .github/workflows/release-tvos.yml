@@ -25,6 +25,10 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
+      - name: Continue building after errors
+        # No fail-fast: xcodebuild keeps compiling after the first error so one
+        # run reports every error (read them all from the log / xcodebuild-log).
+        run: defaults write com.apple.dt.Xcode IDEBuildingContinueBuildingAfterErrors -bool YES
 
       - name: Extract version from tag
         id: version
@@ -95,7 +99,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             SKIP_INSTALL=NO 2>&1 | tee /tmp/tvbuild.log | tail -25
           if grep -q "error:" /tmp/tvbuild.log; then
-            echo "--- Compiler errors ---"; grep "error:" /tmp/tvbuild.log | head -30
+            echo "--- Compiler errors ---"; grep "error:" /tmp/tvbuild.log | sort -u
           fi
           APP=$(find build/LumisoundTV.xcarchive -name "*.app" | head -1)
           if [ -z "$APP" ]; then

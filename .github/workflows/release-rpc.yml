@@ -18,6 +18,8 @@ permissions:
 jobs:
   build:
     strategy:
+      # No fail-fast: let every platform finish so all failures show in one run.
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
