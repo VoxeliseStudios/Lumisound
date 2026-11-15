@@ -245,3 +245,24 @@ Full history and decisions: [`../RUST-PORT.md`](../RUST-PORT.md). Swift is views
   holding Core Animation's commit. The report could not say what, so 2.0.0.43 adds `otherStacks`: every other
   thread that is inside app code or the drawing / media frameworks, sampled 3 s into the stall.
 - Next: read `otherStacks` from the next report. Symbolicate `Lumisound 0x…` frames with the release's dSYM.
+
+## Stalls: what 2.0.0.44 reported (2026-11-15, first hour on the owner's iPhone 13 mini)
+- 5 `main_thread_hang` reports, all short (1.5–2.9 s, warning level), none of the 8–32 s Core Animation
+  commit hangs yet (too little time on 2.0.0.44 to call those gone). None reached 3 s, so `otherStacks` is
+  still empty everywhere.
+- Symbolicated with `Lumisound-v2.0.0.44-dSYMs.zip` (offset + 0x100000000 − 4, `llvm-symbolizer`):
+  - 2.90 s and 1.56 s: `LumisoundTrackVaultService.runLegacyRelockPass` → `LumisoundLockFormat.isLocked(at:)`
+    → core `lms_is_locked` → `lumisound_media::lock::read_header` (`open`/`read`). The relock work was moved
+    off-main, but the candidate filter (`importedSongs.compactMap { … isLocked(at:) }`) still opens and
+    reads the header of every converted track on the main actor, every pass. Fix: build the candidate list
+    in `Task.detached` (or a core fn that takes all paths), only the tally on the main actor.
+  - 1.60 s: SwiftUI text drawing in a commit while a library scan ran (`libraryScanInFlight`); no app frame.
+- `disk_write_exception` (iOS "excessive disk writes"): 304 of the sampled writes are
+  `CorruptFileFinderService.validateAudio` → core `validate_audio` → `readable` → `lms_playable_path` →
+  `unlock_file`: the corrupt-file scan writes a decrypted copy of every `.lms` track to the cache to check it.
+  Fix: validate from the locked bytes (decode through the lock reader / the new `fd:` source) with no copy.
+- Playback on 2.0.0.44: no `playback_stall_recovered`, no `output_restarted`. One `stream_load_failed`:
+  imported "Ocean Man.mp3" is not decodable (core: unsupported_format, duration 0; AVPlayer −11800/−17913),
+  most likely a bad file, not a player bug.
+- Elsewhere: an account on 1.9.0.111 logs "position frozen" 12× on 1–1.5 h tracks (old build); 2.0.0.6
+  devices restart output in loops on `interruption_ended` while locked on Bluetooth (restartsLast30s up to 5).
