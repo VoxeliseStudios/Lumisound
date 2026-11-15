@@ -315,11 +315,9 @@ struct ProfileAccentBackgroundGlow: View {
             .frame(width: proxy.size.width, height: max(700, proxy.size.height * 0.85))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        // Heavily blurred so this reads as an ambient color wash rather
-        // than a hard-edged colored rectangle sitting behind the content —
-        // the same "glow" treatment already used for the mini-player's
-        // play button shadow and similar accent-colored chrome elsewhere.
-        .blur(radius: 60)
+        // No `.blur` any more: six gradient stops already fade smoothly, and
+        // a 60 pt Gaussian over the whole screen was re-run by the render
+        // server for every frame the profile scrolled.
         .ignoresSafeArea()
         .allowsHitTesting(false)
     }
@@ -374,10 +372,11 @@ struct ProfileInfoCard<Content: View>: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .adaptiveGlass(
-            tint: tint.opacity(0.14),
+        // `cellSurface`: these stack ten-deep on a profile; one live glass
+        // blur each was the profile's scroll cost.
+        .cellSurface(
             in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous),
-            fallback: AppTheme.surface
+            fallback: tint.opacity(0.12)
         )
         .padding(.horizontal, 16)
     }

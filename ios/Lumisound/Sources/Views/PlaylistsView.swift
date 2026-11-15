@@ -16,80 +16,44 @@ struct PlaylistsView: View {
     // M3U import state
     @State private var showingM3UImporter = false
     @State private var isImportingM3U = false
+    @State private var containerWidth: CGFloat = 0
 
+    private var cardSide: CGFloat { max(0, (containerWidth - 32 - 14) / 2) }
+
+    // 2026-11-15 redesign: action tiles + a grid of collage covers instead
+    // of a plain list (rename/delete stay on each card's context menu).
     var body: some View {
-        List {
-            Section {
-                NavigationLink {
-                    SmartPlaylistsView()
-                } label: {
-                    Label("Smart Playlists", systemImage: "sparkles")
-                        .foregroundStyle(AppTheme.textPrimary)
-                }
-            }
-            .listRowBackground(AppTheme.surface.opacity(0.5))
-
-            if account.isLoggedIn {
-                Section {
-                    NavigationLink {
-                        SharedPlaylistsView()
-                    } label: {
-                        Label("Shared with Me", systemImage: "person.2.fill")
-                            .foregroundStyle(AppTheme.textPrimary)
-                    }
-                }
-                .listRowBackground(AppTheme.surface.opacity(0.5))
-            }
-
-            if library.playlists.isEmpty {
-                EmptyStateView(
-                    icon: "music.note.list",
-                    title: "No playlists",
-                    message: "Tap the + button to create your first playlist."
-                )
-                .listRowBackground(Color.clear)
-            } else {
-                let unfiled = library.playlists.filter { $0.folder == nil }
-                ForEach(unfiled) { playlist in
-                    playlistRow(playlist)
-                }
-                .onDelete { indexSet in
-                    let targets = indexSet.map { unfiled[$0] }
-                    for playlist in targets {
-                        library.deletePlaylist(playlist)
-                    }
-                    if let name = targets.first?.name {
-                        let suffix = targets.count > 1 ? " and \(targets.count - 1) more" : ""
-                        ToastCenter.shared.show("Deleted \"\(name)\"\(suffix)", category: .info, icon: "trash")
-                    }
-                }
-
-                ForEach(library.playlistFolders, id: \.self) { folder in
-                    let folderPlaylists = library.playlists.filter { $0.folder == folder }
-                    Section {
-                        ForEach(folderPlaylists) { playlist in
-                            playlistRow(playlist)
-                        }
-                        .onDelete { indexSet in
-                            let targets = indexSet.map { folderPlaylists[$0] }
-                            for playlist in targets {
-                                library.deletePlaylist(playlist)
-                            }
-                            if let name = targets.first?.name {
-                                let suffix = targets.count > 1 ? " and \(targets.count - 1) more" : ""
-                                ToastCenter.shared.show("Deleted \"\(name)\"\(suffix)", category: .info, icon: "trash")
+        ScrollView {
+            VStack(alignment: .leading, spacing: 22) {
+                actionTiles
+                if library.playlists.isEmpty {
+                    EmptyStateView(
+                        icon: "music.note.list",
+                        title: "No playlists yet",
+                        message: "Make one, import an M3U, or let Smart Playlists build them for you."
+                    )
+                    .padding(.top, 20)
+                } else {
+                    let unfiled = library.playlists.filter { $0.folder == nil }
+                    if !unfiled.isEmpty { playlistGrid(unfiled) }
+                    ForEach(library.playlistFolders, id: \.self) { folder in
+                        let folderPlaylists = library.playlists.filter { $0.folder == folder }
+                        if !folderPlaylists.isEmpty {
+                            VStack(alignment: .leading, spacing: 10) {
+                                Label(folder, systemImage: "folder.fill")
+                                    .font(.system(.headline, design: .serif))
+                                    .foregroundStyle(AppTheme.textPrimary)
+                                    .padding(.horizontal, 20)
+                                playlistGrid(folderPlaylists)
                             }
                         }
-                    } header: {
-                        Label(folder, systemImage: "folder")
-                            .font(AppTheme.bodyFont(size: 12))
-                            .foregroundStyle(AppTheme.textSecondary)
                     }
                 }
             }
+            .padding(.top, 12)
+            .padding(.bottom, 190)
         }
-        .listStyle(.plain)
-        .scrollContentBackground(.hidden)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { containerWidth = $0 }
         .background(Color.clear.ignoresSafeArea())
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
@@ -173,6 +137,82 @@ struct PlaylistsView: View {
     }
 
     @ViewBuilder
+    private var actionTiles: some View {
+        LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 12) {
+            Button {
+                newPlaylistName = ""
+                showingCreateSheet = true
+            } label: {
+                actionTile("New Playlist", icon: "plus", filled: true)
+            }
+            NavigationLink { SmartPlaylistsView() } label: {
+                actionTile("Smart Playlists", icon: "sparkles", filled: false)
+            }
+            if account.isLoggedIn {
+                NavigationLink { SharedPlaylistsView() } label: {
+                    actionTile("Shared with Me", icon: "person.2.fill", filled: false)
+                }
+            }
+            Button { showingM3UImporter = true } label: {
+                actionTile("Import M3U", icon: "square.and.arrow.down", filled: false)
+            }
+        }
+        .buttonStyle(PressableButtonStyle())
+        .padding(.horizontal, 16)
+    }
+
+    private func actionTile(_ title: String, icon: String, filled: Bool) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(filled ? Color.white : AppTheme.dynamicAccent)
+                .frame(width: 34, height: 34)
+                .background(Circle().fill(filled ? Color.white.opacity(0.22) : AppTheme.dynamicAccent.opacity(0.16)))
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(filled ? Color.white : AppTheme.textPrimary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
+            Spacer(minLength: 0)
+        }
+        .padding(10)
+        .background {
+            if filled {
+                RoundedRectangle(cornerRadius: 18, style: .continuous).fill(AppTheme.dynamicAccentGradient)
+            }
+        }
+        .cellSurface(in: RoundedRectangle(cornerRadius: 18, style: .continuous), fallback: filled ? Color.clear : AppTheme.surface.opacity(0.6))
+    }
+
+    private func playlistGrid(_ playlists: [Playlist]) -> some View {
+        LazyVGrid(columns: [GridItem(.flexible(), spacing: 14), GridItem(.flexible(), spacing: 14)], spacing: 18) {
+            ForEach(playlists) { playlist in
+                NavigationLink {
+                    PlaylistDetailView(playlist: playlist)
+                } label: {
+                    PlaylistCard(playlist: playlist, side: cardSide)
+                }
+                .buttonStyle(PressableButtonStyle())
+                .contextMenu {
+                    Button {
+                        renameTarget = playlist
+                        renameText = playlist.name
+                        showingRenameAlert = true
+                    } label: {
+                        Label("Rename", systemImage: "pencil")
+                    }
+                    Button(role: .destructive) {
+                        library.deletePlaylist(playlist)
+                        ToastCenter.shared.show("Deleted \"\(playlist.name)\"", category: .info, icon: "trash")
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+    }
+
     private func playlistRow(_ playlist: Playlist) -> some View {
         NavigationLink {
             PlaylistDetailView(playlist: playlist)
@@ -195,6 +235,40 @@ struct PlaylistsView: View {
             } label: {
                 Label("Delete", systemImage: "trash")
             }
+        }
+    }
+}
+
+// MARK: - Playlist Card
+
+private struct PlaylistCard: View {
+    let playlist: Playlist
+    let side: CGFloat
+    @EnvironmentObject private var library: LibraryManager
+
+    var body: some View {
+        let songs = library.songs(for: playlist)
+        VStack(alignment: .leading, spacing: 8) {
+            CollageCover(key: "playlist|" + playlist.id.uuidString, songs: library.collageSongs(from: songs),
+                         size: max(side, 1), icon: "music.note.list", tint: NameHue.color(playlist.name))
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .shadowBehind(RoundedRectangle(cornerRadius: 12, style: .continuous), opacity: 0.3, radius: 8, y: 5)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(playlist.name)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(AppTheme.textPrimary)
+                    .lineLimit(1)
+                Text("\(playlist.songCount) song\(playlist.songCount == 1 ? "" : "s")")
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.textSecondary)
+                if !playlist.tags.isEmpty {
+                    Text(playlist.tags.joined(separator: " · "))
+                        .font(.caption2)
+                        .foregroundStyle(AppTheme.dynamicAccent)
+                        .lineLimit(1)
+                }
+            }
+            .padding(.horizontal, 2)
         }
     }
 }

@@ -173,19 +173,29 @@ struct AlphabetIndexRail: View {
 /// `SongsTab`'s list-mode sections and its index rail so both are always
 /// built from the exact same grouping.
 func alphabeticalSections(of songs: [Song], key: (Song) -> String) -> [(letter: String, songs: [Song])] {
-    var order: [String] = []
+    // A–Z, then one "#" section for everything else (digits, symbols, every
+    // non-Latin script), like Apple Music. Each distinct first character used
+    // to become its own section, so a library with styled Unicode letters
+    // (𝐁, Ｂ) and Japanese/Chinese titles grew a 60-entry index rail that ran
+    // off the bottom of the screen behind the mini player.
     var buckets: [String: [Song]] = [:]
     for song in songs {
-        let raw = key(song).trimmingCharacters(in: .whitespacesAndNewlines)
-        let first = raw.first.map { String($0).uppercased() } ?? "#"
-        let letter = first.rangeOfCharacter(from: .letters) != nil ? first : "#"
-        if buckets[letter] == nil {
-            buckets[letter] = []
-            order.append(letter)
-        }
-        buckets[letter]?.append(song)
+        buckets[indexLetter(for: key(song)), default: []].append(song)
     }
-    return order.map { (letter: $0, songs: buckets[$0] ?? []) }
+    var letters = buckets.keys.filter { $0 != "#" }.sorted()
+    if buckets["#"] != nil { letters.append("#") }
+    return letters.map { (letter: $0, songs: buckets[$0] ?? []) }
+}
+
+/// The index-rail letter for a title: its first character with compatibility
+/// forms, case, accents and width folded away ("𝐁" → "B", "é" → "E"), or "#".
+func indexLetter(for title: String) -> String {
+    guard let first = title.trimmingCharacters(in: .whitespacesAndNewlines).first else { return "#" }
+    let folded = String(first).precomposedStringWithCompatibilityMapping
+        .folding(options: [.diacriticInsensitive, .caseInsensitive, .widthInsensitive], locale: Locale(identifier: "en_US_POSIX"))
+        .uppercased()
+    if folded.count == 1, let c = folded.first, c.isASCII, c.isLetter { return String(c) }
+    return "#"
 }
 
 // MARK: - BreadcrumbTrail

@@ -58,3 +58,9 @@ Full history and decisions: [`RUST-PORT.md`](../../RUST-PORT.md).
   the account as before (old app versions).
 - Favorite and playlist endpoints now announce `sync_changed` on `/ws/live` (Android edits reach the iPhone at once).
 - Playlist upserts never touch another account's playlist id (both push paths).
+
+## Done (2026-11-15)
+- Song drops & vibes: `ios_social_drops`, /api/social/drops (GET received+sent+unseen, POST send), /{id}/seen,
+  /{id}/react, DELETE. Friends-only, block-aware, 40/hour, vibe dedupe within 10 min, notifications.
+- `ios_announcements.below_version`: announcement only for users whose latest iOS telemetry version is lower.
+  First use: "please update" notice, below 2.0.0.48, 14 days (2026-11-15).

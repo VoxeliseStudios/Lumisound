@@ -348,3 +348,30 @@ Same causes as the Folders grid, removed everywhere they repeat per cell:
   telemetry on the next build is the field check.
 - Remaining per-item costs not touched: GeometryReader per grid cell (layout only), Lumen `LumenShelfCard` art
   shadow (shape unknown), `PlaylistRow` sums durations per render.
+
+## Done (2026-11-15, social redesign + Library screens)
+- Profile tab (`PublicProfileView`, building blocks in `Views/Social/ProfileStage.swift`): a stage instead of a
+  column of identical cards — full-bleed banner hero with pull-to-stretch (`visualEffect`, no per-frame body),
+  centred avatar/identity/status pill, action row (Edit / Send a Song / Share), stat strip (streak, best,
+  badges, visits, member since), live "On air" card with Vibes, then sticky Showcase / Music / Wall tabs
+  (record-sleeve pinned tracks that play, medal wall, top-artist portraits, genre chips, fingerprint, match +
+  Blend, guestbook, visitors). Panels are `cellSurface`; the accent wash lost its 60 pt blur; `ProfileInfoCard`
+  (editor, friend banners) is `cellSurface` too.
+- Friends tab (`FriendsListView`): one hub instead of four pill tabs — big serif header with counts, requests
+  banner, quick actions (Song Drops with unseen badge, Activity, All Friends, Find People), "Listening now"
+  carousel with artwork + Vibe bar, latest drops, friends ordered by presence with a send-a-song button, weekly
+  podium. Discover/Requests/Activity/All Friends are pushed pages (existing views).
+- New social features (bridge `routes/social.rs`): Song Drops (send a friend a song + note; they play it —
+  own copy if in the library, else the YouTube stream — and react with an emoji) and Vibes (emoji reaction to a
+  friend's current track). `Services/SongDropsStore.swift`, `Views/Social/SongDropViews.swift`.
+- Aria update notice: announcement `below_version 2.0.0.48` (14 days, download category) tells everyone on an
+  older iOS build to update via AltStore/SideStore (gallery source) or GitHub releases.
+- Library header: compact counts ("5.8K songs") that never truncate; stats drop from the end when tight.
+- Genres: tile wall (per-genre colour, collage cover, count, play) + new `GenreDetailView`.
+- Playlists: action tiles (New, Smart, Shared, Import M3U) + grid of collage covers (`CollageCover`).
+- Add Music: hero + big Import from Files card with formats, Cloud card, computer transfer steps.
+- Songs index rail: A–Z + "#" only (NFKC/case/width folding), no more 60-entry rail under the mini player.
+
+## Open (social)
+- Notification taps for `song_drop` / `vibe` / `song_drop_reaction` could open the Song Drops inbox.
+- Drops unseen count on the Friends tab icon.

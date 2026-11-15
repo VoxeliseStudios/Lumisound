@@ -9,112 +9,105 @@ struct AddMusicView: View {
 
     var body: some View {
         NavigationStack {
-            List {
+            // 2026-11-15 redesign: one big primary action, then the other
+            // ways in as cards, instead of a settings-style list.
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Image(systemName: "music.note.house.fill")
+                            .font(.system(size: 34, weight: .semibold))
+                            .foregroundStyle(AppTheme.dynamicAccentGradient)
+                        Text("Bring your music")
+                            .font(.system(size: 30, weight: .bold, design: .serif))
+                            .foregroundStyle(AppTheme.textPrimary)
+                        Text(library.allSongs.isEmpty
+                             ? "Your library is empty — start with a few files."
+                             : "\(library.allSongs.count.formatted()) songs in your library so far.")
+                            .font(.subheadline)
+                            .foregroundStyle(AppTheme.textSecondary)
+                    }
+                    .padding(.horizontal, 4)
 
-                // ─────────────────────────────────────────────────────────────
-                // MARK: Scan app storage (files transferred via Mac/Finder)
-                // Hidden from release builds — most users never transfer files
-                // this way (the "Import Audio Files" picker below covers the
-                // same files plus anywhere else in Files app), and this
-                // duplicate entry point was confusing. Left in for DEBUG since
-                // it's still useful for testing scanSpecificDirectory().
-                // ─────────────────────────────────────────────────────────────
-                #if DEBUG
-                Section {
+                    Button { showFilePicker = true } label: {
+                        VStack(alignment: .leading, spacing: 14) {
+                            HStack {
+                                Image(systemName: "doc.badge.plus")
+                                    .font(.system(size: 22, weight: .bold))
+                                    .frame(width: 48, height: 48)
+                                    .background(Circle().fill(.white.opacity(0.22)))
+                                Spacer()
+                                Image(systemName: "arrow.up.right")
+                                    .font(.headline.weight(.bold))
+                            }
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Import from Files")
+                                    .font(.title2.weight(.bold))
+                                Text("Downloads, iCloud Drive, a USB drive — pick as many songs as you like.")
+                                    .font(.subheadline)
+                                    .opacity(0.9)
+                            }
+                            HStack(spacing: 6) {
+                                ForEach(["MP3", "M4A", "FLAC", "WAV", "OPUS", "ALAC"], id: \.self) { format in
+                                    Text(format)
+                                        .font(.caption2.weight(.heavy))
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 4)
+                                        .background(Capsule().fill(.white.opacity(0.2)))
+                                }
+                            }
+                        }
+                        .foregroundStyle(.white)
+                        .padding(20)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(RoundedRectangle(cornerRadius: 26, style: .continuous).fill(AppTheme.dynamicAccentGradient))
+                    }
+                    .buttonStyle(PressableButtonStyle())
+
+                    NavigationLink {
+                        UploadMusicView()
+                    } label: {
+                        addCard(icon: "icloud.and.arrow.up", title: "Cloud Backup & Upload",
+                                detail: "Keep tracks in your Lumisound account and restore them on any device.")
+                    }
+                    .buttonStyle(PressableButtonStyle())
+
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack(spacing: 12) {
+                            iconBadge("laptopcomputer", color: Color(white: 0.42))
+                            Text("From a computer")
+                                .font(.headline)
+                                .foregroundStyle(AppTheme.textPrimary)
+                        }
+                        transferStep(1, "Connect your iPhone (USB or the same Wi‑Fi).")
+                        transferStep(2, "Mac: Finder → your iPhone → Files. Windows: the Apple Devices app → Files.")
+                        transferStep(3, "Drag songs or whole folders onto Lumisound — folders become Folders in your library.")
+                    }
+                    .padding(16)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .cellSurface(in: RoundedRectangle(cornerRadius: 22, style: .continuous), fallback: AppTheme.surface.opacity(0.7))
+
+                    #if DEBUG
                     Button {
-                        if let docs = FileManager.default
-                            .urls(for: .documentDirectory, in: .userDomainMask).first {
+                        if let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
                             library.scanSpecificDirectory(docs)
                             importSuccess = "Scanning app storage…"
                         }
                     } label: {
-                        importRow(
-                            icon: "folder.fill", color: AppTheme.dynamicAccent.opacity(0.85),
-                            title: "Scan App Storage",
-                            subtitle: "Scans files you've transferred to this app"
-                        )
+                        addCard(icon: "folder.fill", title: "Scan App Storage (debug)",
+                                detail: "Rescans files transferred into the app's own folder.")
                     }
-                    .buttonStyle(.plain)
-                } header: {
-                    sectionLabel("App Storage")
-                } footer: {
-                    Text("Files dragged into this app via Finder/Files app (Mac USB or Files → On My iPhone → Lumisound) are stored here. Subfolders are included.")
-                        .font(.caption).foregroundStyle(AppTheme.textSecondary)
-                }
-                .listRowBackground(AppTheme.surface)
-                #endif
+                    .buttonStyle(PressableButtonStyle())
+                    #endif
 
-                // ─────────────────────────────────────────────────────────────
-                // MARK: Import individual files from anywhere
-                // ─────────────────────────────────────────────────────────────
-                Section {
-                    Button {
-                        showFilePicker = true
-                    } label: {
-                        importRow(
-                            icon: "doc.badge.plus", color: AppTheme.dynamicAccent,
-                            title: "Import Audio Files",
-                            subtitle: "Browse Files app — select any MP3, M4A, FLAC, WAV…"
-                        )
-                    }
-                    .buttonStyle(.plain)
-                } header: {
-                    sectionLabel("Individual Files")
-                } footer: {
-                    Text("Navigate to any folder in the Files app (Downloads, iCloud Drive, etc.) and select multiple songs to import.")
-                        .font(.caption).foregroundStyle(AppTheme.textSecondary)
-                }
-                .listRowBackground(AppTheme.surface)
-
-                // ─────────────────────────────────────────────────────────────
-                // ─────────────────────────────────────────────────────────────
-                // MARK: Cloud Backup
-                // ─────────────────────────────────────────────────────────────
-                Section {
-                    NavigationLink {
-                        UploadMusicView()
-                    } label: {
-                        importRow(
-                            icon: "icloud.and.arrow.up",
-                            color: AppTheme.dynamicAccent,
-                            title: "Cloud Backup & Upload",
-                            subtitle: "Upload tracks to your account — restore them anytime"
-                        )
-                    }
-                } header: {
-                    sectionLabel("Cloud Storage")
-                } footer: {
-                    Text("Requires a Lumisound account. Uploaded tracks can be redownloaded to any device after reinstalling.")
-                        .font(.caption).foregroundStyle(AppTheme.textSecondary)
-                }
-                .listRowBackground(AppTheme.surface)
-
-                // ─────────────────────────────────────────────────────────────
-                // MARK: Mac / USB transfer instructions
-                // ─────────────────────────────────────────────────────────────
-                Section {
-                    HStack(spacing: 14) {
-                        iconBadge("laptopcomputer", color: Color(white: 0.42))
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Transfer via Mac (USB or WiFi)")
-                                .fontWeight(.medium).foregroundStyle(AppTheme.textPrimary)
-                            Text("Finder → your iPhone → Files tab → Lumisound → drag files/folders in")
-                                .font(.caption).foregroundStyle(AppTheme.textSecondary)
-                        }
-                    }
-                }
-                .listRowBackground(AppTheme.surface)
-
-                // MARK: Feedback banner
-                if let msg = importSuccess {
-                    Section {
+                    if let msg = importSuccess {
                         Label(msg, systemImage: "checkmark.circle.fill")
+                            .font(.subheadline.weight(.semibold))
                             .foregroundStyle(AppTheme.success)
+                            .padding(.horizontal, 4)
                     }
-                    .listRowBackground(Color.clear)
                 }
+                .padding(20)
             }
-            .scrollContentBackground(.hidden)
             .background(EditionScreenBackground())
             .navigationTitle("Add Music")
             .navigationBarTitleDisplayMode(.inline)
@@ -136,6 +129,35 @@ struct AddMusicView: View {
                 }
                 .ignoresSafeArea()
             }
+        }
+    }
+
+    private func addCard(icon: String, title: String, detail: String) -> some View {
+        HStack(spacing: 14) {
+            iconBadge(icon, color: AppTheme.dynamicAccent)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(.headline).foregroundStyle(AppTheme.textPrimary)
+                Text(detail).font(.caption).foregroundStyle(AppTheme.textSecondary).multilineTextAlignment(.leading)
+            }
+            Spacer(minLength: 0)
+            Image(systemName: "chevron.right").font(.caption.weight(.bold)).foregroundStyle(AppTheme.textSecondary)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .cellSurface(in: RoundedRectangle(cornerRadius: 22, style: .continuous), fallback: AppTheme.surface.opacity(0.7))
+    }
+
+    private func transferStep(_ n: Int, _ text: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Text("\(n)")
+                .font(.caption.weight(.heavy))
+                .foregroundStyle(.white)
+                .frame(width: 22, height: 22)
+                .background(Circle().fill(AppTheme.dynamicAccent))
+            Text(text)
+                .font(.subheadline)
+                .foregroundStyle(AppTheme.textPrimary.opacity(0.9))
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 

@@ -21,21 +21,17 @@ struct LibraryHeader: View {
                 Text("Library")
                     .font(AppTheme.headlineFont(size: 30))
                     .foregroundStyle(AppTheme.textPrimary)
-                HStack(spacing: 10) {
-                    stat(library.allSongs.count, "songs")
-                    dot
-                    stat(library.songsByArtist.count, "artists")
-                    dot
-                    stat(library.songsByAlbum.count, "albums")
-                    if hours > 0 {
-                        dot
-                        stat(hours, "h")
-                    }
+                // Compact numbers ("5.8K songs") that never truncate: each
+                // stat keeps its size and, when the row is too narrow (the
+                // add/shuffle buttons share it), whole stats drop from the
+                // end instead of every label collapsing to "5,… so…".
+                ViewThatFits(in: .horizontal) {
+                    statRow(includeAlbums: true, includeHours: true)
+                    statRow(includeAlbums: true, includeHours: false)
+                    statRow(includeAlbums: false, includeHours: false)
                 }
                 .font(.caption.weight(.medium))
                 .foregroundStyle(AppTheme.textSecondary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
             }
             Spacer(minLength: 8)
             Button(action: onAddMusic) {
@@ -83,11 +79,29 @@ struct LibraryHeader: View {
         Circle().fill(AppTheme.textSecondary.opacity(0.5)).frame(width: 3, height: 3)
     }
 
+    private func statRow(includeAlbums: Bool, includeHours: Bool) -> some View {
+        HStack(spacing: 8) {
+            stat(library.allSongs.count, "songs")
+            dot
+            stat(library.songsByArtist.count, "artists")
+            if includeAlbums {
+                dot
+                stat(library.songsByAlbum.count, "albums")
+            }
+            if includeHours, hours > 0 {
+                dot
+                stat(hours, "h")
+            }
+        }
+    }
+
     private func stat(_ n: Int, _ label: String) -> some View {
         HStack(spacing: 3) {
-            Text(n.formatted()).foregroundStyle(AppTheme.textPrimary).monospacedDigit()
+            Text(n.formatted(.number.notation(.compactName))).foregroundStyle(AppTheme.textPrimary).monospacedDigit()
             Text(label)
         }
+        .lineLimit(1)
+        .fixedSize()
     }
 
     private func shuffleAll() {

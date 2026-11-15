@@ -27,7 +27,11 @@ struct PublicProfileView: View {
     @EnvironmentObject private var social: SocialService
     @EnvironmentObject private var account: AccountService
     @EnvironmentObject private var player: AudioPlayerManager
+    @EnvironmentObject private var library: LibraryManager
+    @EnvironmentObject private var streaming: StreamingService
     @StateObject private var presenceService = PresenceService.shared
+    @State private var stageTab: ProfileStageTab = .showcase
+    @State private var showSendSong = false
 
     @State private var profile: PublicSocialProfile? = nil
     @State private var presence: SocialPresence? = nil
@@ -122,181 +126,19 @@ struct PublicProfileView: View {
                 ProgressView().tint(AppTheme.dynamicAccent)
             } else if let profile {
                 ScrollView {
-                    VStack(spacing: 16) {
-                        if isSelfPreview, onEditProfile == nil {
-                            Label("This is how your profile looks to others", systemImage: "eye")
-                                .font(AppTheme.bodyFont(size: 12))
-                                .foregroundStyle(AppTheme.textSecondary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-
-                        ProfileHeaderCard(
-                            mainAccent: mainAccentColor,
-                            subAccent: subAccentColor,
-                            displayName: profile.displayName ?? profile.username,
-                            username: profile.username,
-                            isOnline: isOnline,
-                            bannerImage: bannerImage,
-                            avatarFrame: profile.avatarFrame,
-                            avatarDecoration: profile.avatarDecoration,
-                            profileEffect: profile.profileEffect,
-                            pronouns: profile.pronouns,
-                            statusEmoji: profile.statusEmoji,
-                            statusText: profile.statusText,
-                            discordVerified: profile.discordVerified,
-                            discordUsername: profile.discordUsername
-                        ) {
-                            SocialAvatarView(userId: userId, size: 84, fallbackFill: .clear)
-                        } action: {
-                            if !isSelfPreview {
-                                friendActionControl
-                            } else if let onEditProfile {
-                                Button(action: onEditProfile) {
-                                    Label("Edit Profile", systemImage: "pencil")
-                                        .foregroundStyle(mainAccentColor)
-                                }
-                            }
-                        }
-
-                        if let nowPlaying = displayedNowPlaying {
-                            ProfileInfoCard(title: "Listening To", icon: "waveform", tint: mainAccentColor) {
-                                NowPlayingActivityRow(title: nowPlaying.title, artist: nowPlaying.artist, tint: mainAccentColor, song: nowPlaying.song, artworkURL: nowPlaying.artworkURL)
-                            }
-                        }
-
-                        if let bio = profile.bio, !bio.isEmpty {
-                            ProfileInfoCard(title: "Bio / Status", icon: "text.quote", tint: mainAccentColor) {
-                                bioText(bio)
-                                    .font(AppTheme.bodyFont(size: 14))
-                                    .foregroundStyle(AppTheme.textPrimary)
-                            }
-                        }
-
-                        ProfileInfoCard(title: "Member Since", icon: "calendar", tint: subAccentColor) {
-                            MemberSinceRow(memberSince: profile.memberSince)
-                        }
-
-                        // MARK: Badges — no privacy toggle, always shown
-                        // once earned (public flair, like a Discord badge).
-                        if !profile.badges.isEmpty {
-                            ProfileInfoCard(title: "Badges", icon: "rosette", tint: mainAccentColor) {
-                                ProfileBadgeRow(badges: profile.badges)
-                            }
-                        }
-
-                        if !profile.pinnedTracks.isEmpty {
-                            ProfileInfoCard(title: "Pinned Favorite Tracks", icon: "pin.fill", tint: subAccentColor) {
-                                VStack(spacing: 10) {
-                                    ForEach(Array(profile.pinnedTracks.enumerated()), id: \.offset) { index, track in
-                                        PinnedTrackRow(title: track.title, artist: track.artist, tint: subAccentColor)
-                                        if index < profile.pinnedTracks.count - 1 {
-                                            Divider().background(AppTheme.textSecondary.opacity(0.15))
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // MARK: Featured Playlist — an owner-chosen
-                        // spotlight; shown whenever set, same visibility as
-                        // pinned tracks above (no separate privacy toggle —
-                        // featuring a playlist is itself an intentional
-                        // public action).
-                        if let featuredPlaylist = profile.featuredPlaylist {
-                            ProfileInfoCard(title: "Featured Playlist", icon: "music.note.list", tint: subAccentColor) {
-                                FeaturedPlaylistRow(playlist: featuredPlaylist, tint: subAccentColor)
-                            }
-                        }
-
-                        // MARK: Listening Streak — only present when the
-                        // owner opted in via show_listening_stats.
-                        if let streak = profile.listeningStreak {
-                            ProfileInfoCard(title: "Listening Streak", icon: "flame.fill", tint: mainAccentColor) {
-                                ListeningStreakRow(streak: streak, tint: mainAccentColor)
-                            }
-                        }
-
-                        // MARK: Profile Visitors — only present when the
-                        // owner opted in via show_visitor_stats; the
-                        // recent-visitor avatar stack inside further
-                        // requires the viewer to actually be a friend (see
-                        // the bridge's _profile_visitor_stats).
-                        if let visitorCount = profile.visitorCount {
-                            ProfileInfoCard(title: "Profile Visitors", icon: "eye.fill", tint: mainAccentColor) {
-                                ProfileVisitorStatsRow(visitorCount: visitorCount, recentVisitors: profile.recentVisitors, tint: mainAccentColor)
-                            }
-                        }
-
-                        if let compatibility, profile.isFriend, !isSelfPreview {
-                            ProfileInfoCard(title: "Music Match", icon: "waveform.path.ecg", tint: mainAccentColor) {
-                                VStack(alignment: .leading, spacing: 12) {
-                                    MusicCompatibilityRow(compatibility: compatibility, tint: mainAccentColor)
-                                    // Why the score is what it is. A bare
-                                    // percentage cannot be agreed or disagreed
-                                    // with; these can.
-                                    MusicMatchReasons(compatibility: compatibility)
-                                    Button {
-                                        showBlendMix = true
-                                    } label: {
-                                        Label("Play Blend Mix", systemImage: "play.fill")
-                                            .font(.subheadline.weight(.semibold))
-                                            .frame(maxWidth: .infinity)
-                                    }
-                                    .buttonStyle(.bordered)
-                                    .tint(mainAccentColor)
-                                }
-                            }
-                        }
-
-                        // MARK: Listening Fingerprint
-                        //
-                        // Deliberately placed with the other music cards rather
-                        // than in the showcase area at the top: unlike a pinned
-                        // track or a featured playlist, this one cannot be
-                        // curated. It is measured from what the library actually
-                        // contains, so it belongs with the factual sections, not
-                        // the presented ones.
-                        if let fingerprint, fingerprint.available {
-                            ProfileInfoCard(title: "Listening Fingerprint",
-                                            icon: "waveform.badge.magnifyingglass",
-                                            tint: subAccentColor) {
-                                SonicFingerprintView(fingerprint: fingerprint)
-                            }
-                        }
-
-                        // MARK: Recently Played Together — extra feature #5,
-                        // friends-only (the fetch itself is skipped for
-                        // self-preview/non-friends — see the .task below).
-                        if !recentlyPlayedTogether.isEmpty, profile.isFriend, !isSelfPreview {
-                            ProfileInfoCard(title: "Recently Played Together", icon: "person.2.wave.2.fill", tint: subAccentColor) {
-                                SharedRecentTracksRow(tracks: recentlyPlayedTogether, tint: subAccentColor)
-                            }
-                        }
-
-                        if !profile.topGenres.isEmpty || !profile.topArtists.isEmpty {
-                            ProfileInfoCard(title: "Top Music", icon: "chart.bar.fill", tint: mainAccentColor) {
-                                TopMusicShowcaseRow(topGenres: profile.topGenres, topArtists: profile.topArtists, tint: mainAccentColor)
-                            }
-                        }
-
-                        if profile.showGuestbook || isSelfPreview {
-                            ProfileInfoCard(title: "Guestbook", icon: "bubble.left.and.bubble.right.fill", tint: subAccentColor) {
-                                guestbookContent
-                            }
-                        }
-
-                        if profile.isFriend, !isSelfPreview {
-                            ProfileInfoCard(tint: AppTheme.error) {
-                                Button(role: .destructive) { showBlockConfirm = true } label: {
-                                    Label("Block User", systemImage: "hand.raised.fill")
-                                        .frame(maxWidth: .infinity)
-                                }
-                            }
+                    LazyVStack(spacing: 16, pinnedViews: [.sectionHeaders]) {
+                        stageHeader(profile)
+                        Section {
+                            stageContent(profile)
+                                .transition(.opacity)
+                                .id(stageTab)
+                        } header: {
+                            ProfileStageTabPicker(selection: $stageTab, tint: mainAccentColor)
                         }
                     }
-                    .padding(.top, 4)
-                    .padding(.bottom, 40)
+                    .padding(.bottom, 140)
                 }
+                .scrollIndicators(.hidden)
             } else {
                 Text("This profile isn't available.")
                     .foregroundStyle(AppTheme.textSecondary)
@@ -368,11 +210,267 @@ struct PublicProfileView: View {
             }
             Button("Cancel", role: .cancel) {}
         }
+        .sheet(isPresented: $showSendSong) {
+            SendSongSheet(friendID: userId, friendName: profile?.displayName ?? profile?.username ?? "your friend")
+        }
         .sheet(isPresented: $showBlendMix) {
             NavigationStack {
                 BlendMixView(friendUserID: userId, friendName: profile?.displayName ?? profile?.username ?? "your friend")
             }
         }
+    }
+
+    // MARK: - Stage (2026-11-15 redesign; see ProfileStage.swift)
+
+    @ViewBuilder
+    private func stageHeader(_ profile: PublicSocialProfile) -> some View {
+        VStack(spacing: 14) {
+            ProfileStageHero(
+                mainAccent: mainAccentColor, subAccent: subAccentColor,
+                bannerImage: bannerImage,
+                avatarFrame: profile.avatarFrame, avatarDecoration: profile.avatarDecoration,
+                profileEffect: profile.profileEffect, isOnline: isOnline
+            ) {
+                SocialAvatarView(userId: userId, size: 108, fallbackFill: .clear)
+            }
+            ProfileIdentityBlock(
+                displayName: profile.displayName ?? profile.username, username: profile.username,
+                pronouns: profile.pronouns, statusEmoji: profile.statusEmoji, statusText: profile.statusText,
+                discordVerified: profile.discordVerified, discordUsername: profile.discordUsername,
+                tint: mainAccentColor
+            )
+            actionRow(profile)
+            ProfileStatStrip(stats: stats(for: profile), tint: mainAccentColor)
+            if let nowPlaying = displayedNowPlaying {
+                onAirCard(nowPlaying, profile: profile)
+            }
+        }
+    }
+
+    private func stats(for profile: PublicSocialProfile) -> [ProfileStat] {
+        var out: [ProfileStat] = []
+        if let streak = profile.listeningStreak {
+            out.append(ProfileStat(value: "\(streak.currentStreakDays)", label: "day streak", icon: "flame.fill"))
+            out.append(ProfileStat(value: "\(streak.longestStreakDays)", label: "best streak", icon: "trophy.fill"))
+        }
+        if !profile.badges.isEmpty {
+            out.append(ProfileStat(value: "\(profile.badges.count)", label: profile.badges.count == 1 ? "badge" : "badges", icon: "rosette"))
+        }
+        if let visitors = profile.visitorCount {
+            out.append(ProfileStat(value: visitors.formatted(.number.notation(.compactName)), label: "visits", icon: "eye.fill"))
+        }
+        if out.count < 4, let year = profile.memberSince.flatMap(parseServerDate).map({ Calendar.current.component(.year, from: $0) }) {
+            out.append(ProfileStat(value: String(year), label: "member since", icon: "calendar"))
+        }
+        return Array(out.prefix(4))
+    }
+
+    @ViewBuilder
+    private func actionRow(_ profile: PublicSocialProfile) -> some View {
+        HStack(spacing: 10) {
+            if isSelfPreview {
+                if let onEditProfile {
+                    Button(action: onEditProfile) {
+                        Label("Edit Profile", systemImage: "pencil")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                            .background(Capsule().fill(mainAccentColor.gradient))
+                    }
+                    .buttonStyle(PressableButtonStyle())
+                } else {
+                    Label("This is how your profile looks to others", systemImage: "eye")
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.textSecondary)
+                        .frame(maxWidth: .infinity)
+                }
+            } else {
+                friendActionControl
+                    .font(.subheadline.weight(.semibold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .background(Capsule().fill(Color.white.opacity(0.08)))
+                if profile.isFriend {
+                    Button { showSendSong = true } label: {
+                        Label("Send a Song", systemImage: "paperplane.fill")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                            .background(Capsule().fill(mainAccentColor.gradient))
+                    }
+                    .buttonStyle(PressableButtonStyle())
+                }
+            }
+            ShareLink(item: "Find me on Lumisound — @\(profile.username)") {
+                Image(systemName: "square.and.arrow.up")
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(AppTheme.textPrimary)
+                    .frame(width: 46, height: 46)
+                    .background(Circle().fill(Color.white.opacity(0.08)))
+            }
+        }
+        .padding(.horizontal, 16)
+    }
+
+    private func onAirCard(_ nowPlaying: (title: String, artist: String?, song: Song?, artworkURL: URL?), profile: PublicSocialProfile) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 6) {
+                Circle().fill(AppTheme.error).frame(width: 8, height: 8)
+                Text("ON AIR")
+                    .font(.caption2.weight(.heavy))
+                    .kerning(1.2)
+                    .foregroundStyle(AppTheme.error)
+                Spacer()
+            }
+            NowPlayingActivityRow(title: nowPlaying.title, artist: nowPlaying.artist, tint: mainAccentColor, song: nowPlaying.song, artworkURL: nowPlaying.artworkURL)
+            if profile.isFriend, !isSelfPreview {
+                VibeBar(friendID: userId, title: nowPlaying.title, artist: nowPlaying.artist, tint: mainAccentColor)
+            }
+        }
+        .padding(16)
+        .cellSurface(in: RoundedRectangle(cornerRadius: 22, style: .continuous), fallback: mainAccentColor.opacity(0.14))
+        .padding(.horizontal, 16)
+    }
+
+    @ViewBuilder
+    private func stageContent(_ profile: PublicSocialProfile) -> some View {
+        VStack(spacing: 16) {
+            switch stageTab {
+            case .showcase: showcaseTab(profile)
+            case .music: musicTab(profile)
+            case .wall: wallTab(profile)
+            }
+        }
+        .padding(.top, 4)
+    }
+
+    @ViewBuilder
+    private func showcaseTab(_ profile: PublicSocialProfile) -> some View {
+        if let bio = profile.bio, !bio.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Image(systemName: "quote.opening")
+                    .font(.title2.weight(.bold))
+                    .foregroundStyle(mainAccentColor)
+                bioText(bio)
+                    .font(.system(.title3, design: .serif))
+                    .foregroundStyle(AppTheme.textPrimary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 24)
+        }
+        if !profile.pinnedTracks.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("On repeat")
+                    .font(.system(.headline, design: .serif))
+                    .foregroundStyle(AppTheme.textPrimary)
+                    .padding(.horizontal, 20)
+                PinnedSleeveShelf(tracks: profile.pinnedTracks, mainAccent: mainAccentColor, subAccent: subAccentColor) { track in
+                    DropPlayer(library: library, streaming: streaming, player: player)
+                        .play(title: track.title, artist: track.artist, sourceTrackID: track.sourceTrackID)
+                }
+            }
+        }
+        if let featuredPlaylist = profile.featuredPlaylist {
+            ProfilePanel(title: "Featured Playlist", icon: "music.note.list", tint: subAccentColor) {
+                FeaturedPlaylistRow(playlist: featuredPlaylist, tint: subAccentColor)
+            }
+        }
+        if !profile.badges.isEmpty {
+            ProfilePanel(title: "Badges", icon: "rosette", tint: mainAccentColor, trailing: "\(profile.badges.count)") {
+                ProfileBadgeWall(badges: profile.badges, tint: mainAccentColor)
+            }
+        }
+        if (profile.bio ?? "").isEmpty, profile.pinnedTracks.isEmpty, profile.featuredPlaylist == nil, profile.badges.isEmpty {
+            stageEmpty(isSelfPreview ? "Pin tracks, feature a playlist and write a bio in Edit Profile — they show up here." : "Nothing showcased yet.")
+        }
+    }
+
+    @ViewBuilder
+    private func musicTab(_ profile: PublicSocialProfile) -> some View {
+        if let compatibility, profile.isFriend, !isSelfPreview {
+            ProfilePanel(title: "Music Match", icon: "waveform.path.ecg", tint: mainAccentColor, trailing: "\(compatibility.score)%") {
+                VStack(alignment: .leading, spacing: 12) {
+                    MusicCompatibilityRow(compatibility: compatibility, tint: mainAccentColor)
+                    MusicMatchReasons(compatibility: compatibility)
+                    Button { showBlendMix = true } label: {
+                        Label("Play Blend Mix", systemImage: "play.fill")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 11)
+                            .background(Capsule().fill(mainAccentColor.gradient))
+                    }
+                    .buttonStyle(PressableButtonStyle())
+                }
+            }
+        }
+        if !profile.topArtists.isEmpty {
+            ProfilePanel(title: "Top Artists", icon: "music.mic", tint: mainAccentColor) {
+                TopArtistsStrip(artists: profile.topArtists, tint: mainAccentColor)
+            }
+        }
+        if !profile.topGenres.isEmpty {
+            ProfilePanel(title: "Top Genres", icon: "guitars.fill", tint: subAccentColor) {
+                GenreChipCloud(genres: profile.topGenres, tint: subAccentColor)
+            }
+        }
+        if let fingerprint, fingerprint.available {
+            ProfilePanel(title: "Listening Fingerprint", icon: "waveform.badge.magnifyingglass", tint: subAccentColor) {
+                SonicFingerprintView(fingerprint: fingerprint)
+            }
+        }
+        if let streak = profile.listeningStreak {
+            ProfilePanel(title: "Listening Streak", icon: "flame.fill", tint: mainAccentColor) {
+                ListeningStreakRow(streak: streak, tint: mainAccentColor)
+            }
+        }
+        if !recentlyPlayedTogether.isEmpty, profile.isFriend, !isSelfPreview {
+            ProfilePanel(title: "Played Together", icon: "person.2.wave.2.fill", tint: subAccentColor) {
+                SharedRecentTracksRow(tracks: recentlyPlayedTogether, tint: subAccentColor)
+            }
+        }
+        if profile.topArtists.isEmpty, profile.topGenres.isEmpty, fingerprint?.available != true, profile.listeningStreak == nil {
+            stageEmpty("Listening stats show up here once there's some history (and Show Listening Stats is on).")
+        }
+    }
+
+    @ViewBuilder
+    private func wallTab(_ profile: PublicSocialProfile) -> some View {
+        if profile.showGuestbook || isSelfPreview {
+            ProfilePanel(title: "Guestbook", icon: "bubble.left.and.bubble.right.fill", tint: subAccentColor, trailing: comments.isEmpty ? nil : "\(comments.count)") {
+                guestbookContent
+            }
+        }
+        if let visitorCount = profile.visitorCount {
+            ProfilePanel(title: "Profile Visitors", icon: "eye.fill", tint: mainAccentColor) {
+                ProfileVisitorStatsRow(visitorCount: visitorCount, recentVisitors: profile.recentVisitors, tint: mainAccentColor)
+            }
+        }
+        ProfilePanel(title: "Member Since", icon: "calendar", tint: subAccentColor) {
+            MemberSinceRow(memberSince: profile.memberSince)
+        }
+        if profile.isFriend, !isSelfPreview {
+            Button(role: .destructive) { showBlockConfirm = true } label: {
+                Label("Block User", systemImage: "hand.raised.fill")
+                    .font(.subheadline.weight(.semibold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .background(Capsule().fill(AppTheme.error.opacity(0.14)))
+            }
+            .padding(.horizontal, 16)
+        }
+    }
+
+    private func stageEmpty(_ text: String) -> some View {
+        Text(text)
+            .font(.footnote)
+            .foregroundStyle(AppTheme.textSecondary)
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 30)
+            .padding(.horizontal, 24)
     }
 
     @ViewBuilder
