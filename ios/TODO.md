@@ -233,3 +233,15 @@ Full history and decisions: [`../RUST-PORT.md`](../RUST-PORT.md). Swift is views
 - Playlist order is not merged across devices.
 - The first sync after this update is a union (no base yet): something removed elsewhere before the update
   can come back once.
+
+## Stalls: what 2.0.0.42 reported (2026-11-15)
+- Three `main_thread_hang` reports (8, 16 and 32 s), all real (the monitor's timer kept ticking) and all with
+  0 s of main-thread CPU: the main thread was waiting, not working. Each began a few seconds after launch or
+  after returning to the app, on the Classic library screen, with no scan running.
+- `mainStack` is the same place every time: the run loop's update cycle → UIKit → Core Animation's
+  transaction commit, blocked either in a `dispatch_sync` inside QuartzCore (waiting for another thread that is
+  in the same commit path) or in a synchronous `mach_msg` to the render server. No app frame is on the stack.
+- So the app's own main-thread code is not the stall; something else in the process (or the render server) is
+  holding Core Animation's commit. The report could not say what, so 2.0.0.43 adds `otherStacks`: every other
+  thread that is inside app code or the drawing / media frameworks, sampled 3 s into the stall.
+- Next: read `otherStacks` from the next report. Symbolicate `Lumisound 0x…` frames with the release's dSYM.

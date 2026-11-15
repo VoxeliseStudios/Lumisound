@@ -173,6 +173,9 @@ final class MainThreadHangMonitor {
     /// while it has been waiting (see `MainThreadBacktrace`).
     private var probeSentAt = Date()
     private var stackSamples: [String] = []
+    /// The other threads, sampled once per stall (3 s in).
+    private var otherStacks: [String] = []
+    private var othersTaken = false
     /// How many of this monitor's own timer ticks fired while the ping was
     /// waiting, and the main thread's CPU time when it was sent.
     ///
@@ -241,10 +244,23 @@ final class MainThreadHangMonitor {
                     lock.unlock()
                 }
             }
+            // Once per stall, a little later: who the main thread is waiting on.
+            lock.lock()
+            let wantOthers = foreground && waited >= 3 && otherStacks.isEmpty && !othersTaken
+            if wantOthers { othersTaken = true }
+            lock.unlock()
+            if wantOthers {
+                let others = MainThreadBacktrace.captureOthers()
+                lock.lock()
+                otherStacks = others
+                lock.unlock()
+            }
             return
         }
         isProbeOutstanding = true
         stackSamples = []
+        otherStacks = []
+        othersTaken = false
         ticksWhileWaiting = 0
         let cpuBefore = MainThreadBacktrace.mainThreadCPUSeconds()
         cpuAtSend = cpuBefore
@@ -278,6 +294,8 @@ final class MainThreadHangMonitor {
             let stacks = self.stackSamples
             self.stackSamples = []
             let ticks = self.ticksWhileWaiting
+            let others = self.otherStacks
+            self.otherStacks = []
             self.lock.unlock()
 
             guard shouldReport else { return }
@@ -286,11 +304,11 @@ final class MainThreadHangMonitor {
             // been stuck for seconds and is about to have a backlog of real work
             // to get through, so this adds none of its own to it.
             let arrivedAt = Date()
-            self.queue.async { self.report(elapsed: elapsed, sentAt: sentAt, arrivedAt: arrivedAt, stacks: stacks, ticks: ticks, mainCPU: cpu) }
+            self.queue.async { self.report(elapsed: elapsed, sentAt: sentAt, arrivedAt: arrivedAt, stacks: stacks, others: others, ticks: ticks, mainCPU: cpu) }
         }
     }
 
-    private func report(elapsed: TimeInterval, sentAt: Date, arrivedAt: Date, stacks: [String], ticks: Int, mainCPU: Double) {
+    private func report(elapsed: TimeInterval, sentAt: Date, arrivedAt: Date, stacks: [String], others: [String], ticks: Int, mainCPU: Double) {
         // Fewer than a quarter of the timer ticks a stall this long should
         // have seen: the process was not running for most of it (suspended
         // by iOS on its way to the background), so this was not a hang. Kept
@@ -337,6 +355,9 @@ final class MainThreadHangMonitor {
                 // Where the main thread actually was, sampled during the stall
                 // ("Image 0xoffset symbol", innermost first).
                 "mainStack": stacks,
+                // The threads it may have been waiting on (in app code or the
+                // drawing / media frameworks), sampled 3 s into the stall.
+                "otherStacks": others,
                 // What kind of stall: CPU the main thread used during it
                 // (about the stall's length = computing, near zero = waiting
                 // on a lock / a synchronous call / disk), and how many of the

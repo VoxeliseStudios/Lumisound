@@ -25,8 +25,6 @@ enum MainThreadBacktrace {
         if mainThread == 0 { mainThread = mach_thread_self() }
     }
 
-    /// Frames as "Image 0xoffset symbol", innermost first. Empty when the
-    /// stack can't be read (not registered, or not an arm64 device).
     /// CPU time the main thread has used so far, in seconds (0 if unknown).
     ///
     /// Read before and after a stall, it says what kind of stall it was: a
@@ -48,12 +46,70 @@ enum MainThreadBacktrace {
             + Double(info.system_time.seconds) + Double(info.system_time.microseconds) / 1_000_000
     }
 
+    /// Frames as "Image 0xoffset symbol", innermost first. Empty when the
+    /// stack can't be read (not registered, or not an arm64 device).
     static func capture() -> [String] {
         #if arch(arm64)
         let thread = mainThread
         guard thread != 0, thread != mach_thread_self() else { return [] }
+        let count = walk(thread)
+        return (0..<count).map { describe(frames[$0]) }
+        #else
+        return []
+        #endif
+    }
+
+    /// The other threads' stacks, for the ones that could be what the main
+    /// thread is waiting on: any thread inside the app's own code or inside
+    /// the drawing / media frameworks. Idle pool threads and run loops parked
+    /// in the kernel are left out. Each entry is "name: frame | frame | …".
+    ///
+    /// A main thread stuck in Core Animation's commit is waiting for someone
+    /// else — another thread in the middle of its own commit, or one holding
+    /// a lock the commit needs. The main thread's stack alone cannot say who.
+    static func captureOthers(limit: Int = 10) -> [String] {
+        #if arch(arm64)
+        var list: thread_act_array_t?
+        var total: mach_msg_type_number_t = 0
+        guard task_threads(mach_task_self_, &list, &total) == KERN_SUCCESS, let list else { return [] }
+        defer {
+            vm_deallocate(mach_task_self_, vm_address_t(UInt(bitPattern: list)),
+                          vm_size_t(Int(total) * MemoryLayout<thread_act_t>.size))
+        }
+        let me = mach_thread_self()
+        var out: [String] = []
+        for i in 0..<Int(total) {
+            let thread = list[i]
+            if thread == me || thread == mainThread { continue }
+            let count = walk(thread)
+            guard count > 2 else { continue }
+            // Everything below runs with the thread resumed.
+            let described = (0..<min(count, 28)).map { describe(frames[$0]) }
+            let interesting = described.contains { f in
+                f.hasPrefix("Lumisound ") || f.hasPrefix("QuartzCore ") || f.hasPrefix("UIKitCore ")
+                    || f.hasPrefix("SwiftUI ") || f.hasPrefix("AVFCore ") || f.hasPrefix("AVFoundation ")
+                    || f.hasPrefix("CoreMedia ") || f.hasPrefix("MediaToolbox ") || f.hasPrefix("CoreUI ")
+                    || f.hasPrefix("ImageIO ") || f.hasPrefix("AttributeGraph ")
+            }
+            guard interesting else { continue }
+            var name = [CChar](repeating: 0, count: 64)
+            if let p = pthread_from_mach_thread_np(thread) { pthread_getname_np(p, &name, name.count) }
+            let label = String(cString: name)
+            out.append((label.isEmpty ? "thread \(i)" : label) + ": " + described.joined(separator: " | "))
+            if out.count >= limit { break }
+        }
+        return out
+        #else
+        return []
+        #endif
+    }
+
+    #if arch(arm64)
+    /// Suspends `thread`, walks its frame-pointer chain into `frames`, resumes
+    /// it. Returns the number of frames. See the rules at the top of the file.
+    private static func walk(_ thread: thread_t) -> Int {
         var count = 0
-        guard thread_suspend(thread) == KERN_SUCCESS else { return [] }
+        guard thread_suspend(thread) == KERN_SUCCESS else { return 0 }
         var state = arm_thread_state64_t()
         var stateCount = mach_msg_type_number_t(MemoryLayout<arm_thread_state64_t>.size / MemoryLayout<natural_t>.size)
         let kr = withUnsafeMutablePointer(to: &state) { ptr in
@@ -83,11 +139,9 @@ enum MainThreadBacktrace {
             }
         }
         thread_resume(thread)
-        return (0..<count).map { describe(frames[$0]) }
-        #else
-        return []
-        #endif
+        return count
     }
+    #endif
 
     /// "Lumisound 0x1a2b3c symbol+12" (offset from the image's load address,
     /// which is what a crash symbolicator needs with the build's dSYM).
