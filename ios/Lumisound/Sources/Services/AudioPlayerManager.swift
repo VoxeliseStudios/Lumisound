@@ -181,7 +181,7 @@ final class AudioPlayerManager: ObservableObject {
     /// cadence matching (`setTransientRate`). Both used to write
     /// `audioSettings.speed` itself, which saved their tempo as the default
     /// (or the current track's override) and replayed it on later songs.
-    @Published private(set) var transientRate: Float = 1.0
+    @Published var transientRate: Float = 1.0  // set via `setTransientRate` (another file)
 
     /// Whether the currently playing track has a saved per-track override active
     /// (i.e. `audioSettings` reflects that track's own settings, not the global default).
