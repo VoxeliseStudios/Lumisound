@@ -7,6 +7,15 @@ struct GalleryBackgroundView: View {
     @EnvironmentObject var bg: BackgroundService
     @AppStorage("app_reduce_motion") private var reduceMotion = false
     @AppStorage(GalleryBackgroundSource.storageKey) private var backgroundSource = GalleryBackgroundSource.photos.rawValue
+    /// Heat governor: no motion when hot, in Low Power Mode or backgrounded.
+    @ObservedObject private var governor = HeatGovernor.shared
+    /// Every tab keeps its background mounted; only the visible one moves.
+    @State private var visible = false
+
+    private var kenBurns: KenBurnsImageView.KenBurns {
+        guard bg.kenBurnsEnabled, !reduceMotion else { return .off }
+        return visible && governor.policy.backgroundMotion ? .moving : .paused
+    }
 
     var body: some View {
         switch backgroundSource {
@@ -49,10 +58,11 @@ struct GalleryBackgroundView: View {
                         // Keyed on the gallery entry (from the Rust gallery
                         // engine), so each change runs the transition.
                         ForEach([id], id: \.self) { _ in
-                            AnimatedImageView(image: image, contentMode: .scaleAspectFill)
+                            // Ken Burns runs on the image view's layer (Core
+                            // Animation, render server) — see `KenBurnsImageView`.
+                            AnimatedImageView(image: image, contentMode: .scaleAspectFill, kenBurns: kenBurns)
                                 .frame(width: geo.size.width, height: geo.size.height)
                                 .clipped()
-                                .modifier(KenBurnsModifier(isActive: bg.kenBurnsEnabled && !reduceMotion))
                                 // Stills arrive pre-blurred from the core; only GIFs (or a
                                 // still decoded before a blur change) still need it live.
                                 .blur(radius: max(0, bg.blurRadius - bg.currentImageBlur), opaque: true)
@@ -92,6 +102,8 @@ struct GalleryBackgroundView: View {
             }
         }
         .ignoresSafeArea()
+        .onAppear { visible = true }
+        .onDisappear { visible = false }
     }
 
     // MARK: - Transition Factory
@@ -136,53 +148,6 @@ struct GalleryBackgroundView: View {
 }
 
 // MARK: - Ken Burns Modifier
-
-/// Slow, continuous zoom/drift applied to the currently-displayed background
-/// image — independent of the crossfade/slide transition between images.
-/// Scales up slightly beyond the transition's own scale so the pan never
-/// exposes an edge (the image is already `.scaledToFill()` + `.clipped()`).
-private struct KenBurnsModifier: ViewModifier {
-    let isActive: Bool
-    /// Heat governor: no motion when hot, in Low Power Mode or backgrounded.
-    @ObservedObject private var governor = HeatGovernor.shared
-    /// Every tab keeps its background mounted; only the visible one moves.
-    @State private var visible = false
-
-    func body(content: Content) -> some View {
-        moving(content)
-            .onAppear { visible = true }
-            .onDisappear { visible = false }
-    }
-
-    @ViewBuilder
-    private func moving(_ content: Content) -> some View {
-        if isActive && visible && governor.policy.backgroundMotion {
-            // `.periodic` at ~12fps instead of `.animation` (which drives at
-            // the display's full 60/120Hz) — `GalleryBackgroundView` is
-            // instantiated once per tab and `TabView` keeps every tab's
-            // hierarchy mounted simultaneously, so with Ken Burns on this
-            // driver runs continuously in up to 6 places at once, most of
-            // them off-screen. The pan/zoom itself is a slow 30-second leg
-            // (see `legDuration` below), so a much lower update rate is
-            // visually indistinguishable while cutting the redundant-instance
-            // cost by roughly an order of magnitude.
-            TimelineView(.periodic(from: .now, by: 1.0 / min(max(governor.policy.motionFps, 1), LumiMotion.fps))) { timeline in
-                let phase = CGFloat(ArtworkClock.pingPong(timeline.date, legDuration: 30))
-                let scale: CGFloat = 1.08 + 0.05 * phase
-                let dx: CGFloat = 14 * (phase - 0.5)
-                let dy: CGFloat = 10 * (0.5 - phase)
-                content
-                    .scaleEffect(scale)
-                    .offset(x: dx, y: dy)
-            }
-        } else if isActive {
-            // Held at the start of the pan so pausing doesn't jump the framing.
-            content.scaleEffect(1.08)
-        } else {
-            content
-        }
-    }
-}
 
 // MARK: - Blur Transition Modifier
 

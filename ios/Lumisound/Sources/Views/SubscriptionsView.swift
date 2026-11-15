@@ -342,9 +342,16 @@ struct SubscriptionsView: View {
                         TrackedPlaylistDetailView(playlist: pl)
                     } label: {
                         VStack(alignment: .leading, spacing: 8) {
-                            playlistThumbnail(for: pl)
+                            // The square box sizes the card; the thumbnail is
+                            // only an overlay on it. As the sized view itself, an
+                            // aspect-fill 16:9 YouTube thumbnail reported its full
+                            // width, so cards grew wider than their column and ran
+                            // off the screen, and a playlist without art shrank to
+                            // its icon (screenshot 2026-11-15).
+                            Color.clear
                                 .frame(maxWidth: .infinity)
                                 .aspectRatio(1, contentMode: .fit)
+                                .overlay { playlistThumbnail(for: pl) }
                                 .background(AppTheme.elevatedSurface)
                                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                                 .overlay(alignment: .topTrailing) {
@@ -494,6 +501,7 @@ struct SubscriptionsView: View {
                     image.resizable().aspectRatio(contentMode: .fill)
                 default:
                     Image(systemName: "music.note.list")
+                        .font(.system(size: 30))
                         .foregroundStyle(AppTheme.textSecondary)
                 }
             }

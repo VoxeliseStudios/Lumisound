@@ -302,3 +302,21 @@ Full history and decisions: [`../RUST-PORT.md`](../RUST-PORT.md). Swift is views
 ## Open (Folders)
 - Check on device that a fling through the Folders grid holds 60/120 fps and that tiles fade in without
   placeholders flashing when scrolling back. The hub speed-dial folder tiles still use live thumbnails.
+
+## Done (2026-11-15, Subscriptions grid + render-server hangs)
+- Subscriptions → Playlists grid (screenshot): cards ran off the left edge and a playlist without art shrank to
+  its icon. The aspect-fill 16:9 thumbnail was the sized view; now a square `Color.clear` box sizes the card and
+  the thumbnail is an overlay on it.
+- Telemetry after 2.0.0.45 (8 min on device): 11.9 s and 2.4 s hangs; 2.0.0.44 had 11.4 s and 3.7 s more. The
+  long ones now carry `otherStacks`: main thread in Core Animation's commit, `dispatch_sync` onto a RenderBox
+  queue whose thread is in a synchronous `mach_msg` to the render server; no app frames anywhere, ~0 s main CPU.
+  Of every account reporting in 7 days, only the owner has the gallery background on (photos, 41 images,
+  Ken Burns, Liquid Glass) and only the owner has hangs ≥ 5 s (16 of them).
+- Ken Burns was a `TimelineView` committing a new transform for the full-screen image ~12×/s forever (main
+  thread), with every glass control re-rendering against the moved backdrop. It is now a Core Animation
+  transform animation on the image view's layer (`KenBurnsImageView` in `Utilities/AnimatedImageView.swift`):
+  same framing (1.08→1.13, ±7/5 pt, 30 s legs, eased), paused/held when hot, Low Power, or tab not visible.
+
+## Open (render-server hangs)
+- If the CA-commit hangs continue on 2.0.0.47 with the gallery background on, try with it off for a day to
+  confirm; next suspects are the Liquid Glass controls over the photo and the GIF live-blur path.

@@ -176,15 +176,20 @@ func isGIFData(_ data: Data) -> Bool {
 struct AnimatedImageView: UIViewRepresentable {
     let image: UIImage
     var contentMode: UIView.ContentMode = .scaleAspectFill
+    /// Ken Burns pan/zoom (the gallery background). `.paused` holds the
+    /// zoomed start framing so pausing never jumps.
+    var kenBurns: KenBurnsImageView.KenBurns = .off
 
-    func makeUIView(context: Context) -> UIImageView {
-        let view = UIImageView()
+    func makeUIView(context: Context) -> KenBurnsImageView {
+        let view = KenBurnsImageView()
         view.contentMode = contentMode
         view.clipsToBounds = true
+        view.kenBurns = kenBurns
         return view
     }
 
-    func updateUIView(_ uiView: UIImageView, context: Context) {
+    func updateUIView(_ uiView: KenBurnsImageView, context: Context) {
+        uiView.kenBurns = kenBurns
         guard uiView.image !== image else { return }
         uiView.image = image
         // Setting `.image` to a multi-frame `UIImage` (from
@@ -214,7 +219,7 @@ struct AnimatedImageView: UIViewRepresentable {
     /// site — this is exactly what caused a giant near-empty area above the
     /// account row in Settings → Account once a user had a real (non-tiny)
     /// avatar image set.
-    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UIImageView, context: Context) -> CGSize? {
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: KenBurnsImageView, context: Context) -> CGSize? {
         // IMPORTANT: `nil` here does NOT mean "no opinion, use the proposed
         // size" — it means the exact opposite: "size based on content",
         // i.e. defer to the UIImageView's own intrinsic size, identical to
@@ -224,5 +229,71 @@ struct AnimatedImageView: UIViewRepresentable {
         // actually honor whatever `.frame()` was applied on the SwiftUI
         // side, resolve and return the proposal itself.
         proposal.replacingUnspecifiedDimensions()
+    }
+}
+
+
+/// A `UIImageView` that can run the gallery background's Ken Burns pan/zoom
+/// as a Core Animation layer animation. The render server interpolates it out
+/// of process: no main-thread work per frame, and it keeps moving through a
+/// main-thread stall. (It used to be a SwiftUI `TimelineView` committing a new
+/// transform for the full-screen image ~12 times a second, forever.)
+final class KenBurnsImageView: UIImageView {
+    enum KenBurns: Equatable { case off, paused, moving }
+
+    var kenBurns: KenBurns = .off {
+        didSet { if kenBurns != oldValue { apply(restart: true) } }
+    }
+
+    private static let key = "lumisound.kenBurns"
+    /// One leg of the pan, then back.
+    private static let leg: TimeInterval = 30
+    /// Scale first, then shift in points (SwiftUI `.scaleEffect(s).offset(x:y:)`).
+    private static func framing(scale: CGFloat, dx: CGFloat, dy: CGFloat) -> CATransform3D {
+        CATransform3DConcat(CATransform3DMakeScale(scale, scale, 1), CATransform3DMakeTranslation(dx, dy, 0))
+    }
+    private static let start = framing(scale: 1.08, dx: -7, dy: 5)
+    private static let end = framing(scale: 1.13, dx: 7, dy: -5)
+
+    private var foregroundObserver: NSObjectProtocol?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        // Layer animations are dropped while the app is in the background.
+        foregroundObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.apply(restart: true) }
+        }
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    deinit {
+        if let foregroundObserver { NotificationCenter.default.removeObserver(foregroundObserver) }
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        apply(restart: false)
+    }
+
+    private func apply(restart: Bool) {
+        layer.transform = kenBurns == .off ? CATransform3DIdentity : Self.start
+        guard kenBurns == .moving, window != nil else {
+            layer.removeAnimation(forKey: Self.key)
+            return
+        }
+        if !restart, layer.animation(forKey: Self.key) != nil { return }
+        let pan = CABasicAnimation(keyPath: "transform")
+        pan.fromValue = NSValue(caTransform3D: Self.start)
+        pan.toValue = NSValue(caTransform3D: Self.end)
+        pan.duration = Self.leg
+        pan.autoreverses = true
+        pan.repeatCount = .infinity
+        pan.isRemovedOnCompletion = false
+        pan.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        layer.add(pan, forKey: Self.key)
     }
 }
