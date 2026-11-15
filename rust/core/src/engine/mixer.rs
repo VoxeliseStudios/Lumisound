@@ -584,8 +584,14 @@ impl Mixer {
                 let id = old.id;
                 self.retire(old);
                 self.end_cur_starve(id, 0.0);
-                self.blend = None;
+                // A planned blend that never started: the incoming deck was
+                // decoded for a beat-matched fade that isn't happening, so it
+                // drops the tempo nudge and plays at its own speed.
+                let missed_blend = self.blend.take().is_some();
                 if let Some(mut n) = self.next.take() {
+                    if missed_blend {
+                        n.shared.nudge_off.store(true, Ordering::Relaxed);
+                    }
                     let nid = n.id;
                     n.handed_over = true;
                     self.cur = Some(n);

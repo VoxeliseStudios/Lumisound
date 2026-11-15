@@ -188,11 +188,12 @@ extension AudioPlayerManager {
         let gen = scheduleGeneration
         let base = max(1, audioSettings.crossfadeDuration)
         let equalPower = (audioSettings.crossfadeCurve ?? .equalPower) == .equalPower
+        let beatMatch = audioSettings.beatMatchActive
         let nextID = next.id
         rustBlendTask?.cancel()
         rustBlendTask = Task.detached(priority: .utility) { [weak self] in
             guard let a = blendProfile(path: outPath), let b = blendProfile(path: inPath), !Task.isCancelled else { return }
-            let plan = blendPlan(out: a, inc: b, settings: BlendSettings(baseSecs: base, beatMatch: true, bassSwap: true))
+            let plan = blendPlan(out: a, inc: b, settings: BlendSettings(baseSecs: base, beatMatch: beatMatch, bassSwap: true))
             await MainActor.run { [weak self] in
                 guard let self, self.scheduleGeneration == gen, self.rustNextDeckID == nil,
                       self.peekNextSong()?.id == nextID, self.currentSong?.url?.path == outPath else { return }
@@ -397,10 +398,10 @@ extension AudioPlayerManager {
         rustNextDeckID = nil
         rustNextPath = nil
         let equalPower = (audioSettings.crossfadeCurve ?? .equalPower) == .equalPower
-        // Smart crossfade beat-matches: the incoming track runs at the
-        // outgoing tempo through the overlap, then eases to its own.
+        // Beat-match (opt-in): the incoming track runs at the outgoing tempo
+        // through the overlap, then eases to its own.
         var tempoMatch = 1.0
-        if audioSettings.smartCrossfadeEnabled,
+        if audioSettings.beatMatchActive,
            let oBPM = currentSong.flatMap({ bpmCache[$0.id] }), let iBPM = bpmCache[nextSong.id] {
             tempoMatch = Lumisound.beatmatchRatio(outgoingBpm: oBPM, incomingBpm: iBPM)
         }

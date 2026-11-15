@@ -899,6 +899,40 @@ mod tests {
         let _ = std::fs::remove_dir_all(d);
     }
 
+    /// A blend planned with a beat-match that never got to start (the
+    /// outgoing track ended first): the incoming track takes over gaplessly
+    /// and must play at its own speed, not stay stretched for the fade that
+    /// didn't happen.
+    #[test]
+    fn missed_blend_hands_over_at_native_tempo() {
+        let d = std::env::temp_dir().join(format!("engine-mb-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&d).unwrap();
+        let (a, b) = (d.join("a.wav"), d.join("b.wav"));
+        wav(&a, 0.5, 440.0, 48_000);
+        wav(&b, 8.0, 440.0, 48_000);
+        let l = Arc::new(L(Mutex::new(vec![])));
+        let e = AudioEngine::new(l.clone());
+        e.load(a.to_string_lossy().into(), 0.0, 0.0).unwrap();
+        // Cue past the end of `a`: the blend can never start. 6 s fade at
+        // 1.08x would hold the stretch for 3.6 s.
+        let plan = crate::blend::BlendPlan { out_start: 30.0, fade_secs: 6.0, in_start: 0.0, tempo_match: 1.08, style: crate::blend::BlendStyle::EqualPower, swap_at: 0.5, bars: 0, reason: String::new() };
+        let ib = e.queue_blend(b.to_string_lossy().into(), plan, 0.0, true).unwrap();
+        std::thread::sleep(Duration::from_millis(250));
+        e.play();
+        pump(&e, 0.6);
+        std::thread::sleep(Duration::from_millis(60));
+        assert!(l.0.lock().unwrap().contains(&format!("start{ib}")), "handed over");
+        // Let what was already decoded at the stretched tempo (one ring) play out.
+        pump(&e, 2.0);
+        let p1 = e.position();
+        pump(&e, 1.0);
+        let p2 = e.position();
+        let played = ((48_000usize) / 1024 * 1024) as f64 / 48_000.0;
+        // Still inside the would-be hold, yet track time runs at 1x.
+        assert!((p2 - p1 - played).abs() < 0.01, "advanced {} in {played} s", p2 - p1);
+        let _ = std::fs::remove_dir_all(d);
+    }
+
     #[test]
     fn crossfades_without_a_gap() {
         let d = std::env::temp_dir().join(format!("engine-xf-{}", uuid::Uuid::new_v4().simple()));

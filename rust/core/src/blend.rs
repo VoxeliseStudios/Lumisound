@@ -558,7 +558,11 @@ pub(crate) fn plan(out: &BlendProfile, inc: &BlendProfile, st: &BlendSettings) -
     let end = out.music_end;
     // Never eat more than 12 % of either track.
     let cap = (out.duration * 0.12).min(inc.duration * 0.12).clamp(0.8, 16.0);
-    let fit = if st.beat_match && out.beat_confidence >= 0.25 && inc.beat_confidence >= 0.25 { tempo_fit(out.bpm_tail, inc.bpm_head) } else { None };
+    // Without beat-matching neither track's speed is ever touched, so only
+    // tempos that already agree (within 2 %, half/double time included) are
+    // locked to bars, and only for as many bars as stay within ~60 ms of drift.
+    let steady = out.beat_confidence >= 0.25 && inc.beat_confidence >= 0.25;
+    let fit = if steady { tempo_fit(out.bpm_tail, inc.bpm_head) } else { None }.filter(|r| st.beat_match || (r - 1.0).abs() <= 0.02);
     let (ca, cb) = (dsp::camelot(os.key.as_deref()), dsp::camelot(is.key.as_deref()));
     let keys_ok = ca.is_none() || cb.is_none() || dsp::camelot_compatible(ca, cb);
     if !keys_ok {
@@ -601,7 +605,8 @@ pub(crate) fn plan(out: &BlendProfile, inc: &BlendProfile, st: &BlendSettings) -
             let bar = os.period * 4.0;
             if bar > 0.0 {
                 let want = fade.min(cap);
-                let n = [1u32, 2, 4, 8, 16].into_iter().filter(|b| (*b as f64) * bar <= cap + 1e-6).min_by(|a, b| ((*a as f64 * bar) - want).abs().total_cmp(&((*b as f64 * bar) - want).abs())).unwrap_or(1);
+                let drift_ok = |b: u32| st.beat_match || b as f64 * bar * (r - 1.0).abs() <= 0.06;
+                let n = [1u32, 2, 4, 8, 16].into_iter().filter(|b| (*b as f64) * bar <= cap + 1e-6 && drift_ok(*b)).min_by(|a, b| ((*a as f64 * bar) - want).abs().total_cmp(&((*b as f64 * bar) - want).abs())).unwrap_or(1);
                 let target_start = end - n as f64 * bar;
                 // The downbeat at or before the target, so the last bar ends on the music's end.
                 let start = snap_back(os, target_start, target_start - bar);
@@ -622,7 +627,6 @@ pub(crate) fn plan(out: &BlendProfile, inc: &BlendProfile, st: &BlendSettings) -
                     in_start = if back >= inc.music_start - 0.05 { back } else { *d };
                 }
             }
-            let _ = r;
         } else if out.outro == BlendOutro::Sustain && out.beat_confidence >= 0.25 && inc.beat_confidence >= 0.25 && out.bpm_tail > 0.0 && inc.bpm_head > 0.0 {
             // Tempos fight: keep the overlap short so the beats don't flam.
             fade = (fade * 0.6).max(1.0);
@@ -671,7 +675,7 @@ pub(crate) fn plan(out: &BlendProfile, inc: &BlendProfile, st: &BlendSettings) -
     };
 
     let tempo_match = match (fit, bars) {
-        (Some(r), b) if b > 0 && (r - 1.0).abs() > 0.004 => {
+        (Some(r), b) if st.beat_match && b > 0 && (r - 1.0).abs() > 0.004 => {
             reasons.push(format!("beat-match x{r:.3}"));
             r.clamp(0.92, 1.08)
         }
@@ -824,6 +828,24 @@ mod tests {
         assert_eq!(p.tempo_match, 1.0, "{p:?}");
         assert!(p.fade_secs < 8.0, "{p:?}");
         assert!(p.reason.contains("tempo-clash"), "{p:?}");
+    }
+
+    #[test]
+    fn without_beat_match_speed_is_never_touched() {
+        // 126 vs 122 BPM: beat-matching would stretch the incoming track 3 %.
+        let a = profile(150.0, 126.0, |_| 1.0);
+        let b = profile(150.0, 122.0, |_| 1.0);
+        let p = plan(&a, &b, &BlendSettings { base_secs: 8.0, beat_match: false, bass_swap: true });
+        assert_eq!(p.tempo_match, 1.0, "{p:?}");
+        assert_eq!(p.bars, 0, "tempos 3 % apart must not be bar-locked unstretched: {p:?}");
+        // Tempos that already agree still get a bar-locked blend, at speed 1.
+        let c = profile(150.0, 120.0, |_| 1.0);
+        let d = profile(150.0, 120.5, |_| 1.0);
+        let p = plan(&c, &d, &BlendSettings { base_secs: 8.0, beat_match: false, bass_swap: true });
+        assert_eq!(p.tempo_match, 1.0, "{p:?}");
+        assert!(p.bars >= 1, "{p:?}");
+        let bar = 4.0 * 60.0 / c.bpm_tail;
+        assert!(p.bars as f64 * bar * (c.bpm_tail / d.bpm_head - 1.0).abs() <= 0.06 + 1e-9, "{p:?}");
     }
 
     #[test]

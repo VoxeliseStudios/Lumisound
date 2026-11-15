@@ -22,6 +22,10 @@ pub struct DeckShared {
     pub eof: AtomicBool,
     pub failed: AtomicBool,
     pub duration_bits: AtomicU64,
+    /// Set when a beat-match nudge must stop: the deck took over without the
+    /// blend it was stretched for (gapless hand-over), so it plays at the
+    /// listener's own speed from the next decoded chunk on.
+    pub nudge_off: AtomicBool,
 }
 
 pub struct Deck {
@@ -156,7 +160,7 @@ pub fn open(id: u64, path: &str, start: f64, out_rate: u32, gain: f32, speed: f6
     let src_rate = dec.codec_params().sample_rate.unwrap_or(src_rate);
     let (trim, actual_start) = lumisound_media::decode::start_at(&mut *fmt, track.id, src_rate, gapless, Some(start));
     let (prod, cons) = rtrb::RingBuffer::<f32>::new(RING_SAMPLES * (out_rate as usize).div_ceil(48_000).max(1));
-    let shared = Arc::new(DeckShared { stop: AtomicBool::new(false), eof: AtomicBool::new(false), failed: AtomicBool::new(false), duration_bits: AtomicU64::new(duration.to_bits()) });
+    let shared = Arc::new(DeckShared { stop: AtomicBool::new(false), eof: AtomicBool::new(false), failed: AtomicBool::new(false), duration_bits: AtomicU64::new(duration.to_bits()), nudge_off: AtomicBool::new(false) });
     let (seg_prod, segs) = rtrb::RingBuffer::<(u64, f64)>::new(8192);
     let sh = shared.clone();
     let tid = track.id;
@@ -340,7 +344,10 @@ fn decode_loop(
     let mut sbuf: Option<SampleBuffer<f32>> = None;
     let mut inter = Vec::with_capacity(CHUNK * 4);
     let mut emit = |data: &[f32], prod: &mut rtrb::Producer<f32>| -> bool {
-        let n = tempo.nudge.map_or(1.0, |n| n.at(out_frames));
+        let n = match tempo.nudge {
+            Some(n) if !sh.nudge_off.load(Ordering::Relaxed) => n.at(out_frames),
+            _ => 1.0,
+        };
         wsola.set_ratio(tempo.stretch_ratio * n);
         let step = tempo.speed * n / tempo.out_rate as f64;
         let out: &[f32] = if wsola.can_bypass() {
@@ -454,7 +461,10 @@ fn decode_loop(
     if !wsola.can_bypass() {
         stretched.clear();
         wsola.finish(&mut stretched);
-        let n = tempo.nudge.map_or(1.0, |n| n.at(out_frames));
+        let n = match tempo.nudge {
+            Some(n) if !sh.nudge_off.load(Ordering::Relaxed) => n.at(out_frames),
+            _ => 1.0,
+        };
         let step = tempo.speed * n / tempo.out_rate as f64;
         let _ = push_seg(&mut segs, stretched.len() / 2, step, sh) && push_all(&mut prod, &stretched, sh);
     }

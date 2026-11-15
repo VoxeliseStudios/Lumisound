@@ -136,7 +136,7 @@ extension AudioPlayerManager {
         let outgoingBPM = currentSong.flatMap { bpmCache[$0.id] }
         let incomingBPM = bpmCache[nextSong.id]
         var incomingRate: Float = 1.0
-        if smartCrossfade, let oBPM = outgoingBPM, let iBPM = incomingBPM {
+        if smartCrossfade, audioSettings.beatMatchActive, let oBPM = outgoingBPM, let iBPM = incomingBPM {
             incomingRate = Float(Lumisound.beatmatchRatio(outgoingBpm: oBPM, incomingBpm: iBPM))
         }
         setBeatMatchRate(outgoingBeatMatch, 1.0)

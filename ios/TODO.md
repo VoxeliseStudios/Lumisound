@@ -389,3 +389,18 @@ the synced default settings held pitch −0.6386; one track override held −2.5
 - Listen Together: a sync nudge (±10%) stayed after a room ended without `leave`; reset whenever not following.
 - `AudioSettings.withCleanTempo` resets values no control produces (off the 0.1 st / 0.01× grid) on load,
   server restore and per-track maps; the cleaned default syncs back.
+
+## Done (2026-11-15, speed/pitch drift part 2)
+- Speed/pitch always run on the Lumisound (Rust) engine's own stretcher/resampler; the
+  native `AVAudioUnitTimePitch` graph is only the rare fallback (2 fallbacks/3 days, none on 2.0.0.5x).
+- Remaining drift was Smart Crossfade's hard-wired beat-match: every auto-transition stretched the
+  next song up to ±8 % and eased it back, and a blend that never started handed the stretched deck
+  over gaplessly. Beat-match is now opt-in (`AudioSettings.beatMatchEnabled`, Settings > Sound >
+  Smart Auto Crossfade > Beat-match tempo); off, the core planner never touches tempo and bar-locks
+  only tempos within 2 % (≤60 ms drift). A missed blend drops the nudge (`DeckShared.nudge_off`).
+
+## Open (audio)
+- `core/tests/engine_quality.rs` fails pre-echo on drum hits at 1.25x/0.8x (-12/-16 dB vs -18 limit):
+  stretcher transient smearing when speed != 1. Pre-existing; only heard with a non-1x speed.
+- Phase H still pending: remove the AVAudioEngine graph once the fallbacks (output start failure,
+  system-engine streams) also run on the core engine.

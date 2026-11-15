@@ -146,6 +146,13 @@ struct AudioSettings: Codable, Equatable, Hashable {
     /// the overlap using each track's analysed tempo instead of a fixed
     /// duration (see `AudioPlayerManager.beginCrossfade`). Opt-in.
     var smartCrossfadeEnabled: Bool = false
+    /// Smart Crossfade may stretch the incoming song (up to ±8 %, pitch
+    /// kept) so its beats line up with the outgoing one, then ease it back.
+    /// Off by default (nil = off): heard as the next song starting a little
+    /// fast or slow. Off, every song plays at exactly the listener's speed
+    /// and blends only lock to bars when the tempos already agree.
+    var beatMatchEnabled: Bool? = false
+    var beatMatchActive: Bool { smartCrossfadeEnabled && beatMatchEnabled == true }
     /// True when EITHER crossfade mode is on. Manual and Smart crossfade are
     /// mutually exclusive in the UI, and either one must drive an actual
     /// crossfade transition — previously only `crossfadeEnabled` was checked at

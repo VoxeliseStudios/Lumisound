@@ -424,7 +424,7 @@ extension SettingsView {
                 }
                 LKDivider()
                 LKToggle(icon: "metronome", tint: .teal, title: "Smart Auto Crossfade",
-                         subtitle: "Beat-matched, bar-aligned blends like a DJ, timed from how each song ends",
+                         subtitle: "Bar-aligned blends like a DJ, timed from how each song ends",
                          isOn: $player.audioSettings.smartCrossfadeEnabled)
                     .onChange(of: player.audioSettings.smartCrossfadeEnabled) { on in
                         if on {
@@ -434,6 +434,12 @@ extension SettingsView {
                             AudioVisualizerService.shared.stop(for: .smartCrossfade)
                         }
                     }
+                if player.audioSettings.smartCrossfadeEnabled {
+                    LKToggle(icon: "dial.medium", tint: .teal, title: "Beat-match tempo",
+                             subtitle: "Briefly speeds up or slows the next song so the beats line up. Off keeps every song at its own speed",
+                             isOn: Binding(get: { player.audioSettings.beatMatchEnabled == true },
+                                           set: { player.audioSettings.beatMatchEnabled = $0 }))
+                }
                 if player.audioSettings.crossfadeActive {
                     FadeCurvePickerRow(player: player).padding(.vertical, 4)
                 }
