@@ -285,3 +285,20 @@ Full history and decisions: [`../RUST-PORT.md`](../RUST-PORT.md). Swift is views
 - Core tests failing before this change too (not caused by it): `blend_cloud` blend_starts_on_cue_with_bass_swap
   (level hole, min_ratio), `pitch_cloud` pitch_keeps_sustained_notes_through_drum_hits; `store` background-write
   test is flaky under a parallel `cargo test`.
+
+## Done (2026-11-15, Folders grid + folder view scroll)
+- Screen recording 2026-11-14 20:49: flinging the Folders grid ran at 10–20 fps (frames 50–120 ms apart).
+  Each tile was four `ArtworkThumbnail`s (UIKit `PanningArtwork` with an endless Core Animation slide for
+  16:9 art, placeholder, shimmer, scrim, continuous-corner clip) in a GeometryReader under
+  `.compositingGroup().shadow`, so ~48 animating, masked layers and a per-frame offscreen shadow pass.
+- `Services/FolderMosaicService.swift`: each folder cover is one bitmap (collage / custom cover / single
+  track, corners, badge or hairline, drop shadow baked in), rendered off-main, memory-cached (48 MB),
+  concurrent requests share one render. `FoldersTab` tiles and the folder detail header (`.header` style)
+  show it as a single `Image`; the grid measures its width once (`onGeometryChange`) instead of a
+  GeometryReader per tile. Grid collage art is now a still, centered crop (no panning) — by design.
+- `HeroArtworkBackdrop` (folder detail, Queue and 4 more headers): blurred once at 160 px off-main
+  (`BackdropBlur`) instead of a live `.blur(radius: 50)` on full-size artwork every frame.
+
+## Open (Folders)
+- Check on device that a fling through the Folders grid holds 60/120 fps and that tiles fade in without
+  placeholders flashing when scrolling back. The hub speed-dial folder tiles still use live thumbnails.

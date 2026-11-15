@@ -744,6 +744,61 @@ private struct FolderDetailHeaderView: View {
 
     private let coverSize: CGFloat = 200
 
+    @Environment(\.displayScale) private var displayScale
+    /// The cover as one finished bitmap (collage or custom cover, corners,
+    /// hairline and shadow) from `FolderMosaicService` — it used to be four
+    /// panning `ArtworkThumbnail`s under a live shadow, redrawn every frame
+    /// while the list scrolled.
+    @State private var coverImage: UIImage?
+
+    /// What the cover shows when there's no custom cover: the 2×2 collage, or
+    /// one track's art.
+    private var coverSongs: [Song] {
+        if collageSongs.count >= 4 { return Array(collageSongs.prefix(4)) }
+        return [collageSongs.first ?? representativeSong].compactMap { $0 }
+    }
+
+    private var coverKey: FolderMosaicService.Key {
+        FolderMosaicService.Key(
+            folderID: folderURL.path,
+            songIDs: coverSongs.map(\.id),
+            coverRevision: customCover.map { ObjectIdentifier($0).hashValue } ?? 0,
+            pixelSide: Int((coverSize * displayScale).rounded()),
+            style: .header
+        )
+    }
+
+    @ViewBuilder
+    private var renderedCover: some View {
+        let style = FolderMosaicService.Style.header
+        Group {
+            if let image = coverImage ?? FolderMosaicService.shared.cached(coverKey) {
+                Image(uiImage: image)
+                    .resizable()
+                    .frame(width: coverSize + 2 * style.margin, height: coverSize + 2 * style.margin)
+                    .padding(-style.margin)
+            } else if customCover == nil, coverSongs.isEmpty {
+                // Empty folder: the static folder glyph.
+                cover
+                    .clipShape(RoundedRectangle(cornerRadius: style.cornerRadius, style: .continuous))
+            } else {
+                RoundedRectangle(cornerRadius: style.cornerRadius, style: .continuous)
+                    .fill(AppTheme.surface)
+            }
+        }
+        .frame(width: coverSize, height: coverSize)
+        .task(id: coverKey) {
+            let key = coverKey
+            guard customCover != nil || !coverSongs.isEmpty else { coverImage = nil; return }
+            if let hit = FolderMosaicService.shared.cached(key) { coverImage = hit; return }
+            let made = await FolderMosaicService.shared.mosaic(
+                key, songs: coverSongs, cover: customCover, sidePoints: coverSize, scale: displayScale
+            )
+            guard !Task.isCancelled, let made else { return }
+            withAnimation(LumiMotion.glide(0.22)) { coverImage = made }
+        }
+    }
+
     var body: some View {
         ZStack(alignment: .bottom) {
             // Big blurred-artwork backdrop, same component the Queue and
@@ -754,14 +809,7 @@ private struct FolderDetailHeaderView: View {
                 BreadcrumbTrail(parent: "Imported Music", current: folderName)
 
                 ZStack(alignment: .bottomTrailing) {
-                    cover
-                        .frame(width: coverSize, height: coverSize)
-                        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                                .stroke(.white.opacity(0.12), lineWidth: 1)
-                        )
-                        .shadow(color: .black.opacity(0.5), radius: 18, y: 10)
+                    renderedCover
 
                     // Custom folder cover art — device-local, see
                     // FolderCoverArtService. Overlaid on the artwork itself so

@@ -25,6 +25,15 @@ struct FoldersTab: View {
     /// inner button's taps — so the actual toggle control can't live inside
     /// `FolderGridCell` itself the way a first draft of this had it.
     @State private var expandedFolderIDs: Set<String> = []
+    /// Width of the scroll view, measured once here so each tile knows its
+    /// side without a GeometryReader of its own.
+    @State private var containerWidth: CGFloat = 0
+
+    /// One column's width: the grid's 16 pt side insets and 12 pt spacing.
+    private var tileSide: CGFloat {
+        let n = CGFloat(max(1, columns))
+        return max(0, (containerWidth - 32 - 12 * (n - 1)) / n)
+    }
 
     private var gridColumns: [GridItem] {
         Array(repeating: GridItem(.flexible(), spacing: 12), count: columns)
@@ -46,7 +55,7 @@ struct FoldersTab: View {
                             NavigationLink {
                                 LocalFolderDetailView(folderName: folder.id, folderURL: folder.dirURL)
                             } label: {
-                                FolderGridCell(folder: folder, isExpanded: expandedFolderIDs.contains(folder.id))
+                                FolderGridCell(folder: folder, side: tileSide, isExpanded: expandedFolderIDs.contains(folder.id))
                             }
                             .buttonStyle(.plain)
 
@@ -91,6 +100,7 @@ struct FoldersTab: View {
                 .padding(.bottom, 190)
             }
         }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { containerWidth = $0 }
         .background(Color.clear.ignoresSafeArea())
         .task(id: library.allSongs.count) {
             // Grouping is O(n) over the whole library and, for the big
@@ -143,94 +153,68 @@ struct FoldersTab: View {
 
 private struct FolderGridCell: View {
     let folder: FolderEntry
+    /// Tile side in points, from `FoldersTab.tileSide`.
+    let side: CGFloat
     /// Owned by `FoldersTab` (see `expandedFolderIDs`'s doc comment there) —
     /// this view only reads it to decide whether to show the inline peek;
     /// the actual toggle button lives outside this view entirely.
     let isExpanded: Bool
 
-    private var trackCount: Int { folder.songs.count }
-    /// Up to four representative tracks for the collage — a real folder full
-    /// of mismatched album art reads as a proper "shelf" of what's inside,
-    /// not just one arbitrarily-first track's cover standing in for the
-    /// whole folder the way the old single-image tile did.
-    private var collageSongs: [Song] { Array(folder.songs.prefix(4)) }
-
-    // Custom, device-local folder cover art (see FolderCoverArtService) —
-    // read once on appear/whenever this folder's identity changes rather
-    // than as a plain computed property: `cover(for:)` does a dictionary
-    // lookup (cheap) but also decodes+caches from disk on a cold cache
-    // miss, which isn't free to repeat on every SwiftUI body pass for a
-    // grid full of these cells. LocalFolderDetailView already shows
-    // whatever custom cover is set for a folder; this grid never checked
-    // for one at all, so a folder with a custom cover reverted to its
-    // default (first song's artwork / folder glyph) the moment you backed
-    // out to the grid.
-    @State private var customCover: UIImage? = nil
-    // Observed so a cover change made elsewhere (LocalFolderDetailView,
-    // while this cell was already mounted and off the `.onAppear` path)
-    // still reaches this cell — see `FolderCoverArtService.changeCount`'s
-    // doc comment.
+    @Environment(\.displayScale) private var displayScale
+    /// The finished tile from `FolderMosaicService` (collage or custom cover,
+    /// corners, badge and shadow in one bitmap).
+    @State private var tile: UIImage? = nil
+    // Observed so a cover change made elsewhere (LocalFolderDetailView)
+    // re-renders this tile — see `FolderCoverArtService.changeCount`.
     @ObservedObject private var coverService = FolderCoverArtService.shared
+
+    private var trackCount: Int { folder.songs.count }
+
+    private var mosaicKey: FolderMosaicService.Key {
+        FolderMosaicService.Key(
+            folderID: folder.id,
+            songIDs: folder.songs.prefix(4).map(\.id),
+            coverRevision: coverService.changeCount,
+            pixelSide: Int((side * displayScale).rounded())
+        )
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            // GeometryReader sizes the artwork to the actual column width — like
-            // SongGridCell, a hardcoded size here clips (3-column) or under-fills
-            // (1-column) the cell depending on how many columns are selected.
-            GeometryReader { geo in
-                ZStack {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(AppTheme.surface)
-
-                    if let customCover {
-                        Image(uiImage: customCover)
+            // One static image per tile; the memory-cache read keeps a tile
+            // that scrolls back into view from flashing its placeholder.
+            let image = tile ?? FolderMosaicService.shared.cached(mosaicKey)
+            Color.clear
+                .frame(maxWidth: .infinity)
+                .aspectRatio(1, contentMode: .fit)
+                .overlay {
+                    if let image {
+                        // The bitmap carries `Style.gridTile.margin` of shadow on each side.
+                        Image(uiImage: image)
                             .resizable()
-                            .scaledToFill()
-                            .frame(width: geo.size.width, height: geo.size.width)
-                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    } else if collageSongs.count > 1 {
-                        collage(songs: collageSongs, side: geo.size.width)
-                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    } else if let song = collageSongs.first {
-                        ArtworkThumbnail(song: song, size: geo.size.width)
-                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            .padding(-FolderMosaicService.Style.gridTile.margin)
+                            .transition(.opacity)
                     } else {
-                        Image(systemName: "folder.fill")
-                            .font(.system(size: geo.size.width * 0.25))
-                            .foregroundStyle(AppTheme.dynamicAccent)
+                        RoundedRectangle(cornerRadius: FolderMosaicService.Style.gridTile.cornerRadius, style: .continuous)
+                            .fill(AppTheme.surface)
                     }
-
-                    // Folder badge overlay — the real expand/collapse toggle
-                    // is a separate button drawn by `FoldersTab` on top of
-                    // this whole cell (top-trailing corner), not here; see
-                    // `isExpanded`'s doc comment for why.
-                    VStack {
-                        Spacer()
-                        HStack {
-                            Image(systemName: "folder.fill")
-                                .font(.caption2)
-                            Spacer()
-                        }
-                        .padding(6)
-                        // Flat color — see the chevron button's identical
-                        // change above for why `adaptiveGlass`'s real
-                        // backdrop blur isn't worth it at grid scale here.
-                        .background(Color.black.opacity(0.35), in: Rectangle())
-                    }
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
-            }
-            .frame(maxWidth: .infinity)
-            .aspectRatio(1, contentMode: .fit)
-            // `.compositingGroup()` flattens this whole layered, frequently-
-            // changing subtree (async artwork fade-in, collage, badge) into
-            // one rendered layer BEFORE the shadow is computed. Without it,
-            // `.shadow` on dynamic non-opaque content forces its own
-            // offscreen render pass to derive the shadow's alpha mask —
-            // paid independently by every visible/near-visible grid cell on
-            // every redraw during a scroll.
-            .compositingGroup()
-            .shadow(color: .black.opacity(0.3), radius: 8, y: 5)
+                .task(id: mosaicKey) {
+                    guard side >= 1 else { return }
+                    let key = mosaicKey
+                    if let hit = FolderMosaicService.shared.cached(key) {
+                        tile = hit
+                        return
+                    }
+                    let cover = await FolderCoverArtService.shared.cover(for: folder.dirURL)
+                    guard !Task.isCancelled else { return }
+                    let made = await FolderMosaicService.shared.mosaic(
+                        key, songs: Array(folder.songs.prefix(4)), cover: cover,
+                        sidePoints: side, scale: displayScale
+                    )
+                    guard !Task.isCancelled, let made else { return }
+                    withAnimation(LumiMotion.glide(0.22)) { tile = made }
+                }
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(folder.id)
@@ -262,39 +246,6 @@ private struct FolderGridCell: View {
                 .padding(.top, 2)
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
-        }
-        .onAppear {
-            Task { customCover = await FolderCoverArtService.shared.cover(for: folder.dirURL) }
-        }
-        .onChange(of: coverService.changeCount) { _ in
-            Task { customCover = await FolderCoverArtService.shared.cover(for: folder.dirURL) }
-        }
-    }
-
-    /// A 2×2 grid of up to 4 tracks' artwork, quarter-sized — the "shelf of
-    /// what's actually inside" collage used when a folder has more than one
-    /// track and no custom cover set.
-    private func collage(songs: [Song], side: CGFloat) -> some View {
-        let half = side / 2
-        return VStack(spacing: 0) {
-            HStack(spacing: 0) {
-                collageCell(songs, 0, half)
-                collageCell(songs, 1, half)
-            }
-            HStack(spacing: 0) {
-                collageCell(songs, 2, half)
-                collageCell(songs, 3, half)
-            }
-        }
-        .frame(width: side, height: side)
-    }
-
-    @ViewBuilder
-    private func collageCell(_ songs: [Song], _ index: Int, _ side: CGFloat) -> some View {
-        if index < songs.count {
-            ArtworkThumbnail(song: songs[index], size: side)
-        } else {
-            Rectangle().fill(AppTheme.surface).frame(width: side, height: side)
         }
     }
 }

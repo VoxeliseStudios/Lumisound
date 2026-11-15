@@ -1,4 +1,5 @@
 import SwiftUI
+import CoreImage
 import UIKit
 
 // MARK: - LibraryScreenKit
@@ -39,10 +40,12 @@ struct HeroArtworkBackdrop: View {
             .frame(height: height)
             .overlay {
                 if let image {
+                    // Already blurred (see `BackdropBlur`): a live
+                    // `.blur(radius: 50)` on full-size artwork re-ran its
+                    // filter every frame this header was on screen.
                     Image(uiImage: image)
                         .resizable()
                         .scaledToFill()
-                        .blur(radius: 50)
                         .overlay(Color.black.opacity(0.5))
                 } else {
                     LinearGradient(
@@ -63,13 +66,61 @@ struct HeroArtworkBackdrop: View {
             .clipped()
         .task(id: song?.id) {
             guard let song else { image = nil; return }
-            if let cached = ArtworkService.shared.artwork(for: song) {
-                image = cached
+            if let blurred = BackdropBlur.cached(song.id) {
+                image = blurred
                 return
             }
             image = nil
-            image = await ArtworkService.shared.loadArtwork(for: song)
+            let art: UIImage?
+            if let resident = ArtworkService.shared.artwork(for: song) {
+                art = resident
+            } else {
+                art = await ArtworkService.shared.loadArtwork(for: song)
+            }
+            guard let art, !Task.isCancelled else { return }
+            let blurred = await BackdropBlur.make(from: art, id: song.id)
+            guard !Task.isCancelled else { return }
+            image = blurred
         }
+    }
+}
+
+/// Header backdrops blurred once, small, off the main thread. The backdrop is
+/// shown far larger than its pixels and blurred past recognition, so a
+/// 160 px-wide source with the blur scaled to match looks the same as the
+/// old live 50 pt blur of the full-size artwork, for a fraction of the cost:
+/// one Core Image pass per song instead of a Gaussian filter every frame.
+enum BackdropBlur {
+    private static let cache: NSCache<NSString, UIImage> = {
+        let c = NSCache<NSString, UIImage>()
+        c.countLimit = 24
+        return c
+    }()
+    private static let context = CIContext(options: [.cacheIntermediates: false])
+    /// Longest side of the blurred bitmap, in pixels.
+    private static let width: CGFloat = 160
+
+    static func cached(_ id: String) -> UIImage? {
+        cache.object(forKey: id as NSString)
+    }
+
+    static func make(from art: UIImage, id: String) async -> UIImage? {
+        let blurred = await Task.detached(priority: .utility) { () -> UIImage? in
+            let small = ImageDownsampler.downscaled(art, maxPixelSize: width)
+            guard let cg = small.cgImage, cg.width > 0, cg.height > 0 else { return nil }
+            let input = CIImage(cgImage: cg)
+            // The old blur was 50 pt on the image as shown: scaled to fill a
+            // header about 390 × 320 pt. Same blur in this image's pixels.
+            let pointsPerPixel = max(390 / CGFloat(cg.width), 320 / CGFloat(cg.height))
+            let radius = 50 / pointsPerPixel
+            let output = input.clampedToExtent()
+                .applyingGaussianBlur(sigma: radius)
+                .cropped(to: input.extent)
+            guard let out = context.createCGImage(output, from: input.extent) else { return nil }
+            return UIImage(cgImage: out)
+        }.value
+        if let blurred { cache.setObject(blurred, forKey: id as NSString) }
+        return blurred
     }
 }
 
