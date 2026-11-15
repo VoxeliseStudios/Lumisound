@@ -90,7 +90,7 @@ jobs:
         run: xcodegen generate
 
       # Signing is optional. Set the four secrets below in repo Settings → Secrets
-      # to produce a signed (ad-hoc) IPA; leave them unset for an unsigned IPA.
+      # to produce a signed (ad-hoc) IPA; leave them unset for an ad-hoc signed IPA (App Group only).
       #
       # Required secrets:
       #   IOS_CERTIFICATE_BASE64       — base64 of your .p12 signing certificate
@@ -109,7 +109,7 @@ jobs:
         run: |
           if [ -z "$IOS_CERTIFICATE_BASE64" ] || [ -z "$IOS_TEAM_ID" ]; then
             echo "signed=false" >> "$GITHUB_OUTPUT"
-            echo "Signing secrets not configured — will build unsigned IPA"
+            echo "Signing secrets not configured — will build an ad-hoc signed IPA (App Group only)"
             exit 0
           fi
           echo "signed=true" >> "$GITHUB_OUTPUT"
@@ -256,7 +256,7 @@ jobs:
       # and widget get no App Group and widgets stay on their placeholder.
       # Ad-hoc sign (no certificate needed) with only the App Group: free
       # Apple IDs can't use push, so other entitlements could break installs.
-      - name: Embed App Group entitlement (unsigned builds only)
+      - name: Ad-hoc sign with the App Group (no certificate configured)
         if: steps.signing.outputs.signed != 'true'
         working-directory: ios
         run: |
@@ -321,13 +321,13 @@ jobs:
             cp "build/export/Lumisound.ipa" "build/$IPA_NAME"
             echo "IPA created (signed): $(du -sh build/$IPA_NAME)"
           else
-            IPA_NAME="Lumisound-${VERSION}-unsigned.ipa"
+            IPA_NAME="Lumisound-${VERSION}.ipa"
             PAYLOAD_DIR="build/Payload/Payload"
             mkdir -p "$PAYLOAD_DIR"
             cp -R "$APP_PATH" "$PAYLOAD_DIR/"
             cd build/Payload
             zip -r "../$IPA_NAME" Payload/ -x "*.DS_Store"
-            echo "IPA created (unsigned): $(du -sh ../$IPA_NAME)"
+            echo "IPA created (ad-hoc signed): $(du -sh ../$IPA_NAME)"
           fi
           echo "ipa_name=$IPA_NAME" >> "$GITHUB_OUTPUT"
           echo "ipa_path=ios/build/$IPA_NAME" >> "$GITHUB_OUTPUT"

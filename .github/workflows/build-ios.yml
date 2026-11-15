@@ -150,14 +150,18 @@ jobs:
             "Lumisound/Resources/Assets.xcassets"
           echo "Assets.car: $(du -sh "$APP/Assets.car" 2>/dev/null || echo MISSING)"
 
-      - name: Package IPA (unsigned)
+      # Never a bare unsigned zip: the mirror can serve this build before the
+      # release lands. Ad-hoc signed with the App Group only (free Apple IDs);
+      # adhoc-sign.sh fails the job if any part is unsigned or lacks it.
+      - name: Package IPA (ad-hoc signed)
         working-directory: ios
         run: |
           MARKETING_VERSION=$(grep 'MARKETING_VERSION' project.yml | head -1 | sed 's/.*"\(.*\)".*/\1/')
-          IPA_NAME="Lumisound-v${MARKETING_VERSION}-unsigned.ipa"
+          IPA_NAME="Lumisound-v${MARKETING_VERSION}.ipa"
           PAYLOAD_DIR="build/Payload/Payload"
           mkdir -p "$PAYLOAD_DIR"
           cp -R "$APP_PATH" "$PAYLOAD_DIR/"
+          sh scripts/adhoc-sign.sh "$PAYLOAD_DIR/$(basename "$APP_PATH")" scripts/adhoc/AppGroup.adhoc.entitlements
           cd build/Payload
           zip -r "../$IPA_NAME" Payload/ -x "*.DS_Store"
           echo "IPA created: $(du -sh ../$IPA_NAME)"
@@ -166,7 +170,7 @@ jobs:
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Lumisound-unsigned-ipa
+          name: Lumisound-ipa
           path: ios/build/${{ env.IPA_NAME }}
           retention-days: 14
 

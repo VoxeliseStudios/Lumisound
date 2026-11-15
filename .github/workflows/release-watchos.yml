@@ -1,6 +1,6 @@
 name: Release watchOS IPA
 
-# Produces an unsigned watchOS .ipa of the standalone companion target.
+# Produces an ad-hoc signed watchOS .ipa of the standalone companion target.
 # NOTE: a watch app normally installs embedded in its iOS host; this standalone
 # artifact is primarily for archival/distribution in the watch port repo.
 
@@ -87,14 +87,15 @@ jobs:
           fi
           echo "APP_PATH=$APP" >> "$GITHUB_ENV"
 
-      - name: Package IPA (unsigned)
+      - name: Package IPA (ad-hoc signed)
         id: ipa
         working-directory: ios
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          IPA_NAME="LumisoundWatch-${VERSION}-unsigned.ipa"
+          IPA_NAME="LumisoundWatch-${VERSION}.ipa"
           mkdir -p build/Payload/Payload
           cp -R "$APP_PATH" build/Payload/Payload/
+          sh scripts/adhoc-sign.sh "build/Payload/Payload/$(basename "$APP_PATH")" scripts/adhoc/AppGroup.adhoc.entitlements
           (cd build/Payload && zip -r "../$IPA_NAME" Payload/ -x "*.DS_Store")
           echo "IPA: $(du -sh build/$IPA_NAME)"
           echo "ipa_name=$IPA_NAME" >> "$GITHUB_OUTPUT"

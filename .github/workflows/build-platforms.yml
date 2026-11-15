@@ -1,6 +1,6 @@
 name: Build Platform Ports
 
-# Compile-checks the watchOS target and does a full unsigned archive + IPA
+# Compile-checks the watchOS target and does a full archive + ad-hoc signed IPA
 # package for tvOS on every push that touches it, uploaded as a workflow
 # artifact — so every tvOS commit has a real, downloadable build to verify
 # against, not just a compile check. Isolated from the iOS release pipeline
@@ -125,13 +125,14 @@ jobs:
             "LumisoundTV/Resources/Assets.xcassets"
           echo "Assets.car: $(du -sh "$TV_APP_PATH/Assets.car" 2>/dev/null || echo MISSING)"
 
-      - name: Package tvOS IPA (unsigned)
+      - name: Package tvOS IPA (ad-hoc signed)
         working-directory: ios
         run: |
           SHA_SHORT="${GITHUB_SHA:0:8}"
-          IPA_NAME="LumisoundTV-${SHA_SHORT}-unsigned.ipa"
+          IPA_NAME="LumisoundTV-${SHA_SHORT}.ipa"
           mkdir -p build/Payload/Payload
           cp -R "$TV_APP_PATH" build/Payload/Payload/
+          sh scripts/adhoc-sign.sh "build/Payload/Payload/$(basename "$TV_APP_PATH")" scripts/adhoc/AppGroup.adhoc.entitlements
           (cd build/Payload && zip -r "../$IPA_NAME" Payload/ -x "*.DS_Store")
           echo "IPA: $(du -sh "build/$IPA_NAME")"
           echo "TV_IPA_NAME=$IPA_NAME" >> "$GITHUB_ENV"
@@ -139,7 +140,7 @@ jobs:
       - name: Upload tvOS IPA artifact
         uses: actions/upload-artifact@v4
         with:
-          name: LumisoundTV-unsigned-ipa
+          name: LumisoundTV-ipa
           path: ios/build/${{ env.TV_IPA_NAME }}
           retention-days: 14
 
