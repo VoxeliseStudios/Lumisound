@@ -142,6 +142,20 @@ enum AudioEffectsService {
     /// (`eqEnabled`, e.g. Bass Boost / Rock / Lo-Fi) overwrite the equalizer.
     static func apply(effect: AudioEffect, to settings: AudioSettings) -> AudioSettings {
         var s = settings
+        // Leaving an effect that brought its own tempo/pitch (Nightcore,
+        // Vaporwave, Slowed…) for one that doesn't: put the neutral value
+        // back, unless the listener changed it while the effect was on. The
+        // rule below keeps a neutral effect from wiping the sliders, so
+        // without this the old effect's speed/pitch stayed for good and
+        // followed every later song.
+        if let previous = allEffects.first(where: { $0.id == settings.activeEffectID }), previous.id != effect.id {
+            if previous.speed != 1.0, effect.speed == 1.0, abs(s.speed - previous.speed) < 0.001 {
+                s.speed = 1.0
+            }
+            if previous.pitchSemitones != 0.0, effect.pitchSemitones == 0.0, abs(s.pitchSemitones - previous.pitchSemitones) < 0.001 {
+                s.pitchSemitones = 0.0
+            }
+        }
         // Only override the user's speed/pitch when this effect actually
         // defines a deliberate tempo/pitch change (nightcore, vaporwave,
         // slowmo, doubletime, pitchUp/Down, ...) — most effects (EQ curves,

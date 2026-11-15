@@ -78,7 +78,7 @@ extension AudioPlayerManager {
         // Same legacy Bass Boost/8D Audio migration applied to the default
         // settings at launch (see AudioEffectsService.migratingLegacyExclusiveEffect) —
         // a per-track override can carry the same stale `activeEffectID`.
-        let map = rawMap.mapValues { AudioEffectsService.migratingLegacyExclusiveEffect($0) }
+        let map = rawMap.mapValues { AudioEffectsService.migratingLegacyExclusiveEffect($0).withCleanTempo }
         perTrackAudioSettings = map
         PersistenceService.shared.saveTrackAudioSettings(map)
         if let id = currentSong?.id, let saved = map[id] {

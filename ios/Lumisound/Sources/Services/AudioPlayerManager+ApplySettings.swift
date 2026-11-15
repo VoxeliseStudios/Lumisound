@@ -48,6 +48,14 @@ extension AudioPlayerManager {
 
     // MARK: - Apply Audio Settings
 
+    /// Sets the never-saved rate multiplier (see `transientRate`).
+    func setTransientRate(_ rate: Float) {
+        let r = min(max(rate, 0.25), 4.0)
+        guard abs(r - transientRate) > 0.0005 else { return }
+        transientRate = r
+        applyAudioSettings()
+    }
+
     func applyAudioSettings() {
         MusicHapticsService.shared.updatePlayback(
             enabled: audioSettings.musicHapticsEnabled ?? false,
@@ -85,7 +93,7 @@ extension AudioPlayerManager {
             // 100% simply isn't available for opus/webm/ogg streams played via
             // this fallback.
             opusPlayer?.volume = min(audioSettings.volume, 1.0)
-            if isPlaying { opusPlayer?.rate = Float(audioSettings.speed) }
+            if isPlaying { opusPlayer?.rate = Float(audioSettings.speed * transientRate) }
             return
         }
 
@@ -102,8 +110,9 @@ extension AudioPlayerManager {
         // when speed or pitch is actually changed from default. Same
         // "zero reconnect cost, just a bypass flip" shape already used for
         // nightModeCompressor/reverb below.
-        timePitch.bypass = audioSettings.speed == 1.0 && audioSettings.pitchSemitones == 0
-        timePitch.rate = audioSettings.speed
+        let rate = audioSettings.speed * transientRate
+        timePitch.bypass = rate == 1.0 && audioSettings.pitchSemitones == 0
+        timePitch.rate = rate
         timePitch.pitch = audioSettings.pitchSemitones * 100
 
         // EQ bands

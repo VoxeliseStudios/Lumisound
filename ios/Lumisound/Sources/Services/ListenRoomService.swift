@@ -430,6 +430,10 @@ final class ListenRoomService: ObservableObject {
     func applyHost() {
         guard followHost, !isHost, let st = state, let player else {
             syncDrift = nil
+            // Not following (any more): drop a leftover sync nudge, or the
+            // last ±10% correction stayed on every later song until the app
+            // restarted (a room the host closed never went through `leave`).
+            player?.setTogetherRate(1)
             return
         }
         let now = Date().timeIntervalSince1970

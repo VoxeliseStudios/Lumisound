@@ -28,7 +28,10 @@ extension NowPlayingView {
                         }
                 } else {
                     HStack(spacing: 4) {
-                        Text(String(format: "%.0f st", player.audioSettings.pitchSemitones))
+                        // One decimal: a whole-number label hid fractional
+                        // pitches (−0.64 showed as "−1 st"), so a nudged
+                        // slider went unnoticed.
+                        Text(String(format: "%+.1f st", player.audioSettings.pitchSemitones))
                             .font(.caption.monospacedDigit())
                             .foregroundStyle(AppTheme.textSecondary)
                             .onTapGesture { editingPitch = true }
@@ -39,8 +42,26 @@ extension NowPlayingView {
                     }
                 }
             }
-            Slider(value: audioBinding(\.pitchSemitones), in: -12...12)
-                .tint(AppTheme.dynamicAccent)
+            HStack(spacing: 10) {
+                // Half-semitone steps (same as Settings): a continuous slider
+                // brushed while swiping between songs left values like −0.64
+                // that were saved and replayed on every later track.
+                Slider(value: audioBinding(\.pitchSemitones), in: -12...12, step: 0.5)
+                    .tint(AppTheme.dynamicAccent)
+                if player.audioSettings.pitchSemitones != 0 {
+                    Button {
+                        var settings = player.audioSettings
+                        settings.pitchSemitones = 0
+                        player.audioSettings = settings
+                    } label: {
+                        Image(systemName: "arrow.counterclockwise")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(AppTheme.dynamicAccent)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Reset pitch")
+                }
+            }
         }
     }
 }

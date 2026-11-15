@@ -234,7 +234,7 @@ extension AccountService {
             }
             if let json = plan.audioSettingsJson, let d = json.data(using: .utf8),
                let restored = try? JSONDecoder().decode(AudioSettings.self, from: d) {
-                PersistenceService.shared.saveAudioSettings(restored)
+                PersistenceService.shared.saveAudioSettings(restored.withCleanTempo)
             }
             if let json = plan.trackAudioSettingsJson, let d = json.data(using: .utf8),
                let restored = try? JSONDecoder().decode([String: AudioSettings].self, from: d), !restored.isEmpty {

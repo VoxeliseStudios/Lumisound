@@ -323,3 +323,25 @@ enum ReverbRoomPreset: String, CaseIterable, Codable, Identifiable {
         }
     }
 }
+
+
+// MARK: - Tempo hygiene
+
+extension AudioSettings {
+    /// Speed/pitch values no control produces — leftovers of the continuous
+    /// Now Playing sliders being brushed while swiping between songs, and of
+    /// temporary tempo changes that used to be saved (sleep timer wind-down,
+    /// Workout Mode, effect presets) — reset to neutral. They then came back
+    /// on every track without an override, or on one song's override, which
+    /// is what "the pitch randomly changes between songs" was (an owner's
+    /// saved default was −0.64 st). Values typed into the fields (0.1 st and
+    /// 0.01× resolution) and slider steps are kept.
+    var withCleanTempo: AudioSettings {
+        var s = self
+        let p = Double(s.pitchSemitones) * 10
+        if abs(p - p.rounded()) > 0.001 { s.pitchSemitones = 0 }
+        let v = Double(s.speed) * 100
+        if abs(v - v.rounded()) > 0.001 || !(0.1...8).contains(Double(s.speed)) { s.speed = 1 }
+        return s
+    }
+}

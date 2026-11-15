@@ -174,7 +174,14 @@ final class AudioPlayerManager: ObservableObject {
 
     /// Per-track audio settings overrides, keyed by `Song.id`. Loaded from disk
     /// at init and kept in sync with `PersistenceService` on every change.
-    @Published var perTrackAudioSettings: [String: AudioSettings] = PersistenceService.shared.loadTrackAudioSettings()
+    @Published var perTrackAudioSettings: [String: AudioSettings] = PersistenceService.shared.loadTrackAudioSettings().mapValues(\.withCleanTempo)
+
+    /// A temporary playback-rate multiplier on top of `audioSettings.speed`
+    /// that is never saved: the sleep timer's wind-down and Workout Mode's
+    /// cadence matching (`setTransientRate`). Both used to write
+    /// `audioSettings.speed` itself, which saved their tempo as the default
+    /// (or the current track's override) and replayed it on later songs.
+    @Published private(set) var transientRate: Float = 1.0
 
     /// Whether the currently playing track has a saved per-track override active
     /// (i.e. `audioSettings` reflects that track's own settings, not the global default).

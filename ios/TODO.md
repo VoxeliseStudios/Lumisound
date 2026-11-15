@@ -375,3 +375,17 @@ Same causes as the Folders grid, removed everywhere they repeat per cell:
 ## Open (social)
 - Notification taps for `song_drop` / `vibe` / `song_drop_reaction` could open the Song Drops inbox.
 - Drops unseen count on the Friends tab icon.
+
+## Done (2026-11-15, speed/pitch "randomly" changing between songs)
+Telemetry showed the owner's pitch at odd values (−0.45, −0.64, −0.90, −1.04, −1.79, −2.56 st) with speed 1.0, and
+the synced default settings held pitch −0.6386; one track override held −2.5. Causes and fixes:
+- Now Playing pitch/speed sliders were continuous (brushed while swiping between songs) and the pitch label
+  rounded to whole semitones: now 0.5 st / 0.05× steps, `%+.1f st` label, reset buttons.
+- `audioSettings.didSet` saves every write as the default or the current track's override, so temporary tempo
+  changes became permanent: the sleep-timer wind-down and Workout Mode now use `transientRate` (never saved,
+  multiplied in at the engines: Rust setSpeedPitch, AVAudioEngine timePitch, AVPlayer rate).
+- Leaving a tempo/pitch effect (Slowed, Nightcore…) for a neutral one kept its speed/pitch forever:
+  `AudioEffectsService.apply` restores the neutral value unless the listener changed it meanwhile.
+- Listen Together: a sync nudge (±10%) stayed after a room ended without `leave`; reset whenever not following.
+- `AudioSettings.withCleanTempo` resets values no control produces (off the 0.1 st / 0.01× grid) on load,
+  server restore and per-track maps; the cleaned default syncs back.

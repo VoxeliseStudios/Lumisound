@@ -261,14 +261,17 @@ struct LumisoundApp: App {
                     player.restoreDefaultAudioSettings(
                         AudioEffectsService.migratingLegacyExclusiveEffect(
                             PersistenceService.shared.loadAudioSettings() ?? AudioSettings()
-                        )
+                        ).withCleanTempo
                     )
 
                     // Wire the sleep-timer fade to the player's volume control.
                     sleepTimer.getVolume = { player.audioSettings.volume }
                     sleepTimer.setVolume = { player.audioSettings.volume = $0 }
-                    sleepTimer.getRate   = { player.audioSettings.speed }
-                    sleepTimer.setRate   = { player.audioSettings.speed = $0 }
+                    // The wind-down slows a temporary multiplier, never the
+                    // saved speed (it used to become the default or the
+                    // track's override, and came back on later songs).
+                    sleepTimer.getRate   = { player.transientRate }
+                    sleepTimer.setRate   = { player.setTransientRate($0) }
                     sleepTimer.onExpire  = { player.pause() }
 
                     // Wire mood service to library so it can access songs.

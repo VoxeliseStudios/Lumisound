@@ -39,8 +39,24 @@ extension NowPlayingView {
                     }
                 }
             }
-            Slider(value: audioBinding(\.speed), in: 0.5...2.0)
-                .tint(AppTheme.dynamicAccent)
+            HStack(spacing: 10) {
+                // 0.05× steps — see the pitch row for why it isn't continuous.
+                Slider(value: audioBinding(\.speed), in: 0.5...2.0, step: 0.05)
+                    .tint(AppTheme.dynamicAccent)
+                if player.audioSettings.speed != 1 {
+                    Button {
+                        var settings = player.audioSettings
+                        settings.speed = 1
+                        player.audioSettings = settings
+                    } label: {
+                        Image(systemName: "arrow.counterclockwise")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(AppTheme.dynamicAccent)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Reset speed")
+                }
+            }
         }
     }
 }

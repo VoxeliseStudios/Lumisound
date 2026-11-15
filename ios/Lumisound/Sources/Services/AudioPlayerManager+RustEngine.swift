@@ -129,7 +129,7 @@ extension AudioPlayerManager {
         if isPlaying { guard ensureRustOutput() else { return false } }
         Self.rustRelay.player = self
         // Speed/pitch apply to every deck the engine opens.
-        _ = try? Self.rust.setSpeedPitch(speed: Double(audioSettings.speed) * Self.togetherRate, pitchSemitones: Double(audioSettings.pitchSemitones))
+        _ = try? Self.rust.setSpeedPitch(speed: Double(audioSettings.speed * transientRate) * Self.togetherRate, pitchSemitones: Double(audioSettings.pitchSemitones))
         do {
             let id = try Self.rust.load(path: playable.path, startSecs: max(0, startTime), gainDb: 0)
             rustDeckID = id
@@ -212,7 +212,7 @@ extension AudioPlayerManager {
         applyRustVolume()
         // Pitch-preserving speed + pitch shift (WSOLA) — re-opens the deck at
         // the current position when they change.
-        if let newID = try? Self.rust.setSpeedPitch(speed: Double(s.speed) * Self.togetherRate, pitchSemitones: Double(s.pitchSemitones)) {
+        if let newID = try? Self.rust.setSpeedPitch(speed: Double(s.speed * transientRate) * Self.togetherRate, pitchSemitones: Double(s.pitchSemitones)) {
             rustDeckID = newID
             rustNextDeckID = nil
             rustNextPath = nil

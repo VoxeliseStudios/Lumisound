@@ -69,7 +69,7 @@ final class WorkoutModeService: ObservableObject {
         isActive = false
         pedometer.stopUpdates()
         currentCadenceSPM = nil
-        AudioPlayerManager.shared?.audioSettings.speed = 1.0
+        AudioPlayerManager.shared?.setTransientRate(1.0)
     }
 
     private func handlePedometerUpdate(steps: Int) {
@@ -117,7 +117,8 @@ final class WorkoutModeService: ObservableObject {
                 // tier's `.rate` property, itself Float) -- this pass's
                 // math stays in Double since CMPedometer/BPMAnalyzerService
                 // both hand back Double.
-                player.audioSettings.speed = Float(clampedRatio)
+                // A temporary rate, never the saved speed (see `transientRate`).
+                player.setTransientRate(Float(clampedRatio))
             }
         }
     }
