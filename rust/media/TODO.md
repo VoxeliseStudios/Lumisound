@@ -18,3 +18,7 @@ Shared media primitives (lock format, artwork, decode). History: [`RUST-PORT.md`
 ## Open
 - AC-3 / E-AC-3, WMA and WavPack have no decoder (not importable). Would need custom decoders.
 - Raw ADTS `.aac` keeps its priming/padding (the format has no gapless metadata).
+
+## Done (2026-11-15)
+- `decode::media_source` hints a legacy plain `.lms` (renamed, never masked) by its inner extension
+  ("Song.mp3.lms" → mp3), so it decodes in place like a locked one.

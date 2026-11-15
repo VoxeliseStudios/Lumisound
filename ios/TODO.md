@@ -266,3 +266,22 @@ Full history and decisions: [`../RUST-PORT.md`](../RUST-PORT.md). Swift is views
   most likely a bad file, not a player bug.
 - Elsewhere: an account on 1.9.0.111 logs "position frozen" 12× on 1–1.5 h tracks (old build); 2.0.0.6
   devices restart output in loops on `interruption_ended` while locked on Bluetooth (restartsLast30s up to 5).
+
+## Done (2026-11-15, 2.0.0.45: the 2.0.0.44 telemetry fixes)
+- Relock pass: the candidate filter (header read of every converted track) runs off the main actor through
+  the core's `lmsLegacyUnlocked(paths:)`; only the path snapshot and the tally stay on the main actor. This was
+  the 1.5–2.9 s `main_thread_hang`s in 2.0.0.44.
+- Excessive disk writes (iOS `disk_write_exception`, 4.3 GB in the 2.0.0.44 report): the corrupt-file scan
+  and every core analysis call (`validate_audio`, waveform, BPM, loudness, transition/spectral profile,
+  `is_valid_audio`) decode `.lms` tracks in place instead of writing an unlocked copy per track.
+- 2.0.0.42's 1.1 GB report was led by `library_snapshot_save`: an unchanged snapshot is no longer rewritten.
+
+## Open (after 2.0.0.45)
+- Watch for the 8–32 s Core Animation commit hangs (2.0.0.42) coming back; a report ≥ 3 s now carries
+  `otherStacks`. Symbolicate with the release's dSYMs (offset + 0x100000000 − 4, `llvm-symbolizer`).
+- Confirm `disk_write_exception` stops after a full corrupt-file scan on 2.0.0.45.
+- Old builds in the field (1.9.0.111 "position frozen" on 1 h+ tracks, 2.0.0.6 output-restart loops on
+  `interruption_ended`) are fixed in current builds; those devices need to update from the source.
+- Core tests failing before this change too (not caused by it): `blend_cloud` blend_starts_on_cue_with_bass_swap
+  (level hole, min_ratio), `pitch_cloud` pitch_keeps_sustained_notes_through_drum_hits; `store` background-write
+  test is flaky under a parallel `cargo test`.

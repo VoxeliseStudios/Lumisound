@@ -301,12 +301,15 @@ enum LumisoundTrackVaultService {
     /// a permanently-stuck track if a given relock attempt fails once.
     @MainActor
     private static func runLegacyRelockPass(library: LibraryManager) async {
-        let legacyCandidates = library.importedSongs.compactMap { song -> URL? in
-            guard let url = song.url,
-                  LumisoundExclusiveExtensionService.isConverted(url),
-                  !LumisoundLockFormat.isLocked(at: url) else { return nil }
-            return url
-        }
+        // Finding the candidates opens and reads the header of every
+        // converted track: disk I/O across the whole library. Done per song
+        // on the main actor it held the main thread 1.5–2.9 s each pass
+        // (2.0.0.44 hang reports, symbolicated to `lms_is_locked`), so only
+        // the path snapshot is taken here and the core filters off-main.
+        let paths = library.importedSongs.compactMap { $0.url?.path }
+        let legacyCandidates = await Task.detached(priority: .utility) {
+            lmsLegacyUnlocked(paths: paths).map { URL(fileURLWithPath: $0) }
+        }.value
         guard !legacyCandidates.isEmpty else { return }
 
         // `relockLegacyFile` is a plain synchronous function (full-file XOR

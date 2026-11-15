@@ -129,14 +129,50 @@ pub fn library_snapshot_load(path: String, documents_dir: String) -> Option<Libr
 /// Atomically write the snapshot JSON (encoded by Swift) to `path`.
 #[uniffi::export]
 pub fn library_snapshot_save(path: String, json: Vec<u8>) -> bool {
+    use std::hash::{Hash, Hasher};
+    // The app persists after every settled library change (at most once a
+    // minute), often with nothing actually different: rewriting the same
+    // multi-MB document each time was the largest writer in the 2.0.0.42
+    // excessive-disk-writes report. Skip the write when the bytes match the
+    // last ones saved to this path and the file is still there.
+    static LAST: std::sync::Mutex<Option<(String, u64, usize)>> = std::sync::Mutex::new(None);
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    json.hash(&mut h);
+    let key = (path.clone(), h.finish(), json.len());
     let p = Path::new(&path);
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    if last.as_ref() == Some(&key) && std::fs::metadata(p).is_ok_and(|m| m.len() as usize == json.len()) {
+        return true;
+    }
     let tmp = p.with_extension("json.tmp");
-    std::fs::write(&tmp, &json).and_then(|_| std::fs::rename(&tmp, p)).is_ok()
+    let ok = std::fs::write(&tmp, &json).and_then(|_| std::fs::rename(&tmp, p)).is_ok();
+    *last = ok.then_some(key);
+    ok
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn identical_snapshot_is_not_rewritten() {
+        let d = std::env::temp_dir().join(format!("libsave-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join("snap.json");
+        let ps = p.to_string_lossy().to_string();
+        assert!(library_snapshot_save(ps.clone(), b"{\"a\":1}".to_vec()));
+        // Marker of the same length: a skipped save leaves it in place.
+        std::fs::write(&p, b"{\"a\":9}").unwrap();
+        assert!(library_snapshot_save(ps.clone(), b"{\"a\":1}".to_vec()));
+        assert_eq!(std::fs::read(&p).unwrap(), b"{\"a\":9}");
+        // Different bytes are written; a deleted file is written again.
+        assert!(library_snapshot_save(ps.clone(), b"{\"a\":2}".to_vec()));
+        assert_eq!(std::fs::read(&p).unwrap(), b"{\"a\":2}");
+        std::fs::remove_file(&p).unwrap();
+        assert!(library_snapshot_save(ps.clone(), b"{\"a\":2}".to_vec()));
+        assert_eq!(std::fs::read(&p).unwrap(), b"{\"a\":2}");
+        let _ = std::fs::remove_dir_all(d);
+    }
+
     #[test]
     fn reanchors_and_groups() {
         let d = std::env::temp_dir().join(format!("lib-{}", uuid::Uuid::new_v4().simple()));

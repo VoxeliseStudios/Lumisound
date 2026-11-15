@@ -89,3 +89,12 @@ Full history and decisions: [`RUST-PORT.md`](../../RUST-PORT.md).
 - iOS could run its queue on `PlaySession` (it still does this bookkeeping in Swift).
 - `PlaySession`: Smart Crossfade (`queue_blend` with a `blend_plan`) and Skip Silent Intros offsets are not
   wired in; it does fixed-length crossfades and plain gapless.
+
+## Done (2026-11-15, for iOS 2.0.0.45)
+- `analysis::readable` decodes `.lms` in place (no unlocked cache copy per call); `validate_audio` over the
+  library was writing GBs (iOS excessive-disk-writes report).
+- `lock::lms_legacy_unlocked(paths)`: batch "marked .lms but not locked" filter for the relock pass, run
+  off the main thread by the app.
+- `library_snapshot_save` skips a write when the bytes match the last save to that path.
+- Pre-existing failures to look at: `tests/blend_cloud.rs` bass-swap level hole, `tests/pitch_cloud.rs`
+  drum-hit sustain.

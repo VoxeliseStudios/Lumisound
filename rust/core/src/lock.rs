@@ -30,6 +30,19 @@ pub fn lms_is_converted(path: String) -> bool {
     Path::new(&path).extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case(MARKER))
 }
 
+/// The paths among `paths` marked `.lms` whose bytes are not locked yet
+/// (converted before the lock format existed), i.e. what the relock pass
+/// has to upgrade. Reads one header per marked file: call it off the main
+/// thread (doing this per song on the main actor stalled the UI 1.5–2.9 s
+/// on a full library, 2.0.0.44 telemetry). Missing files are left out.
+#[uniffi::export]
+pub fn lms_legacy_unlocked(paths: Vec<String>) -> Vec<String> {
+    paths
+        .into_iter()
+        .filter(|p| lms_is_converted(p.clone()) && Path::new(p).is_file() && !fmt::is_locked(Path::new(p)))
+        .collect()
+}
+
 /// True when the file starts with the LMSLOCK1 header (reads 8 bytes).
 #[uniffi::export]
 pub fn lms_is_locked(path: String) -> bool {
@@ -408,6 +421,30 @@ mod convert_tests {
         wav(&legacy);
         assert!(lms_relock_in_place(legacy.to_string_lossy().into(), tmp.clone(), None));
         assert!(fmt::is_locked(&legacy) && lms_verify_round_trip(legacy.to_string_lossy().into(), tmp, None));
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn validate_and_relock_scan_read_in_place() {
+        let d = std::env::temp_dir().join(format!("lmsscan-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&d).unwrap();
+        let plain = d.join("p.wav");
+        wav(&plain);
+        let locked = d.join("l.wav.lms");
+        fmt::lock_file(&plain, &locked).unwrap();
+        let legacy = d.join("g.wav.lms");
+        wav(&legacy);
+        let cache = d.join("cache");
+        let cache_s = cache.to_string_lossy().to_string();
+        for f in [&plain, &locked, &legacy] {
+            let v = crate::analysis::validate_audio(f.to_string_lossy().into(), cache_s.clone(), Some(2.0));
+            assert!(matches!(v, crate::analysis::AudioValidation::Valid), "{f:?}: {v:?}");
+        }
+        // Validation decoded in place: no unlocked copies were written.
+        assert!(!cache.exists() || std::fs::read_dir(&cache).unwrap().next().is_none());
+        let s = |p: &Path| p.to_string_lossy().to_string();
+        let out = lms_legacy_unlocked(vec![s(&plain), s(&locked), s(&legacy), s(&d.join("missing.wav.lms"))]);
+        assert_eq!(out, vec![s(&legacy)]);
         let _ = std::fs::remove_dir_all(d);
     }
 }

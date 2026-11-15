@@ -18,9 +18,14 @@ pub(crate) fn cache_key(path: &str) -> String {
     format!("{path}|{mtime}|{size}")
 }
 
-/// `.lms` files are unlocked into the playable cache first.
-fn readable(path: &str, cache_dir: &str) -> String {
-    crate::lock::lms_playable_path(path.to_string(), cache_dir.to_string())
+/// The path to decode. `.lms` files are decoded in place: the media layer
+/// unmasks a locked file on the fly and hints a legacy plain one by its
+/// inner extension. Writing an unlocked copy of every track here (what this
+/// used to do) is what iOS flagged as excessive disk writes when the corrupt
+/// file scan validated the library (2.0.0.44 telemetry). `cache_dir` stays
+/// in the exported signatures so the bindings don't change.
+fn readable(path: &str, _cache_dir: &str) -> String {
+    path.to_string()
 }
 
 /// Mono 16-bit PCM at `sample_rate` from `start_secs` for up to `max_secs`.

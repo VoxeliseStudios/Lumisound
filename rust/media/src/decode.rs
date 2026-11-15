@@ -39,8 +39,10 @@ pub fn media_source(path: &Path) -> std::io::Result<(MediaSourceStream, Hint)> {
         }
         return Ok((MediaSourceStream::new(Box::new(m), Default::default()), hint));
     }
-    if let Some(e) = path.extension().and_then(|e| e.to_str()) {
-        hint.with_extension(e);
+    // A legacy plain `.lms` (renamed, never masked): hint the inner format
+    // ("Song.mp3.lms" -> mp3), not "lms".
+    if let Some(e) = crate::lock::inner_ext(name).or_else(|| path.extension().and_then(|e| e.to_str()).map(str::to_string)) {
+        hint.with_extension(&e);
     }
     if let Some(fd) = crate::fdfile::FdFile::open(path) {
         return Ok((MediaSourceStream::new(Box::new(fd?), Default::default()), hint));
