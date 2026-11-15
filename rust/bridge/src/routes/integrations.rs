@@ -1116,7 +1116,11 @@ async fn announcements(State(st): State<AppState>, u: User) -> ApiResult<Json<Va
             "SELECT COALESCE(json_agg(json_build_object('id', a.id, 'message', a.message, 'from_aria', COALESCE(a.from_aria, false), 'category', a.category, \
                'ends_at', lumi_iso(a.ends_at)) ORDER BY a.created_at), '[]'::json) FROM ios_announcements a \
              LEFT JOIN ios_announcement_views v ON v.announcement_id = a.id AND v.user_id = $1 WHERE v.user_id IS NULL AND NOW() >= a.starts_at AND NOW() < a.ends_at \
-               AND POSITION($2 IN ',' || COALESCE(a.exclude_user_ids, '') || ',') = 0",
+               AND POSITION($2 IN ',' || COALESCE(a.exclude_user_ids, '') || ',') = 0 \
+               AND (a.below_version IS NULL OR (SELECT string_to_array(substring(e.detail->>'appVersion' FROM '^[0-9]+(?:[.][0-9]+)*'), '.')::int[] \
+                      FROM ios_app_event_log e WHERE e.user_id = $1 AND e.detail->>'platform' = 'ios' \
+                        AND substring(e.detail->>'appVersion' FROM '^[0-9]+(?:[.][0-9]+)*') IS NOT NULL \
+                      ORDER BY e.created_at DESC LIMIT 1) < string_to_array(a.below_version, '.')::int[])",
         )
         .bind(&u.id)
         .bind(format!(",{},", u.id))
@@ -1133,7 +1137,7 @@ async fn announcement_seen(State(st): State<AppState>, u: User, Path(id): Path<S
 async fn admin_announcements(State(st): State<AppState>, _a: Admin) -> ApiResult<Json<Value>> {
     let v: Value = sqlx::query_scalar(
         "SELECT COALESCE(json_agg(r ORDER BY at DESC), '[]'::json) FROM (SELECT json_build_object('id', a.id, 'message', a.message, 'from_aria', COALESCE(a.from_aria, false), \
-           'category', a.category, 'starts_at', lumi_iso(a.starts_at), 'ends_at', lumi_iso(a.ends_at), \
+           'category', a.category, 'starts_at', lumi_iso(a.starts_at), 'ends_at', lumi_iso(a.ends_at), 'below_version', a.below_version, \
            'excluded', COALESCE((SELECT json_agg(x) FROM unnest(string_to_array(COALESCE(a.exclude_user_ids, ''), ',')) x WHERE x <> ''), '[]'::json), \
            'active', COALESCE(NOW() < a.ends_at AND NOW() >= a.starts_at, false), \
            'seen_by', (SELECT COUNT(*) FROM ios_announcement_views v WHERE v.announcement_id = a.id)) AS r, a.created_at AS at \
@@ -1154,6 +1158,11 @@ struct AnnBody {
     #[serde(default = "info")]
     category: String,
     exclude_user_ids: Option<Vec<String>>,
+    /// Only users whose latest iOS app version (from telemetry) is below this
+    /// one, e.g. "2.0.0.48" for "please update". Users with no telemetry are
+    /// left out rather than guessed at.
+    #[serde(default)]
+    below_version: Option<String>,
 }
 
 fn three() -> f64 {
@@ -1179,18 +1188,25 @@ async fn admin_create_announcement(State(st): State<AppState>, _a: Admin, J(b): 
         return Err(AppError::bad_request("category must be one of: download, error, info, success, warning"));
     }
     let excluded: Vec<String> = b.exclude_user_ids.unwrap_or_else(|| vec![OPERATOR_USER_ID.into()]).into_iter().filter(|s| !s.is_empty() && !s.contains(',')).map(|s| s.trim().to_string()).collect();
+    let below = b.below_version.map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+    if let Some(v) = &below {
+        if v.len() > 32 || !v.split('.').all(|p| !p.is_empty() && p.len() <= 6 && p.bytes().all(|c| c.is_ascii_digit())) {
+            return Err(AppError::bad_request("below_version must look like 2.0.0.48"));
+        }
+    }
     let id = uuid::Uuid::new_v4().simple().to_string();
     let ends = Utc::now().naive_utc() + CDuration::microseconds((b.days * 86400e6) as i64);
-    sqlx::query("INSERT INTO ios_announcements (id, message, from_aria, category, ends_at, exclude_user_ids) VALUES ($1, $2, $3, $4, $5, $6)")
+    sqlx::query("INSERT INTO ios_announcements (id, message, from_aria, category, ends_at, exclude_user_ids, below_version) VALUES ($1, $2, $3, $4, $5, $6, $7)")
         .bind(&id)
         .bind(&msg)
         .bind(b.from_aria)
         .bind(&cat)
         .bind(ends)
         .bind(excluded.join(","))
+        .bind(&below)
         .execute(&st.db)
         .await?;
-    tracing::info!("announcement created id={id} days={:.1} excluded={}", b.days, excluded.len());
+    tracing::info!("announcement created id={id} days={:.1} excluded={} below_version={:?}", b.days, excluded.len(), below);
     Ok((StatusCode::CREATED, Json(json!({"id": id, "ends_at": crate::db::py_iso(&ends), "excluded": excluded}))).into_response())
 }
 

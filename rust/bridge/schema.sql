@@ -1921,3 +1921,27 @@ CREATE OR REPLACE FUNCTION resolve_username(name TEXT) RETURNS VARCHAR AS $$
          WHERE l.old_username = name AND NOT EXISTS (SELECT 1 FROM ios_users WHERE username = name)
     ) c ORDER BY rank, at DESC NULLS LAST LIMIT 1
 $$ LANGUAGE sql STABLE;
+
+-- Song Drops and Vibes (2026-11-15): a friend sends a song with a short note
+-- ("song"), or reacts with an emoji to what a friend is playing ("vibe").
+CREATE TABLE IF NOT EXISTS ios_social_drops (
+    id VARCHAR(36) PRIMARY KEY,
+    from_user_id VARCHAR(36) NOT NULL,
+    to_user_id VARCHAR(36) NOT NULL,
+    kind VARCHAR(12) NOT NULL DEFAULT 'song',
+    title VARCHAR(300) NOT NULL,
+    artist VARCHAR(300),
+    source_track_id VARCHAR(160),
+    track_url TEXT,
+    note VARCHAR(140),
+    emoji VARCHAR(16),
+    reaction VARCHAR(16),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    seen_at TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS ios_social_drops_idx_to ON ios_social_drops (to_user_id, created_at);
+CREATE INDEX IF NOT EXISTS ios_social_drops_idx_from ON ios_social_drops (from_user_id, created_at);
+
+-- Announcements aimed at outdated apps: shown only to users whose latest iOS
+-- telemetry reports a version below this one (NULL = everyone).
+ALTER TABLE ios_announcements ADD COLUMN IF NOT EXISTS below_version VARCHAR(32);

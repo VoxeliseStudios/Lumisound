@@ -66,6 +66,10 @@ pub fn routes() -> Router<AppState> {
         .route("/api/social/recommended-people", get(recommended_people))
         .route("/api/social/compatibility/{user_id}", get(compatibility))
         .route("/api/social/blend/{user_id}", get(blend))
+        .route("/api/social/drops", get(list_drops).post(send_drop))
+        .route("/api/social/drops/{id}/seen", post(drop_seen))
+        .route("/api/social/drops/{id}/react", post(react_drop))
+        .route("/api/social/drops/{id}", delete(delete_drop))
         .route("/rooms", post(create_room))
         .route("/rooms/{code}", get(get_room).put(update_room).delete(close_room))
         .route("/rooms/{code}/join", post(join_room))
@@ -2164,4 +2168,215 @@ mod md5_lite {
         use md5::{Digest, Md5};
         hex::encode(Md5::digest(data))
     }
+}
+
+
+// ---- song drops & vibes -----------------------------------------------------------------------
+//
+// A "song" drop is a track sent to a friend with an optional short note; a
+// "vibe" is an emoji reaction to what a friend is playing right now. Both are
+// friends-only, block-aware and rate limited; the recipient gets a
+// notification, and can react to a song drop with an emoji of their own.
+
+const VIBES: [&str; 8] = ["🔥", "❤️", "😮", "🎧", "💃", "😭", "🤯", "🫶"];
+const DROPS_PER_HOUR: i64 = 40;
+
+fn drop_json(alias: &str) -> String {
+    format!(
+        "json_build_object('id', d.id, 'kind', d.kind, 'title', d.title, 'artist', d.artist, 'source_track_id', d.source_track_id, \
+         'track_url', d.track_url, 'note', d.note, 'emoji', d.emoji, 'reaction', d.reaction, \
+         'created_at', lumi_iso(d.created_at), 'seen_at', lumi_iso(d.seen_at), \
+         '{alias}', json_build_object('user_id', u.id, 'username', u.username, 'display_name', u.display_name, 'avatar_url', u.avatar_url))"
+    )
+}
+
+#[derive(Deserialize)]
+struct DropBody {
+    to_user_id: String,
+    #[serde(default)]
+    kind: Option<String>,
+    title: String,
+    #[serde(default)]
+    artist: Option<String>,
+    #[serde(default)]
+    source_track_id: Option<String>,
+    #[serde(default)]
+    track_url: Option<String>,
+    #[serde(default)]
+    note: Option<String>,
+    #[serde(default)]
+    emoji: Option<String>,
+}
+
+fn clean(v: Option<String>, max: usize) -> Option<String> {
+    v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).map(|s| s.chars().take(max).collect())
+}
+
+async fn send_drop(State(st): State<AppState>, u: User, J(b): J<DropBody>) -> ApiResult<Response> {
+    let to = b.to_user_id.trim().to_string();
+    if to.is_empty() || to == u.id {
+        return Err(AppError::bad_request("Pick a friend to send this to"));
+    }
+    let kind = b.kind.as_deref().unwrap_or("song").to_lowercase();
+    if kind != "song" && kind != "vibe" {
+        return Err(AppError::bad_request("kind must be song or vibe"));
+    }
+    let title = b.title.trim().to_string();
+    if title.is_empty() {
+        return Err(AppError::bad_request("A drop needs a song title"));
+    }
+    if title.chars().count() > 300 {
+        return Err(AppError::bad_request("Title must be 300 characters or fewer"));
+    }
+    let note = clean(b.note, 140);
+    let emoji = clean(b.emoji, 16);
+    if kind == "vibe" && !emoji.as_deref().is_some_and(|e| VIBES.contains(&e)) {
+        return Err(AppError::bad_request(format!("A vibe needs one of: {}", VIBES.join(" "))));
+    }
+    if blocked(&st, &u.id, &to).await? {
+        return Err(AppError::not_found("User not found"));
+    }
+    if !is_friend(&st, &u.id, &to).await? {
+        return Err(AppError::forbidden("You can only send drops to friends"));
+    }
+    let recent: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ios_social_drops WHERE from_user_id = $1 AND created_at > NOW() - INTERVAL '1 hour'")
+        .bind(&u.id)
+        .fetch_one(&st.db)
+        .await?;
+    if recent >= DROPS_PER_HOUR {
+        return Err(AppError::new(429, "That's a lot of drops for one hour — try again a little later"));
+    }
+    // A second vibe on the same track within 10 minutes changes the emoji
+    // instead of stacking up another notification.
+    if kind == "vibe" {
+        let existing: Option<String> = sqlx::query_scalar(
+            "SELECT id FROM ios_social_drops WHERE kind = 'vibe' AND from_user_id = $1 AND to_user_id = $2 AND LOWER(title) = LOWER($3) \
+             AND created_at > NOW() - INTERVAL '10 minutes' ORDER BY created_at DESC LIMIT 1",
+        )
+        .bind(&u.id)
+        .bind(&to)
+        .bind(&title)
+        .fetch_optional(&st.db)
+        .await?;
+        if let Some(id) = existing {
+            sqlx::query("UPDATE ios_social_drops SET emoji = $2, seen_at = NULL WHERE id = $1").bind(&id).bind(&emoji).execute(&st.db).await?;
+            let v: Value = sqlx::query_scalar(&format!("SELECT {} FROM ios_social_drops d JOIN ios_users u ON u.id = d.to_user_id WHERE d.id = $1", drop_json("to")))
+                .bind(&id)
+                .fetch_one(&st.db)
+                .await?;
+            return Ok((StatusCode::OK, Json(v)).into_response());
+        }
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO ios_social_drops (id, from_user_id, to_user_id, kind, title, artist, source_track_id, track_url, note, emoji) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+    )
+    .bind(&id)
+    .bind(&u.id)
+    .bind(&to)
+    .bind(&kind)
+    .bind(&title)
+    .bind(clean(b.artist, 300))
+    .bind(clean(b.source_track_id, 160))
+    .bind(clean(b.track_url, 2000))
+    .bind(if kind == "song" { note.clone() } else { None })
+    .bind(&emoji)
+    .execute(&st.db)
+    .await?;
+    let name = display_name(&st, &u.id).await;
+    if kind == "song" {
+        let body = match &note {
+            Some(n) => format!("{title} — “{n}”"),
+            None => title.clone(),
+        };
+        notify(&st, &to, "song_drop", &format!("{name} sent you a song"), &body, json!({"drop_id": id, "from_user_id": u.id})).await;
+    } else {
+        notify(&st, &to, "vibe", &format!("{name} {} what you're playing", emoji.as_deref().unwrap_or("🎧")), &title, json!({"drop_id": id, "from_user_id": u.id})).await;
+    }
+    let v: Value = sqlx::query_scalar(&format!("SELECT {} FROM ios_social_drops d JOIN ios_users u ON u.id = d.to_user_id WHERE d.id = $1", drop_json("to")))
+        .bind(&id)
+        .fetch_one(&st.db)
+        .await?;
+    Ok((StatusCode::CREATED, Json(v)).into_response())
+}
+
+async fn list_drops(State(st): State<AppState>, u: User, Q(p): Q<P>) -> ApiResult<Json<Value>> {
+    let limit = p.limit.unwrap_or(50);
+    check_range("limit", limit, 1, 200)?;
+    let received: Value = sqlx::query_scalar(&format!(
+        "SELECT COALESCE(json_agg(j ORDER BY at DESC), '[]'::json) FROM (SELECT {} AS j, d.created_at AS at FROM ios_social_drops d \
+         JOIN ios_users u ON u.id = d.from_user_id WHERE d.to_user_id = $1 \
+           AND NOT EXISTS (SELECT 1 FROM ios_social_blocks b WHERE (b.user_id = d.to_user_id AND b.blocked_id = d.from_user_id) OR (b.user_id = d.from_user_id AND b.blocked_id = d.to_user_id)) \
+         ORDER BY d.created_at DESC LIMIT $2) x",
+        drop_json("from")
+    ))
+    .bind(&u.id)
+    .bind(limit)
+    .fetch_one(&st.db)
+    .await?;
+    let sent: Value = sqlx::query_scalar(&format!(
+        "SELECT COALESCE(json_agg(j ORDER BY at DESC), '[]'::json) FROM (SELECT {} AS j, d.created_at AS at FROM ios_social_drops d \
+         JOIN ios_users u ON u.id = d.to_user_id WHERE d.from_user_id = $1 ORDER BY d.created_at DESC LIMIT $2) x",
+        drop_json("to")
+    ))
+    .bind(&u.id)
+    .bind(limit)
+    .fetch_one(&st.db)
+    .await?;
+    let unseen: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ios_social_drops WHERE to_user_id = $1 AND seen_at IS NULL")
+        .bind(&u.id)
+        .fetch_one(&st.db)
+        .await?;
+    Ok(Json(json!({"received": received, "sent": sent, "unseen": unseen})))
+}
+
+async fn drop_seen(State(st): State<AppState>, u: User, Path(id): Path<String>) -> ApiResult<StatusCode> {
+    sqlx::query("UPDATE ios_social_drops SET seen_at = COALESCE(seen_at, NOW()) WHERE id = $1 AND to_user_id = $2")
+        .bind(&id)
+        .bind(&u.id)
+        .execute(&st.db)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+struct DropReactBody {
+    emoji: String,
+}
+
+async fn react_drop(State(st): State<AppState>, u: User, Path(id): Path<String>, J(b): J<DropReactBody>) -> ApiResult<StatusCode> {
+    let emoji = b.emoji.trim().to_string();
+    if !VIBES.contains(&emoji.as_str()) {
+        return Err(AppError::bad_request(format!("Pick one of: {}", VIBES.join(" "))));
+    }
+    let row: Option<(String, String, Option<String>)> =
+        sqlx::query_as("SELECT from_user_id, title, reaction FROM ios_social_drops WHERE id = $1 AND to_user_id = $2 AND kind = 'song'")
+            .bind(&id)
+            .bind(&u.id)
+            .fetch_optional(&st.db)
+            .await?;
+    let (from, title, previous) = row.ok_or_else(|| AppError::not_found("Drop not found"))?;
+    sqlx::query("UPDATE ios_social_drops SET reaction = $2, seen_at = COALESCE(seen_at, NOW()) WHERE id = $1")
+        .bind(&id)
+        .bind(&emoji)
+        .execute(&st.db)
+        .await?;
+    if previous.as_deref() != Some(emoji.as_str()) {
+        let name = display_name(&st, &u.id).await;
+        notify(&st, &from, "song_drop_reaction", &format!("{name} {emoji} your song"), &title, json!({"drop_id": id, "from_user_id": u.id})).await;
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn delete_drop(State(st): State<AppState>, u: User, Path(id): Path<String>) -> ApiResult<StatusCode> {
+    let r = sqlx::query("DELETE FROM ios_social_drops WHERE id = $1 AND (from_user_id = $2 OR to_user_id = $2)")
+        .bind(&id)
+        .bind(&u.id)
+        .execute(&st.db)
+        .await?;
+    if r.rows_affected() == 0 {
+        return Err(AppError::not_found("Drop not found"));
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
