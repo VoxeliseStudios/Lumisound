@@ -1,3 +1,0 @@
-/// Identifies one `ArtworkThumbnail.task` request. A plain `Equatable` st Art
-private st Art ThumbnailRequestID: Equatable {
-st Art ArtworkThumbnail: View {
