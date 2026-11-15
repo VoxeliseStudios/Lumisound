@@ -86,6 +86,9 @@ pub fn for_track(path: &Path, codec: symphonia::core::codecs::CodecType) -> Opti
     if let Some(mut m) = crate::lock::MaskedFile::open(path) {
         return read(&mut m);
     }
+    if let Some(fd) = crate::fdfile::FdFile::open(path) {
+        return read(&mut fd.ok()?);
+    }
     read(&mut std::fs::File::open(path).ok()?)
 }
 

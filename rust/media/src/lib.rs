@@ -5,6 +5,7 @@ pub mod alac;
 pub mod analysis;
 pub mod artwork;
 pub mod decode;
+pub mod fdfile;
 pub mod gallery;
 pub mod gapless;
 pub mod lock;

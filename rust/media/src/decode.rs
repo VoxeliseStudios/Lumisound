@@ -42,6 +42,9 @@ pub fn media_source(path: &Path) -> std::io::Result<(MediaSourceStream, Hint)> {
     if let Some(e) = path.extension().and_then(|e| e.to_str()) {
         hint.with_extension(e);
     }
+    if let Some(fd) = crate::fdfile::FdFile::open(path) {
+        return Ok((MediaSourceStream::new(Box::new(fd?), Default::default()), hint));
+    }
     let file = std::fs::File::open(path)?;
     Ok((MediaSourceStream::new(Box::new(file), Default::default()), hint))
 }
