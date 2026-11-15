@@ -89,4 +89,3 @@ Full history and decisions: [`RUST-PORT.md`](../../RUST-PORT.md).
 - iOS could run its queue on `PlaySession` (it still does this bookkeeping in Swift).
 - `PlaySession`: Smart Crossfade (`queue_blend` with a `blend_plan`) and Skip Silent Intros offsets are not
   wired in; it does fixed-length crossfades and plain gapless.
-- Playlist order is not merged (a reorder on one device stays local; additions append).

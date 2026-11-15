@@ -230,7 +230,7 @@ Full history and decisions: [`../RUST-PORT.md`](../RUST-PORT.md). Swift is views
   was computing. Together with `mainStack` the next reports say what and where.
 
 ## Open (2026-11-14)
-- Playlist order is not merged across devices.
+- Playlist order: a reorder made elsewhere is followed when this device has not reordered (core `follow_order`); two devices reordering at once keep their own order until one syncs first.
 - The first sync after this update is a union (no base yet): something removed elsewhere before the update
   can come back once.
 
