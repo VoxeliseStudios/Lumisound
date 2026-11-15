@@ -208,6 +208,17 @@ fn merge(v: &Value, local: &MergeLocal, base: &SyncBase, resolver: &TrackResolve
                     lp.song_ids.iter().filter(|id| !(bset.contains(id.as_str()) && !rset.contains(id.as_str()) && resolver.contains((*id).clone()))).cloned().collect();
                 let have: HashSet<String> = lp.song_ids.iter().cloned().collect();
                 songs.extend(remote_ids.iter().filter(|id| !have.contains(*id) && !bset.contains(id.as_str())).cloned());
+                // Order: if this device hasn't reordered the songs it shares
+                // with the last sync, a new order from the server is someone
+                // else's reorder and is taken over; songs only this device
+                // has keep their place after the song they followed.
+                if let Some(b) = known {
+                    let shared = |list: &[String]| -> Vec<String> { list.iter().filter(|id| bset.contains(id.as_str()) && rset.contains(id.as_str()) && have.contains(*id)).cloned().collect() };
+                    let (was, mine, theirs) = (shared(&b.local_ids), shared(&lp.song_ids), shared(&remote_ids));
+                    if was == mine && theirs != mine {
+                        songs = follow_order(&songs, &remote_ids);
+                    }
+                }
                 let name = if known.is_some_and(|b| b.name == lp.name) { rname.clone() } else { lp.name.clone() };
                 if songs != lp.song_ids || name != lp.name {
                     plan.playlists_to_update.push(MergePlaylist { local_id: lp.id.clone(), name, folder: st(p, "folder"), tags, song_ids: songs });
@@ -235,6 +246,24 @@ fn merge(v: &Value, local: &MergeLocal, base: &SyncBase, resolver: &TrackResolve
         }
     }
     (plan, next)
+}
+
+/// `songs` rearranged so the ones also in `order` come in that order; each
+/// of the others stays right behind the song it followed.
+fn follow_order(songs: &[String], order: &[String]) -> Vec<String> {
+    let rank: HashMap<&str, usize> = order.iter().enumerate().map(|(i, id)| (id.as_str(), i)).collect();
+    // (rank of the ordered song this one travels with, original position)
+    let mut keyed: Vec<(usize, usize, &String)> = Vec::with_capacity(songs.len());
+    let mut anchor = None;
+    for (pos, id) in songs.iter().enumerate() {
+        if let Some(&r) = rank.get(id.as_str()) {
+            anchor = Some(r);
+        }
+        keyed.push((anchor.map_or(0, |r| r + 1), pos, id));
+    }
+    // Ordered songs sort by rank; companions sort after their anchor by position.
+    keyed.sort_by_key(|(a, pos, id)| (*a, if rank.contains_key(id.as_str()) { 0 } else { 1 }, *pos));
+    keyed.into_iter().map(|(_, _, id)| id.clone()).collect()
 }
 
 /// POST /user/sync body in merge mode: the usual payload plus what this
@@ -379,6 +408,21 @@ mod tests {
         let (plan, next) = merge(&json!({"favorites": [], "playlists": []}), &l, &next, &resolver());
         assert_eq!(plan.playlists_to_remove, vec!["L1".to_string()]);
         assert!(next.playlists.is_empty());
+    }
+
+    #[test]
+    fn a_reorder_on_another_device_is_followed_unless_reordered_here() {
+        let ids = ["local:Music/One.opus", "local:Music/Two.opus", "local:Music/Three.opus"];
+        let base = SyncBase { account: "u".into(), favorites: vec![], playlists: vec![BasePlaylist { remote_id: "srv-1".into(), local_id: "L1".into(), name: "Mix".into(), local_ids: ids.iter().map(|s| s.to_string()).collect(), seen: vec![] }] };
+        let remote = json!({"favorites": [], "playlists": [{"id": "srv-1", "name": "Mix", "tracks": [row("Three.opus", "Three"), row("One.opus", "One"), row("Two.opus", "Two")]}]});
+        // Same order here as at the last sync, plus a song only this phone has after One.
+        let l = local(&[], vec![lp("L1", "Mix", &[ids[0], "local:only-here", ids[1], ids[2]])]);
+        let (plan, _) = merge(&remote, &l, &base, &resolver());
+        assert_eq!(plan.playlists_to_update[0].song_ids, vec![ids[2].to_string(), ids[0].to_string(), "local:only-here".to_string(), ids[1].to_string()]);
+        // Reordered here too: this device's order stands (and is pushed).
+        let l = local(&[], vec![lp("L1", "Mix", &[ids[1], ids[0], ids[2]])]);
+        let (plan, _) = merge(&remote, &l, &base, &resolver());
+        assert!(plan.playlists_to_update.is_empty());
     }
 
     #[test]
