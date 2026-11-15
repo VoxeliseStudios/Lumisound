@@ -181,7 +181,7 @@ struct AnimatedImageView: UIViewRepresentable {
     var kenBurns: KenBurnsImageView.KenBurns = .off
 
     func makeUIView(context: Context) -> KenBurnsImageView {
-        let view = KenBurnsImageView()
+        let view = KenBurnsImageView(frame: .zero)
         view.contentMode = contentMode
         view.clipsToBounds = true
         view.kenBurns = kenBurns
