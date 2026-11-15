@@ -154,10 +154,9 @@ private struct StationSuggestionCard: View {
             }
             .frame(width: 152, alignment: .leading)
             .padding(10)
-            .adaptiveGlass(
-                tint: accent.opacity(0.08),
+            .cellSurface(
                 in: RoundedRectangle(cornerRadius: 16, style: .continuous),
-                fallback: AppTheme.surface
+                fallback: AppTheme.surface.opacity(0.6)
             )
         }
         .buttonStyle(PressableButtonStyle())

@@ -61,12 +61,15 @@ struct LibraryHeader: View {
         }
         .background(alignment: .topLeading) {
             // A soft glow behind the title, in the current accent.
-            Circle()
-                .fill(accent.opacity(0.22))
-                .frame(width: 180, height: 180)
-                .blur(radius: 60)
-                .offset(x: -50, y: -70)
-                .allowsHitTesting(false)
+            // A radial gradient, not a blurred circle: same soft falloff,
+            // but no Gaussian filter for the render server to re-run.
+            RadialGradient(
+                colors: [accent.opacity(0.22), accent.opacity(0.08), .clear],
+                center: .center, startRadius: 0, endRadius: 150
+            )
+            .frame(width: 300, height: 300)
+            .offset(x: -110, y: -130)
+            .allowsHitTesting(false)
         }
         .task(id: library.allSongs.count) {
             let songs = library.allSongs

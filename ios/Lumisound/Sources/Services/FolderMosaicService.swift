@@ -27,13 +27,31 @@ final class FolderMosaicService {
         case gridTile
         /// Folder detail header cover: 20 pt corners, hairline, deep shadow.
         case header
+        /// Plain collage (hub tiles and carousels): 12 pt corners, nothing
+        /// else; callers add a `shadowBehind` where they want one.
+        case collage
 
-        var cornerRadius: CGFloat { self == .gridTile ? 12 : 20 }
+        var cornerRadius: CGFloat {
+            switch self {
+            case .gridTile, .collage: return 12
+            case .header: return 20
+            }
+        }
         /// Room around the cover for the baked shadow, in points. The view
         /// shows the bitmap with this much negative padding.
-        var margin: CGFloat { self == .gridTile ? 20 : 44 }
-        fileprivate var shadow: (alpha: CGFloat, blur: CGFloat, y: CGFloat) {
-            self == .gridTile ? (0.3, 14, 5) : (0.5, 32, 10)
+        var margin: CGFloat {
+            switch self {
+            case .gridTile: return 20
+            case .header: return 44
+            case .collage: return 0
+            }
+        }
+        fileprivate var shadow: (alpha: CGFloat, blur: CGFloat, y: CGFloat)? {
+            switch self {
+            case .gridTile: return (0.3, 14, 5)
+            case .header: return (0.5, 32, 10)
+            case .collage: return nil
+            }
         }
     }
 
@@ -113,13 +131,14 @@ final class FolderMosaicService {
         let path = UIBezierPath(roundedRect: tile, cornerRadius: s.style.cornerRadius)
         return UIGraphicsImageRenderer(size: canvas, format: format).image { ctx in
             let cg = ctx.cgContext
-            let shadow = s.style.shadow
-            cg.saveGState()
-            cg.setShadow(offset: CGSize(width: 0, height: shadow.y), blur: shadow.blur,
-                         color: UIColor.black.withAlphaComponent(shadow.alpha).cgColor)
-            s.surface.withAlphaComponent(1).setFill()
-            path.fill()
-            cg.restoreGState()
+            if let shadow = s.style.shadow {
+                cg.saveGState()
+                cg.setShadow(offset: CGSize(width: 0, height: shadow.y), blur: shadow.blur,
+                             color: UIColor.black.withAlphaComponent(shadow.alpha).cgColor)
+                s.surface.withAlphaComponent(1).setFill()
+                path.fill()
+                cg.restoreGState()
+            }
 
             cg.saveGState()
             path.addClip()

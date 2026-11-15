@@ -387,7 +387,7 @@ private struct TopArtistsShelf: View {
                                 ZStack(alignment: .topLeading) {
                                     ArtistAvatar(artist: artist.name, size: size)
                                         .overlay(Circle().stroke(AppTheme.dynamicAccent.opacity(index == 0 ? 0.9 : 0.25), lineWidth: index == 0 ? 3 : 1.5))
-                                        .shadow(color: .black.opacity(0.4), radius: 10, y: 6)
+                                        .shadowBehind(Circle(), opacity: 0.4)
                                     Text("\(index + 1)")
                                         .font(.caption.weight(.heavy))
                                         .foregroundStyle(.white)
@@ -500,8 +500,7 @@ private struct ArtistListRow: View {
             Color.clear.frame(width: 36, height: 36)
         }
         .padding(8)
-        .adaptiveGlass(
-            tint: isPlaying ? AppTheme.dynamicAccent.opacity(0.18) : .clear,
+        .cellSurface(
             in: RoundedRectangle(cornerRadius: 18, style: .continuous),
             fallback: isPlaying ? AppTheme.dynamicAccent.opacity(0.12) : AppTheme.surface.opacity(0.55)
         )
@@ -522,7 +521,7 @@ private struct ArtistGridCell: View {
             GeometryReader { geo in
                 ArtistAvatar(artist: artist.name, size: geo.size.width)
                     .overlay(Circle().stroke(isPlaying ? AppTheme.dynamicAccent : .white.opacity(0.1), lineWidth: isPlaying ? 3 : 1))
-                    .shadow(color: .black.opacity(0.35), radius: 10, y: 6)
+                    .shadowBehind(Circle())
             }
             .aspectRatio(1, contentMode: .fit)
 

@@ -42,14 +42,15 @@ private struct SongCardGlassBackground: ViewModifier {
     let cornerRadius: CGFloat
 
     func body(content: Content) -> some View {
+        // `cellSurface`, not real glass: one live backdrop blur per row
+        // stuttered long lists (see `cellSurface`).
         if isCurrent {
-            content.adaptiveGlass(
-                tint: AppTheme.dynamicAccent,
+            content.cellSurface(
                 in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous),
                 fallback: AppTheme.dynamicAccent.opacity(0.14)
             )
         } else {
-            content.adaptiveGlass(
+            content.cellSurface(
                 in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous),
                 fallback: AppTheme.elevatedSurface
             )
@@ -395,7 +396,7 @@ struct SongGridCell: View {
             .padding(.horizontal, 2)
         }
         .padding(6)
-        .adaptiveGlass(
+        .cellSurface(
             in: RoundedRectangle(cornerRadius: 10, style: .continuous),
             fallback: AppTheme.surface.opacity(0.5)
         )

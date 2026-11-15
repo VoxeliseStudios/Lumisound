@@ -329,7 +329,7 @@ private struct TrendingHeroCard: View {
             }
             .padding(14)
             .frame(width: 158, height: 150, alignment: .topLeading)
-            .adaptiveGlass(in: RoundedRectangle(cornerRadius: 18, style: .continuous), fallback: .ultraThinMaterial)
+            .cellSurface(in: RoundedRectangle(cornerRadius: 18, style: .continuous), fallback: AppTheme.surface.opacity(0.55))
             .overlay(
                 RoundedRectangle(cornerRadius: 18, style: .continuous)
                     .stroke(.white.opacity(0.07), lineWidth: 1)
@@ -390,7 +390,7 @@ private struct TrendingRankRow: View {
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
-            .adaptiveGlass(in: RoundedRectangle(cornerRadius: 12, style: .continuous), fallback: .ultraThinMaterial)
+            .cellSurface(in: RoundedRectangle(cornerRadius: 12, style: .continuous), fallback: AppTheme.surface.opacity(0.55))
             .overlay(
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .stroke(.white.opacity(0.05), lineWidth: 1)

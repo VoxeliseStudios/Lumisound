@@ -81,6 +81,31 @@ extension View {
         }
     }
 
+    /// Background for cells repeated in scrolling lists and grids (song,
+    /// album and artist cards, hub tiles). Real Liquid Glass samples and
+    /// blurs whatever is behind it; one per visible cell is a live backdrop
+    /// blur per card, re-rendered whenever the content under it moves (a
+    /// panning cover, the gallery background), and was a measured cause of
+    /// scroll stutter (Folders grid, 2026-11-14). This draws the look those
+    /// cards had before iOS 26 instead — the `fallback` fill (callers pass the
+    /// "now playing" tint through it), the user's glass tint and a hairline —
+    /// as plain shapes that render once. Lumen keeps its own surface, as with
+    /// `adaptiveGlass`. One-off chrome (bars, buttons, headers) keeps real glass.
+    @ViewBuilder
+    func cellSurface<S: Shape, F: ShapeStyle>(in shape: S, fallback: F) -> some View {
+        if InterfaceEdition.isLumen || !Appearance.isLiquidGlass {
+            self.lumenSurfaceBackground(in: shape, tint: nil)
+        } else {
+            self.background {
+                ZStack {
+                    shape.fill(fallback)
+                    self.glassTintLayer(in: shape)
+                    shape.stroke(Color.white.opacity(0.10), lineWidth: 0.75)
+                }
+            }
+        }
+    }
+
     /// Tinted Liquid Glass that is deliberately NOT `.interactive()` — for
     /// surfaces that carry a colour identity but aren't themselves a control,
     /// specifically Settings' per-section row backgrounds.

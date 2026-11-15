@@ -230,7 +230,7 @@ private struct MoodCard: View {
         }
         .frame(maxWidth: .infinity, minHeight: 160)
         .background(mood.gradient, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .shadow(color: .black.opacity(0.25), radius: 8, x: 0, y: 4)
+        .shadowBehind(RoundedRectangle(cornerRadius: 16, style: .continuous), opacity: 0.25, radius: 8, y: 4)
     }
 }
 

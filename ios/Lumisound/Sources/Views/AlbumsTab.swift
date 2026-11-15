@@ -591,7 +591,7 @@ private struct AlbumGridCell: View {
                     }
             }
             .aspectRatio(1, contentMode: .fit)
-            .shadow(color: .black.opacity(0.35), radius: 10, y: 6)
+            .shadowBehind(RoundedRectangle(cornerRadius: compact ? 10 : 14, style: .continuous))
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(album.name)
@@ -626,7 +626,7 @@ private struct AlbumListRow: View {
     var body: some View {
         HStack(spacing: 14) {
             AlbumCoverView(song: album.coverSong, size: 64, cornerRadius: 10)
-                .shadow(color: .black.opacity(0.3), radius: 6, y: 3)
+                .shadowBehind(RoundedRectangle(cornerRadius: 10, style: .continuous), opacity: 0.3, radius: 6, y: 3)
 
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
@@ -655,8 +655,7 @@ private struct AlbumListRow: View {
             Color.clear.frame(width: 36, height: 36)
         }
         .padding(8)
-        .adaptiveGlass(
-            tint: isPlaying ? AppTheme.dynamicAccent.opacity(0.18) : .clear,
+        .cellSurface(
             in: RoundedRectangle(cornerRadius: 16, style: .continuous),
             fallback: isPlaying ? AppTheme.dynamicAccent.opacity(0.12) : AppTheme.surface.opacity(0.55)
         )
@@ -747,7 +746,8 @@ private struct RecentlyAddedAlbumsShelf: View {
                                     .font(.system(size: 16, weight: .bold))
                                     .foregroundStyle(.white)
                                     .frame(width: 44, height: 44)
-                                    .adaptiveGlass(tint: AppTheme.dynamicAccent.opacity(0.5), in: Circle(), fallback: AppTheme.dynamicAccent)
+                                    .background(AppTheme.dynamicAccentGradient, in: Circle())
+                                    .overlay(Circle().stroke(.white.opacity(0.25), lineWidth: 1))
                             }
                             .buttonStyle(PressableButtonStyle())
                             .accessibilityLabel("Play \(album.name)")
@@ -790,7 +790,7 @@ private struct RecentlyAddedAlbumsShelf: View {
             .padding(.bottom, 14)
         }
         .frame(width: cardSize, height: cardSize)
-        .shadow(color: .black.opacity(0.4), radius: 14, y: 8)
+        .shadowBehind(RoundedRectangle(cornerRadius: 22, style: .continuous), opacity: 0.4, radius: 14, y: 8)
         .accessibilityElement(children: .combine)
     }
 }

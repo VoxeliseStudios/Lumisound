@@ -238,7 +238,7 @@ struct LumenAlbumCell: View {
             GeometryReader { geo in
                 VStack(alignment: .leading, spacing: 8) {
                     LumenArtwork(song: songs.first, size: geo.size.width, radius: 16, fallbackSeed: album)
-                        .shadow(color: .black.opacity(0.35), radius: 10, y: 6)
+                        .shadowBehind(RoundedRectangle(cornerRadius: 16, style: .continuous))
                     VStack(alignment: .leading, spacing: 2) {
                         Text(album)
                             .font(LumenType.headline(14))
@@ -494,7 +494,7 @@ struct LumenArtistsGridView: View {
                                 ArtistAvatar(artist: artist, size: 100)
                                     .clipShape(Circle())
                                     .overlay(Circle().strokeBorder(Color.white.opacity(0.1), lineWidth: 1))
-                                    .shadow(color: .black.opacity(0.3), radius: 8, y: 5)
+                                    .shadowBehind(Circle(), opacity: 0.3, radius: 8, y: 5)
                                 Text(artist)
                                     .font(LumenType.headline(13))
                                     .foregroundStyle(LumenPalette.textPrimary)
@@ -556,7 +556,7 @@ struct LumenPlaylistsView: View {
                                     VStack(alignment: .leading, spacing: 8) {
                                         LumenCollage(songs: library.collageSongs(from: library.songs(for: playlist)),
                                                      size: geo.size.width, radius: 18, seed: playlist.name)
-                                            .shadow(color: .black.opacity(0.35), radius: 10, y: 6)
+                                            .shadowBehind(RoundedRectangle(cornerRadius: 18, style: .continuous))
                                         Text(playlist.name)
                                             .font(LumenType.headline(14))
                                             .foregroundStyle(LumenPalette.textPrimary)

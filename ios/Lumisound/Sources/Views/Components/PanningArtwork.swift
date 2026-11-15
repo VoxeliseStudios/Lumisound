@@ -13,14 +13,18 @@ import UIKit
 /// 60-120 Hz and heat the phone). Off when Reduce Motion is on: centered.
 struct PanningArtwork: UIViewRepresentable {
     let image: UIImage
+    /// False: the art sits still, centered (small list-row covers).
+    var pans: Bool = true
 
     func makeUIView(context: Context) -> PanningImageView {
         let v = PanningImageView()
+        v.pans = pans
         v.image = image
         return v
     }
 
     func updateUIView(_ view: PanningImageView, context: Context) {
+        view.pans = pans
         if view.image !== image { view.image = image } else { view.ensurePanning() }
     }
 
@@ -36,6 +40,10 @@ final class PanningImageView: UIView {
     private var laidOutFor: (CGSize, ObjectIdentifier)?
     /// The last layout added a pan (the art overflows the frame).
     private var panExpected = false
+    /// Set by `PanningArtwork`; turning it off stops and centers the art.
+    var pans = true {
+        didSet { if pans != oldValue { restart() } }
+    }
 
     var image: UIImage? {
         didSet {
@@ -135,7 +143,7 @@ final class PanningImageView: UIView {
         panExpected = true
     }
 
-    private var wantsPan: Bool { !UIAccessibility.isReduceMotionEnabled }
+    private var wantsPan: Bool { pans && !UIAccessibility.isReduceMotionEnabled }
 }
 
 /// `PanningArtwork` drawn by SwiftUI itself, for covers that sit inside a

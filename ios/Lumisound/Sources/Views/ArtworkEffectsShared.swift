@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 // MARK: - ArtworkPaletteLoader (shared palette-loading helper)
 
@@ -96,23 +97,88 @@ struct PressableButtonStyle: ButtonStyle {
 
 /// A diagonal light sweep that loops continuously across whatever it's
 /// overlaid on — used for loading/placeholder states (artwork not yet
-/// fetched, skeleton rows) throughout the app. Driven by
-/// `TimelineView`/`ArtworkClock` like the Now Playing ambient loops, for the
-/// same reason: immune to freezing from frequent parent re-renders.
-struct ShimmerOverlay: View {
+/// fetched, skeleton rows) throughout the app.
+///
+/// A Core Animation gradient band animated by the render server. It used to
+/// be a `TimelineView` re-running a SwiftUI body (with a GeometryReader) on
+/// the main thread 15–60 times a second per loading cell — and a fast fling
+/// through a big grid is exactly when dozens of cells are loading at once,
+/// so the shimmer itself was competing with scrolling for the main thread.
+/// Inside a `.drawingGroup()` (which renders UIKit views blank) use
+/// `SwiftUIShimmerOverlay`.
+struct ShimmerOverlay: UIViewRepresentable {
+    func makeUIView(context: Context) -> ShimmerBandView { ShimmerBandView(frame: .zero) }
+    func updateUIView(_ uiView: ShimmerBandView, context: Context) {}
+}
+
+final class ShimmerBandView: UIView {
+    private let band = CAGradientLayer()
+    private var laidOutFor: CGSize = .zero
+    private static let key = "lumisound.shimmer"
+    private var foregroundObserver: NSObjectProtocol?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isUserInteractionEnabled = false
+        backgroundColor = .clear
+        clipsToBounds = true
+        band.colors = [UIColor.clear.cgColor, UIColor.white.withAlphaComponent(0.25).cgColor, UIColor.clear.cgColor]
+        band.startPoint = CGPoint(x: 0, y: 0.5)
+        band.endPoint = CGPoint(x: 1, y: 0.5)
+        layer.addSublayer(band)
+        // Layer animations are dropped while the app is in the background.
+        foregroundObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.restart(force: true) }
+        }
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    deinit {
+        if let foregroundObserver { NotificationCenter.default.removeObserver(foregroundObserver) }
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        restart(force: false)
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        restart(force: false)
+    }
+
+    /// A band half the view's width sweeps from fully off the leading edge
+    /// to fully off the trailing edge every 1.4 s.
+    private func restart(force: Bool) {
+        let size = bounds.size
+        guard window != nil, size.width > 0, size.height > 0 else {
+            band.removeAnimation(forKey: Self.key)
+            return
+        }
+        if !force, laidOutFor == size, band.animation(forKey: Self.key) != nil { return }
+        laidOutFor = size
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        band.bounds = CGRect(x: 0, y: 0, width: size.width * 0.5, height: size.height)
+        band.position = CGPoint(x: -size.width * 0.25, y: size.height / 2)
+        CATransaction.commit()
+        let sweep = CABasicAnimation(keyPath: "position.x")
+        sweep.fromValue = -size.width * 0.25
+        sweep.toValue = size.width * 1.25
+        sweep.duration = 1.4
+        sweep.repeatCount = .infinity
+        sweep.isRemovedOnCompletion = false
+        band.add(sweep, forKey: Self.key)
+    }
+}
+
+/// The SwiftUI-drawn shimmer, for use inside a `.drawingGroup()` only.
+struct SwiftUIShimmerOverlay: View {
     var body: some View {
-        // Capped well below 60fps: one of these runs per artwork still
-        // loading, with no `paused:` condition (unlike the Now Playing
-        // loops above — there's no "isPlaying" equivalent for a loading
-        // placeholder, it's just "is this on screen"), so a fast fling
-        // through a big grid/list can have dozens running at once — field
-        // evidence (a user screen recording of choppy Folders-grid
-        // scrolling, plus thermal telemetry showing "serious"/"fair" states
-        // during ordinary browsing) traced real GPU/thermal cost to exactly
-        // this kind of continuous per-cell animation. A slow 1.4s diagonal
-        // sweep is visually indistinguishable at 15fps from 60fps; this cuts
-        // the redraw count (and therefore cost, multiplied by however many
-        // are on screen at once) by 4x.
         TimelineView(.animation(minimumInterval: LumiMotion.frame)) { timeline in
             let t = ArtworkClock.loop(timeline.date, cycleDuration: 1.4)
             GeometryReader { geo in

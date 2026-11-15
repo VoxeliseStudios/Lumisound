@@ -877,7 +877,7 @@ private struct HubSpeedDialTile: View {
                         )
                     }
                 }
-                .shadow(color: .black.opacity(0.3), radius: 8, y: 5)
+                .shadowBehind(RoundedRectangle(cornerRadius: 12, style: .continuous), opacity: 0.3, radius: 8, y: 5)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(shortcut.title)
                         .font(.caption.weight(.semibold))
@@ -948,6 +948,24 @@ private struct HubArtworkCollage: View {
     let size: CGFloat
     let placeholderIcon: String
 
+    @Environment(\.displayScale) private var displayScale
+    /// The collage as one bitmap from `FolderMosaicService` (`.collage`).
+    /// It used to be up to four `ArtworkThumbnail`s — four panning layers,
+    /// shimmers and clips per tile, in every speed-dial tile and carousel card
+    /// on the hub (the same build that stuttered the Folders grid).
+    @State private var image: UIImage?
+
+    private var key: FolderMosaicService.Key {
+        let ids = songs.prefix(4).map(\.id)
+        return FolderMosaicService.Key(
+            folderID: "hub|" + ids.joined(separator: "|"),
+            songIDs: ids,
+            coverRevision: 0,
+            pixelSide: Int((size * displayScale).rounded()),
+            style: .collage
+        )
+    }
+
     var body: some View {
         Group {
             if songs.isEmpty {
@@ -958,33 +976,25 @@ private struct HubArtworkCollage: View {
                             .font(.system(size: size * 0.28))
                             .foregroundStyle(AppTheme.dynamicAccent)
                     }
-            } else if songs.count == 1 {
-                ArtworkThumbnail(song: songs[0], size: size)
+            } else if let image = image ?? FolderMosaicService.shared.cached(key) {
+                Image(uiImage: image)
+                    .resizable()
+                    .transition(.opacity)
             } else {
-                let half = (size / 2).rounded(.down)
-                VStack(spacing: 0) {
-                    HStack(spacing: 0) {
-                        ArtworkThumbnail(song: songs[0], size: half)
-                        quadrant(index: 1, size: half)
-                    }
-                    HStack(spacing: 0) {
-                        quadrant(index: 2, size: half)
-                        quadrant(index: 3, size: half)
-                    }
-                }
-                .frame(width: half * 2, height: half * 2)
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(AppTheme.surface)
             }
         }
         .frame(width: size, height: size)
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-    }
-
-    @ViewBuilder
-    private func quadrant(index: Int, size: CGFloat) -> some View {
-        if songs.indices.contains(index) {
-            ArtworkThumbnail(song: songs[index], size: size)
-        } else {
-            Rectangle().fill(AppTheme.surface).frame(width: size, height: size)
+        .task(id: key) {
+            guard !songs.isEmpty, size >= 1 else { return }
+            let mosaicKey = self.key
+            if let hit = FolderMosaicService.shared.cached(mosaicKey) { image = hit; return }
+            let made = await FolderMosaicService.shared.mosaic(
+                mosaicKey, songs: Array(songs.prefix(4)), cover: nil, sidePoints: size, scale: displayScale
+            )
+            guard !Task.isCancelled, let made else { return }
+            withAnimation(LumiMotion.glide(0.22)) { image = made }
         }
     }
 }
@@ -1069,7 +1079,7 @@ private struct HubSongCarousel: View {
                                 VStack(alignment: .leading, spacing: 6) {
                                     ArtworkThumbnail(song: song, size: cardWidth)
                                         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                                        .shadow(color: .black.opacity(0.35), radius: 8, y: 5)
+                                        .shadowBehind(RoundedRectangle(cornerRadius: 14, style: .continuous), radius: 8, y: 5)
                                         .overlay(alignment: .bottomTrailing) { nowPlayingBadge(for: song) }
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(song.displayName)
@@ -1305,10 +1315,9 @@ private struct HubJumpBackInGrid: View {
         }
         .padding(6)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .adaptiveGlass(
-            tint: accent.opacity(0.08),
+        .cellSurface(
             in: RoundedRectangle(cornerRadius: 12, style: .continuous),
-            fallback: AppTheme.surface
+            fallback: AppTheme.surface.opacity(0.6)
         )
     }
 }
@@ -1997,10 +2006,9 @@ private struct HubFriendsActivityCarousel: View {
                             }
                             .padding(10)
                             .frame(width: 168, height: 100, alignment: .topLeading)
-                            .adaptiveGlass(
-                                tint: AppTheme.dynamicAccent.opacity(0.1),
+                            .cellSurface(
                                 in: RoundedRectangle(cornerRadius: 14, style: .continuous),
-                                fallback: AppTheme.surface
+                                fallback: AppTheme.surface.opacity(0.6)
                             )
                         }
                         .frame(width: 168, height: 100)
@@ -2196,16 +2204,18 @@ private struct HubParallaxCard<Content: View>: View {
     init(@ViewBuilder content: () -> Content) { self.content = content() }
 
     var body: some View {
-        GeometryReader { geo in
-            let midX = geo.frame(in: .global).midX
-            let screenMidX = UIScreen.main.bounds.width / 2
-            let distance = abs(midX - screenMidX)
-            let maxDistance = UIScreen.main.bounds.width / 2 + 100
-            let normalized = min(distance / maxDistance, 1)
-            content
-                .scaleEffect(1 - normalized * 0.08)
-                .opacity(1 - normalized * 0.25)
-        }
+        // `.scrollTransition` instead of a GeometryReader reading the card's
+        // global frame: that re-ran every visible card's body (artwork and
+        // all) on the main thread for every frame of ANY scroll, vertical
+        // included, across all eight hub carousels. The transition is
+        // applied by the scroll view's renderer without re-running bodies.
+        content
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .scrollTransition(.interactive, axis: .horizontal) { card, phase in
+                card
+                    .scaleEffect(1 - abs(phase.value) * 0.08)
+                    .opacity(1 - abs(phase.value) * 0.25)
+            }
     }
 }
 

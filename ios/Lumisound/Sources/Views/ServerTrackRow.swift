@@ -113,7 +113,7 @@ struct ServerTrackRow: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .adaptiveGlass(in: RoundedRectangle(cornerRadius: 16, style: .continuous), fallback: .ultraThinMaterial)
+        .cellSurface(in: RoundedRectangle(cornerRadius: 16, style: .continuous), fallback: AppTheme.surface.opacity(0.55))
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .stroke(.white.opacity(0.05), lineWidth: 1)

@@ -320,3 +320,31 @@ Full history and decisions: [`../RUST-PORT.md`](../RUST-PORT.md). Swift is views
 ## Open (render-server hangs)
 - If the CA-commit hangs continue on 2.0.0.47 with the gallery background on, try with it off for a day to
   confirm; next suspects are the Liquid Glass controls over the photo and the GIF live-blur path.
+
+## Done (2026-11-15, 60 fps pass over the Library screen and its tabs)
+Same causes as the Folders grid, removed everywhere they repeat per cell:
+- Real Liquid Glass per cell (a live backdrop blur per card/row, re-rendered whenever the content under it
+  moves): new `cellSurface(in:fallback:)` (Theme/GlassEffectCompat.swift) draws the pre-iOS 26 card look
+  (fallback fill + user glass tint + hairline) as plain shapes. Used by SongGridCell, card-style SongRow,
+  Album/Artist list rows, Hub Jump Back In + friends activity, search/cloud result rows (Server/Stream/User
+  track rows, stream grid cell, trending rows, station cards). One-off chrome keeps real glass.
+- `.shadow` on changing content (panning covers, fading artwork) = an offscreen pass per cell per frame: new
+  `shadowBehind(shape:)` (Theme/ScrollPerformance.swift) casts it from a static shape behind the cover. Songs
+  grid, album grid/list/Recently Added, artist grid/top shelf, hub speed dial + song carousel, mood cards,
+  mini player cover, Lumen album/artist/playlist covers.
+- `ShimmerOverlay` was a TimelineView re-running a SwiftUI body per loading cell (dozens during a fling): now a
+  Core Animation gradient band (`ShimmerBandView`); `SwiftUIShimmerOverlay` remains for `.drawingGroup()`.
+- `ArtworkThumbnail(pans:)`: covers under 100 pt (list rows) no longer pan — invisible at that size, but an
+  endless layer animation per row. Grid-size and larger covers still pan.
+- Hub: `HubArtworkCollage` (speed dial + top artists/decades/genres carousels) is one pre-rendered bitmap
+  (`FolderMosaicService` `.collage` style); `HubParallaxCard` uses `.scrollTransition` instead of a
+  GeometryReader reading the global frame (it re-ran every card's body on every frame of any scroll).
+- Songs list: `ForEach(sortedSongs)` + the cached index instead of `Array(sortedSongs.enumerated())` (a
+  full-library copy on every body pass).
+- Library header glow: radial gradient instead of a 60 pt blur filter.
+
+## Open (performance)
+- Verify on device (Library tabs, hub, folder/album pages) that flings hold 60/120 fps; `main_thread_hitches`
+  telemetry on the next build is the field check.
+- Remaining per-item costs not touched: GeometryReader per grid cell (layout only), Lumen `LumenShelfCard` art
+  shadow (shape unknown), `PlaylistRow` sums durations per render.

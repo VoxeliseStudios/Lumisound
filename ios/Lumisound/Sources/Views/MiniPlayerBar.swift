@@ -121,7 +121,7 @@ struct MiniPlayerBar: View {
                         RoundedRectangle(cornerRadius: 10, style: .continuous)
                             .stroke(.white.opacity(0.12), lineWidth: 1)
                     )
-                    .shadow(color: .black.opacity(0.25), radius: 5, x: 0, y: 3)
+                    .shadowBehind(RoundedRectangle(cornerRadius: 10, style: .continuous), opacity: 0.25, radius: 5, y: 3)
             }
         }
     }

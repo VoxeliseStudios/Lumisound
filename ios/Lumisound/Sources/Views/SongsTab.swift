@@ -465,8 +465,11 @@ struct SongsTab: View {
                                         }
                                     }
                                 } else {
-                                    ForEach(Array(sortedSongs.enumerated()), id: \.element.id) { index, song in
-                                        songRowContent(song, flatIndex: index)
+                                    // Index from `songIndexCache`: `Array(sortedSongs.enumerated())`
+                                    // copied the whole library (thousands of songs) into a
+                                    // new array on every body pass of this tab.
+                                    ForEach(sortedSongs) { song in
+                                        songRowContent(song, flatIndex: songIndexCache[song.id] ?? 0)
                                     }
                                 }
                             }
@@ -514,7 +517,7 @@ struct SongsTab: View {
                                         player.play(song: song, in: sortedSongs, uiSource: "library_songs")
                                     } label: {
                                         SongGridCell(song: song, isCurrent: player.currentSong?.id == song.id)
-                                            .shadow(color: .black.opacity(0.35), radius: 10, y: 6)
+                                            .shadowBehind(RoundedRectangle(cornerRadius: 10, style: .continuous))
                                     }
                                     .buttonStyle(.plain)
                                 }

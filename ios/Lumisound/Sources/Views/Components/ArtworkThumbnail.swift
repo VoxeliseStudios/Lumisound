@@ -22,6 +22,14 @@ struct ArtworkThumbnail: View {
     /// Required inside a `.drawingGroup()` (Now Playing's styles), which
     /// renders UIKit views blank.
     var drawsInSwiftUI: Bool = false
+    /// Slide non-square art across the frame (see `PanningArtwork`). By
+    /// default only covers of 100 pt and up pan: in a list row (32–64 pt) the
+    /// slide is a few points nobody sees, but each one is an endless layer
+    /// animation the render server re-composites every frame, a dozen or more
+    /// per screen of rows.
+    var pans: Bool? = nil
+
+    private var effectivePans: Bool { pans ?? (size >= 100) }
 
     @Environment(\.displayScale) private var displayScale
     @State private var image: UIImage? = nil
@@ -44,7 +52,7 @@ struct ArtworkThumbnail: View {
                     if drawsInSwiftUI {
                         SwiftUIPanningArtwork(image: image, size: size)
                     } else {
-                        PanningArtwork(image: image)
+                        PanningArtwork(image: image, pans: effectivePans)
                             .frame(width: size, height: size)
                     }
                 }
@@ -130,8 +138,10 @@ struct ArtworkThumbnail: View {
             }
             .overlay {
                 if image == nil, isLoading {
-                    ShimmerOverlay()
-                        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                    Group {
+                        if drawsInSwiftUI { SwiftUIShimmerOverlay() } else { ShimmerOverlay() }
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
                 }
             }
             .frame(width: size, height: size)

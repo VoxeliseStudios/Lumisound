@@ -124,7 +124,7 @@ struct StreamTrackGridCell: View {
             }
         }
         .padding(8)
-        .adaptiveGlass(in: RoundedRectangle(cornerRadius: 14, style: .continuous), fallback: .ultraThinMaterial)
+        .cellSurface(in: RoundedRectangle(cornerRadius: 14, style: .continuous), fallback: AppTheme.surface.opacity(0.55))
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .stroke(.white.opacity(0.05), lineWidth: 1)
