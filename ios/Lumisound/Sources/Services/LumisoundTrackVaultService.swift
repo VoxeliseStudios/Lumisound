@@ -320,7 +320,6 @@ enum LumisoundTrackVaultService {
     /// per-file (an 8-byte header read for anything already migrated) and,
     /// same reasoning as every other pass in this file, self-healing beats
     /// a permanently-stuck track if a given relock attempt fails once.
-    @MainActor
     /// Inside the app's own Documents (downloads and Files imports), as
     /// opposed to a security-scoped folder the user linked from elsewhere.
     nonisolated static func isOwnedImport(_ url: URL) -> Bool {
@@ -328,6 +327,7 @@ enum LumisoundTrackVaultService {
         return url.standardizedFileURL.path.hasPrefix(docs.standardizedFileURL.path + "/")
     }
 
+    @MainActor
     private static func runLegacyRelockPass(library: LibraryManager, startedAt: Date = Date()) async {
         // Finding the candidates opens and reads the header of every
         // converted track: disk I/O across the whole library. Done per song
