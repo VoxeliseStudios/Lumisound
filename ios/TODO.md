@@ -2,6 +2,17 @@
 
 Full history and decisions: [`../RUST-PORT.md`](../RUST-PORT.md). Swift is views + app shell only.
 
+## Done (2026-11-16) — Live Activity one track behind
+- Report (2.0.0.61): widgets follow, the Lock Screen card stays a track behind. Logs: a seek moved the real
+  switch 80 s earlier; that update (new `advanceAt`) never reached the activity, so it redrew at the old
+  stale date with the next track already over, and with no later stale date stayed behind.
+- `NSSupportsLiveActivitiesFrequentUpdates` on (bigger update budget).
+- `LiveActivityManager` sends only changes the card shows (track, play state, favourite, art, up next,
+  `advanceAt` > 1 s, position jump > 1.5 s); drift re-anchors no longer spend the budget.
+- `verify()` retries in the background too, for wrong track / play state only, at most every 5 s.
+- One log line per track change: "delivered"/"NOT delivered" + foreground/background — read these from the
+  device logs if it still lags.
+
 ## Done (2026-11-16) — Live Activity switches tracks on time
 - iOS drops the app's Live Activity updates while it plays in the background (logs: "activity showed X,
   resending Y" on return), and push updates need APNs, which sideloaded builds can't have. The snapshot now

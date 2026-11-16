@@ -142,6 +142,8 @@
     <!-- Live Activities — Lock Screen / Dynamic Island Now Playing -->
     <key>NSSupportsLiveActivities</key>
     <true/>
+    <key>NSSupportsLiveActivitiesFrequentUpdates</key>
+    <true/>
 
     <!-- Privacy usage descriptions -->
     <!-- Required by CMHeadphoneMotionManager (Spatial Audio's head tracking) —

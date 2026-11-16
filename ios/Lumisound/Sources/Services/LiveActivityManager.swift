@@ -46,9 +46,11 @@ enum LiveActivityManager {
             return
         }
         let live = liveActivities
-        // Identical content (e.g. a favourite update that changed nothing):
-        // skip the IPC round trip.
-        if let last = lastPublished, last.sameContent(as: snapshot), !live.isEmpty { return }
+        // Nothing the card would show differently (a favourite update that
+        // changed nothing, or a small timing re-anchor the bar absorbs): skip
+        // it. iOS budgets Live Activity updates, and spending them on drift
+        // corrections is what let a track change be dropped in the background.
+        if let last = lastPublished, !live.isEmpty, !materiallyDifferent(last, snapshot) { return }
         lastPublished = snapshot
 
         if !live.isEmpty {
@@ -86,17 +88,41 @@ enum LiveActivityManager {
         }
     }
 
+    /// Whether `b` would look different on the Lock Screen than `a`.
+    private static func materiallyDifferent(_ a: NowPlayingSnapshot, _ b: NowPlayingSnapshot) -> Bool {
+        if a.trackID != b.trackID || a.isPlaying != b.isPlaying || a.isFavorite != b.isFavorite { return true }
+        if a.title != b.title || a.artist != b.artist || a.detail != b.detail { return true }
+        if a.thumbFile != b.thumbFile || a.tint != b.tint || a.artworkAspect != b.artworkAspect { return true }
+        if (a.upNext ?? []).map(\.id) != (b.upNext ?? []).map(\.id) || a.queueIndex != b.queueIndex || a.queueCount != b.queueCount { return true }
+        if abs(a.rate - b.rate) > 0.001 || abs(a.duration - b.duration) > 1 { return true }
+        switch (a.advanceAt, b.advanceAt) {
+        case (nil, nil): break
+        case let (x?, y?): if abs(x.timeIntervalSince(y)) > 1 { return true }
+        default: return true
+        }
+        let now = Date()
+        return abs(a.elapsed(at: now) - b.elapsed(at: now)) > 1.5
+    }
+
+    /// Track of the last change whose delivery was logged (one line per track).
+    private static var loggedDeliveryFor: String?
+
     /// Called every player tick and by the watchdog. If what an activity
     /// actually holds is a different track, play state or timeline than the
     /// last published snapshot, send the latest one again.
     static func verify() {
-        // In the background iOS ignores these updates anyway (outside an
-        // intent, where `flush` sets `inIntent`); resending would only burn
-        // battery. The foreground republish and the end-of-track refresh
-        // cover that time.
-        guard inIntent || UIApplication.shared.applicationState == .active else { return }
         guard let latest = lastPublished, pending == nil, !sending else { return }
         guard let stale = liveActivities.first(where: { !$0.content.state.now.isDelivery(of: latest) }) else { return }
+        let foreground = inIntent || UIApplication.shared.applicationState == .active
+        if !foreground {
+            // In the background iOS budgets (and may refuse) these updates:
+            // retry only when the card shows the wrong track or play state,
+            // at most every 5 s (the player tick keeps calling this while
+            // playing, so a refused track change is retried until it lands).
+            let shown = stale.content.state.now
+            guard shown.trackID != latest.trackID || shown.isPlaying != latest.isPlaying else { return }
+            if let last = lastVerifyResend, Date().timeIntervalSince(last) < 5 { return }
+        }
         if let last = lastVerifyResend, Date().timeIntervalSince(last) < 1.5 { return }
         lastVerifyResend = Date()
         appWarn("LiveActivityManager: activity showed \"\(stale.content.state.now.title)\", resending \"\(latest.title)\"", category: "widget")
@@ -152,8 +178,17 @@ enum LiveActivityManager {
                 }
                 // Confirm what the system now holds; anything that didn't take
                 // goes round again (bounded).
-                if pending == nil, live.contains(where: { !$0.content.state.now.isDelivery(of: next) }) {
+                let missed = live.contains(where: { !$0.content.state.now.isDelivery(of: next) })
+                if pending == nil, missed {
                     pending = next
+                }
+                // One line per track change: did it reach the Lock Screen, and
+                // was the app in the background (where iOS may refuse it)?
+                if loggedDeliveryFor != next.trackID, pending == nil || !missed || rounds >= 6 {
+                    loggedDeliveryFor = next.trackID
+                    let state = UIApplication.shared.applicationState == .active ? "foreground" : "background"
+                    let msg = "LiveActivityManager: \(missed ? "NOT delivered" : "delivered") \"\(next.title)\" (\(state), round \(rounds), \(live.count) activity)"
+                    if missed { appWarn(msg, category: "widget") } else { appLog(msg, category: "widget") }
                 }
             }
             pending = nil
