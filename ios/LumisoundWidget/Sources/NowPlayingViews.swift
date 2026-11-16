@@ -227,15 +227,93 @@ struct NowPlayingLabels: View {
     }
 }
 
-/// Background: the artwork's colour, darkened, so text stays readable on any art.
+/// Background: the artwork itself, heavily blurred, under the artwork's
+/// darkened colour, so every widget looks like its track while text stays
+/// readable on any art. Without artwork it is the tint gradient alone.
 struct NowPlayingBackdrop: View {
     let snapshot: NowPlayingSnapshot
+    var artwork: UIImage? = nil
 
     var body: some View {
-        LinearGradient(
-            colors: [snapshot.backdropColor, Color(white: 0.04)],
-            startPoint: .topLeading,
-            endPoint: .bottomTrailing
-        )
+        ZStack {
+            LinearGradient(
+                colors: [snapshot.backdropColor, Color(white: 0.04)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            if let artwork {
+                GeometryReader { geo in
+                    Image(uiImage: artwork)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: geo.size.width, height: geo.size.height)
+                        .blur(radius: 28, opaque: true)
+                        .saturation(1.25)
+                        .opacity(0.55)
+                        .clipped()
+                }
+                LinearGradient(
+                    colors: [Color.black.opacity(0.25), Color.black.opacity(0.62)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            }
+        }
+    }
+}
+
+/// One Up Next row: small art, title and artist. A button that skips ahead
+/// to that track.
+struct UpNextRow: View {
+    let item: NowPlayingSnapshot.UpNextItem
+    var artSize: CGFloat = 34
+    var titleSize: CGFloat = 13
+
+    var body: some View {
+        Button(intent: PlayUpNextIntent(trackID: item.id)) {
+            HStack(spacing: 10) {
+                art
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(item.title)
+                        .font(.system(size: titleSize, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                    if !item.artist.isEmpty {
+                        Text(item.artist)
+                            .font(.system(size: titleSize * 0.82))
+                            .foregroundStyle(.white.opacity(0.65))
+                            .lineLimit(1)
+                    }
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "play.fill")
+                    .font(.system(size: titleSize * 0.75, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.45))
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder private var art: some View {
+        let shape = RoundedRectangle(cornerRadius: artSize * 0.22, style: .continuous)
+        if let image = NowPlayingSnapshot.loadImage(item.artFile, maxPixel: 120, directory: NowPlayingSnapshot.upNextDirectory) {
+            Image(uiImage: image)
+                .resizable()
+                .widgetAccentedRenderingMode(.fullColor)
+                .scaledToFill()
+                .frame(width: artSize, height: artSize)
+                .clipShape(shape)
+        } else {
+            shape
+                .fill(LinearGradient(colors: [tint.opacity(0.6), tint.opacity(0.2)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                .frame(width: artSize, height: artSize)
+                .overlay(Image(systemName: "music.note").font(.system(size: artSize * 0.4, weight: .semibold)).foregroundStyle(.white.opacity(0.8)))
+        }
+    }
+
+    private var tint: Color {
+        guard let t = item.tint else { return Color(white: 0.5) }
+        return Color(red: Double((t >> 16) & 0xFF) / 255, green: Double((t >> 8) & 0xFF) / 255, blue: Double(t & 0xFF) / 255)
     }
 }

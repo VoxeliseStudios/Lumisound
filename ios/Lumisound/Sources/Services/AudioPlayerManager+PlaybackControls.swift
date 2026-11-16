@@ -373,6 +373,27 @@ extension AudioPlayerManager {
         }
     }
 
+    /// Jumps to an upcoming queue track (an Up Next widget row). Looks for
+    /// `trackID` after the current track first (wrapping), so a track that
+    /// appears twice plays its next occurrence. False if it left the queue.
+    @discardableResult
+    func playUpNext(trackID: String) -> Bool {
+        guard !queue.isEmpty else { return false }
+        let n = queue.count
+        guard let offset = (1..<max(n, 1)).first(where: { queue[(currentIndex + $0) % n].id == trackID }) else {
+            appWarn("Up Next: \(trackID) is no longer in the queue", category: "audio")
+            return false
+        }
+        currentIndex = (currentIndex + offset) % n
+        currentSong = queue[currentIndex]
+        gaplessScheduled = false
+        pendingNextIndex = nil
+        appLog("Up Next → \"\(currentSong?.displayName ?? "?")\"", category: "audio")
+        playCurrent(from: 0)
+        savePlaybackState()
+        return true
+    }
+
     func skipToPrevious() {
         guard !queue.isEmpty else { return }
         if position > 4 {

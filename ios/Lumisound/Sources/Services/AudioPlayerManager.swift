@@ -73,6 +73,7 @@ final class AudioPlayerManager: ObservableObject {
                 currentIndex = min(max(currentIndex, 0), queue.count - 1)
             }
             pushQueueToBridge()
+            WidgetDataService.shared.queueDidChange()
         }
     }
 
@@ -91,7 +92,9 @@ final class AudioPlayerManager: ObservableObject {
     func isInActiveQueue(songID: String) -> Bool {
         queue.contains { $0.id == songID }
     }
-    @Published var currentIndex = 0
+    @Published var currentIndex = 0 {
+        didSet { if currentIndex != oldValue { WidgetDataService.shared.queueDidChange() } }
+    }
     /// Which playlist (if any) the current queue was started from — lets
     /// Now Playing auto-apply that playlist's remembered artwork style.
     /// Cleared whenever a queue is set without a playlist context (Library,
@@ -696,6 +699,17 @@ final class AudioPlayerManager: ObservableObject {
             case .skipNext:       self.skipToNext()
             case .skipPrevious:   self.skipToPrevious()
             case .toggleFavorite: self.toggleFavoriteFromWidget()
+            case .setPlaying(let on):
+                if on != self.isPlaying { self.togglePlayPause() }
+            case .setFavorite(let on):
+                if let song = self.currentSong, (LibraryManager.shared?.isFavorite(songID: song.id) ?? false) != on {
+                    self.toggleFavoriteFromWidget()
+                } else if let song = self.currentSong {
+                    // Already so: overwrite the widget's optimistic guess.
+                    WidgetDataService.shared.updateFavoriteState(isFavorite: LibraryManager.shared?.isFavorite(songID: song.id) ?? false)
+                }
+            case .playUpNext(let id):
+                return self.playUpNext(trackID: id)
             }
             return true
         }

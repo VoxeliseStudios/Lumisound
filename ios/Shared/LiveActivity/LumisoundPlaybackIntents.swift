@@ -37,13 +37,27 @@ enum LumisoundPlaybackCommand: Sendable {
     case skipNext
     case skipPrevious
     case toggleFavorite
+    /// Control Center toggles say what they want, not "flip it".
+    case setPlaying(Bool)
+    case setFavorite(Bool)
+    /// Jump to an upcoming queue track (Up Next widget rows).
+    case playUpNext(trackID: String)
 
-    var darwinName: String {
+    /// Darwin fallback for when the intent ran in the widget extension (an
+    /// older app build): only the plain commands have one; a set-command
+    /// becomes a toggle when the shared snapshot says the state differs.
+    var darwinName: String? {
         switch self {
         case .togglePlayback: return WidgetNotificationNames.togglePlayback
         case .skipNext:       return WidgetNotificationNames.skipNext
         case .skipPrevious:   return WidgetNotificationNames.skipPrevious
         case .toggleFavorite: return WidgetNotificationNames.toggleFavorite
+        case .setPlaying(let on):
+            return NowPlayingSnapshot.load()?.isPlaying == on ? nil : WidgetNotificationNames.togglePlayback
+        case .setFavorite(let on):
+            return NowPlayingSnapshot.load()?.isFavorite == on ? nil : WidgetNotificationNames.toggleFavorite
+        case .playUpNext:
+            return nil
         }
     }
 }
@@ -74,9 +88,10 @@ enum LumisoundPlaybackCommandRouter {
             await settle?()
             return
         }
+        guard let name = command.darwinName else { return }
         CFNotificationCenterPostNotification(
             CFNotificationCenterGetDarwinNotifyCenter(),
-            CFNotificationName(command.darwinName as CFString),
+            CFNotificationName(name as CFString),
             nil, nil, true
         )
     }
@@ -151,6 +166,73 @@ struct ToggleFavoriteIntent: LiveActivityIntent {
         }
 
         await LumisoundPlaybackCommandRouter.perform(.toggleFavorite)
+        return .result()
+    }
+}
+
+// MARK: - Control Center / Lock Screen controls
+
+/// Play/Pause as a Control Center toggle (on = playing).
+struct SetPlayingIntent: SetValueIntent, AudioPlaybackIntent, LiveActivityIntent {
+    static let title: LocalizedStringResource = "Play or Pause"
+    static let description = IntentDescription("Plays or pauses Lumisound.")
+    static let openAppWhenRun: Bool = false
+    static let isDiscoverable: Bool = false
+
+    @Parameter(title: "Playing")
+    var value: Bool
+
+    init() {}
+
+    func perform() async throws -> some IntentResult {
+        await LumisoundPlaybackCommandRouter.perform(.setPlaying(value))
+        return .result()
+    }
+}
+
+/// Favourite as a Control Center toggle (on = favourited).
+struct SetFavoriteIntent: SetValueIntent, LiveActivityIntent {
+    static let title: LocalizedStringResource = "Favorite Current Track"
+    static let description = IntentDescription("Favorites or unfavorites the track playing in Lumisound.")
+    static let openAppWhenRun: Bool = false
+    static let isDiscoverable: Bool = false
+
+    @Parameter(title: "Favorite")
+    var value: Bool
+
+    init() {}
+
+    func perform() async throws -> some IntentResult {
+        if var snapshot = NowPlayingSnapshot.load(), snapshot.isFavorite != value {
+            snapshot.isFavorite = value
+            snapshot.save()
+            WidgetCenter.shared.reloadAllTimelines()
+        }
+        await LumisoundPlaybackCommandRouter.perform(.setFavorite(value))
+        return .result()
+    }
+}
+
+// MARK: - Up Next
+
+/// Plays an upcoming track from the Up Next widget (skipping to it in the queue).
+struct PlayUpNextIntent: AudioPlaybackIntent, LiveActivityIntent {
+    static let title: LocalizedStringResource = "Play Up Next Track"
+    static let description = IntentDescription("Skips ahead to a track in Lumisound's Up Next.")
+    static let openAppWhenRun: Bool = false
+    static let isDiscoverable: Bool = false
+
+    @Parameter(title: "Track")
+    var trackID: String
+
+    init() {}
+
+    init(trackID: String) {
+        self.trackID = trackID
+    }
+
+    func perform() async throws -> some IntentResult {
+        await LumisoundPlaybackCommandRouter.perform(.playUpNext(trackID: trackID))
         return .result()
     }
 }

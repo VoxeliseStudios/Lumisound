@@ -42,6 +42,14 @@ final class WidgetDataService {
     private var loggedMissingAppGroup = false
     private static var lastRevision: Int64 = 0
 
+    /// Up Next for `upNextTrackID` (the queue after that track), carried into
+    /// every snapshot published for it.
+    private var upNextTrackID: String?
+    private var upNextItems: [NowPlayingSnapshot.UpNextItem] = []
+    private var queuePosition: (index: Int, count: Int)?
+    private var upNextArtTask: Task<Void, Never>?
+    private var queueChangeTask: Task<Void, Never>?
+
     private init() {
         current = NowPlayingSnapshot.load(from: defaults) ?? .empty
     }
@@ -72,6 +80,7 @@ final class WidgetDataService {
             return
         }
         trackChangedAt = Date()
+        computeUpNext(for: song.id)
         var s = baseSnapshot(for: song, isFavorite: isFavorite)
         s.isPlaying = isPlaying
         s.position = 0
@@ -188,6 +197,15 @@ final class WidgetDataService {
     /// the widgets reload now instead of waiting out the reload spacing.
     private func publish(_ snapshot: NowPlayingSnapshot, widgets: Bool, urgent: Bool = false) {
         var snapshot = snapshot.sanitized
+        if snapshot.hasTrack, snapshot.trackID == upNextTrackID {
+            snapshot.upNext = upNextItems.isEmpty ? nil : upNextItems
+            snapshot.queueIndex = queuePosition?.index
+            snapshot.queueCount = queuePosition?.count
+        } else {
+            snapshot.upNext = nil
+            snapshot.queueIndex = nil
+            snapshot.queueCount = nil
+        }
         // Strictly increasing, so the Live Activity view can tell which of its
         // two copies (ActivityKit state, App Group) is the newer one.
         let now = Int64(Date().timeIntervalSince1970 * 1000)
@@ -243,6 +261,7 @@ final class WidgetDataService {
             pendingReload = nil
             lastReloadTime = Date()
             WidgetCenter.shared.reloadAllTimelines()
+            ControlCenter.shared.reloadAllControls()
             return
         }
         guard pendingReload == nil else { return }
@@ -253,7 +272,114 @@ final class WidgetDataService {
             self.pendingReload = nil
             self.lastReloadTime = Date()
             WidgetCenter.shared.reloadAllTimelines()
+            ControlCenter.shared.reloadAllControls()
         }
+    }
+
+    // MARK: - Up Next
+
+    /// The queue changed (added, removed, reordered, shuffled, or the index
+    /// moved without a track change). Coalesced: a drag-reorder or a batch
+    /// edit fires many of these.
+    func queueDidChange() {
+        queueChangeTask?.cancel()
+        queueChangeTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 600_000_000)
+            guard let self, !Task.isCancelled, self.current.hasTrack else { return }
+            let before = (self.upNextItems.map(\.id), self.queuePosition?.index, self.queuePosition?.count)
+            self.computeUpNext(for: self.current.trackID)
+            let after = (self.upNextItems.map(\.id), self.queuePosition?.index, self.queuePosition?.count)
+            if before.0 != after.0 || before.1 != after.1 || before.2 != after.2 {
+                self.publish(self.current, widgets: true)
+            }
+        }
+    }
+
+    /// The next `upNextLimit` tracks after `trackID` (wrapping when repeat-all
+    /// is on), with artwork already on disk; missing art is fetched after.
+    private func computeUpNext(for trackID: String) {
+        guard let player = AudioPlayerManager.shared else { return }
+        let queue = player.queue
+        upNextTrackID = trackID
+        guard let i = queue.indices.contains(player.currentIndex) && queue[player.currentIndex].id == trackID
+                ? player.currentIndex : queue.firstIndex(where: { $0.id == trackID }) else {
+            upNextItems = []
+            queuePosition = nil
+            return
+        }
+        queuePosition = (i + 1, queue.count)
+        var next: [Song] = []
+        var j = i + 1
+        while next.count < NowPlayingSnapshot.upNextLimit, next.count < queue.count - 1 {
+            if j >= queue.count {
+                guard player.repeatMode == .all else { break }
+                j = 0
+            }
+            next.append(queue[j])
+            j += 1
+        }
+        upNextItems = next.map { song in
+            let file = Self.upNextFileName(for: song.id)
+            let have = file.flatMap { NowPlayingSnapshot.artworkURL($0, directory: NowPlayingSnapshot.upNextDirectory) }
+                .map { FileManager.default.fileExists(atPath: $0.path) } ?? false
+            return NowPlayingSnapshot.UpNextItem(id: song.id, title: song.displayName, artist: song.artistName,
+                                                 artFile: have ? file : nil, tint: Self.upNextTints[song.id])
+        }
+        fillUpNextArtwork(next)
+    }
+
+    /// Tint per up-next track ID (this session).
+    private static var upNextTints: [String: UInt32] = [:]
+
+    private static func upNextFileName(for trackID: String) -> String? {
+        trackID.isEmpty ? nil : "next-\(fileStem(for: trackID)).jpg"
+    }
+
+    /// Loads and writes 160 px thumbnails for up-next tracks that have none
+    /// yet, then republishes once. Skipped without an App Group folder (the
+    /// defaults fallback only keeps the current track's art).
+    private func fillUpNextArtwork(_ songs: [Song]) {
+        upNextArtTask?.cancel()
+        let missing = songs.filter { song in upNextItems.first(where: { $0.id == song.id })?.artFile == nil }
+        guard !missing.isEmpty, NowPlayingSnapshot.artworkURL("x", directory: NowPlayingSnapshot.upNextDirectory) != nil else { return }
+        let forTrack = upNextTrackID
+        upNextArtTask = Task { @MainActor [weak self] in
+            var wrote = false
+            for song in missing {
+                guard !Task.isCancelled else { return }
+                guard let image = await ArtworkService.shared.loadArtwork(for: song),
+                      let name = Self.upNextFileName(for: song.id),
+                      let url = NowPlayingSnapshot.artworkURL(name, directory: NowPlayingSnapshot.upNextDirectory),
+                      let data = ImageDownsampler.jpegData(image, maxPixelSize: 160, compressionQuality: 0.8)
+                else { continue }
+                do {
+                    try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                    try data.write(to: url, options: .atomic)
+                } catch { continue }
+                Self.upNextTints[song.id] = Self.averageTint(image)
+                guard let self, self.upNextTrackID == forTrack else { return }
+                if let k = self.upNextItems.firstIndex(where: { $0.id == song.id }) {
+                    self.upNextItems[k].artFile = name
+                    self.upNextItems[k].tint = Self.upNextTints[song.id]
+                    wrote = true
+                }
+            }
+            guard let self, wrote, self.upNextTrackID == forTrack, self.current.trackID == forTrack else { return }
+            self.pruneUpNextArtwork()
+            self.publish(self.current, widgets: true)
+        }
+    }
+
+    /// Keeps the current up-next thumbnails plus a few recent ones.
+    private func pruneUpNextArtwork() {
+        guard let probe = NowPlayingSnapshot.artworkURL("x", directory: NowPlayingSnapshot.upNextDirectory) else { return }
+        let dir = probe.deletingLastPathComponent()
+        let fm = FileManager.default
+        guard let files = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey]) else { return }
+        let keep = Set(upNextItems.compactMap(\.artFile))
+        let date = { (url: URL) in (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast }
+        let stale = files.filter { !keep.contains($0.lastPathComponent) }.sorted { date($0) > date($1) }
+        for url in stale.dropFirst(6) { try? fm.removeItem(at: url) }
     }
 
     // MARK: - Artwork

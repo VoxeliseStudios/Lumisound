@@ -46,11 +46,31 @@ struct NowPlayingSnapshot: Codable, Hashable, Sendable {
     /// a Live Activity holds, and lets the Live Activity view prefer the App
     /// Group copy when that is newer than an update that was dropped.
     var revision: Int64?
+    /// The next tracks in the queue (up to `upNextLimit`), for the Up Next
+    /// widget and the Live Activity's "Up next" line. Optional so snapshots
+    /// saved by older builds still decode.
+    var upNext: [UpNextItem]?
+    /// 1-based position of this track in the queue, and the queue length.
+    var queueIndex: Int?
+    var queueCount: Int?
+
+    /// One upcoming track. `artFile` lives in `upNextDirectory` (small
+    /// thumbnails, separate from the current track's artwork files).
+    struct UpNextItem: Codable, Hashable, Sendable, Identifiable {
+        var id: String
+        var title: String
+        var artist: String
+        var artFile: String?
+        var tint: UInt32?
+    }
+
+    static let upNextLimit = 3
 
     static let empty = NowPlayingSnapshot(
         trackID: "", title: "", artist: "", detail: nil, bpm: nil, isPlaying: false,
         position: 0, duration: 0, rate: 1, anchor: .distantPast, isFavorite: false,
-        artworkFile: nil, thumbFile: nil, artworkAspect: 1, tint: nil, revision: nil
+        artworkFile: nil, thumbFile: nil, artworkAspect: 1, tint: nil, revision: nil,
+        upNext: nil, queueIndex: nil, queueCount: nil
     )
 
     /// Same content, ignoring the publish stamp.
@@ -75,9 +95,16 @@ struct NowPlayingSnapshot: Codable, Hashable, Sendable {
 
     static let defaultsKey = "now_playing_snapshot_v2"
     static let artworkDirectory = "NowPlayingArt"
+    static let upNextDirectory = "UpNextArt"
     static let wideAspect = 1.3
 
     var hasTrack: Bool { !title.isEmpty }
+    var nextTrack: UpNextItem? { upNext?.first }
+    /// "3 of 24", when the queue has more than one track.
+    var queueLabel: String? {
+        guard let i = queueIndex, let n = queueCount, n > 1, i >= 1, i <= n else { return nil }
+        return "\(i) of \(n)"
+    }
     var isWide: Bool { artworkAspect >= Self.wideAspect }
     private var safeRate: Double { rate.isFinite && rate > 0.05 ? rate : 1 }
 
@@ -165,11 +192,11 @@ struct NowPlayingSnapshot: Codable, Hashable, Sendable {
         return true
     }
 
-    static func artworkURL(_ file: String?) -> URL? {
+    static func artworkURL(_ file: String?, directory: String = artworkDirectory) -> URL? {
         guard let file, !file.isEmpty, !file.contains("/"),
               let container = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: AppGroup.id)
         else { return nil }
-        return container.appendingPathComponent(artworkDirectory, isDirectory: true).appendingPathComponent(file)
+        return container.appendingPathComponent(directory, isDirectory: true).appendingPathComponent(file)
     }
 
     /// Where artwork goes when the App Group folder isn't reachable but the
@@ -186,10 +213,10 @@ struct NowPlayingSnapshot: Codable, Hashable, Sendable {
     /// Decodes an artwork file straight to at most `maxPixel` on its long
     /// side (ImageIO thumbnailing, no full-size decode) — widget extensions
     /// run under a tight memory cap.
-    static func loadImage(_ file: String?, maxPixel: Int) -> UIImage? {
+    static func loadImage(_ file: String?, maxPixel: Int, directory: String = artworkDirectory) -> UIImage? {
         let srcOpts = [kCGImageSourceShouldCache: false] as CFDictionary
         let src: CGImageSource?
-        if let url = artworkURL(file) {
+        if let url = artworkURL(file, directory: directory) {
             src = CGImageSourceCreateWithURL(url as CFURL, srcOpts)
         } else if let file, !file.isEmpty,
                   let data = UserDefaults(suiteName: AppGroup.id)?.data(forKey: defaultsArtPrefix + file) {

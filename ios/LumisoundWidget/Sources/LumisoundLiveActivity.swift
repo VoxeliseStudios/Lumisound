@@ -31,8 +31,11 @@ struct LumisoundLiveActivity: Widget {
                     .buttonStyle(.plain)
                 }
                 DynamicIslandExpandedRegion(.center) {
-                    NowPlayingLabels(snapshot: s, titleSize: 15)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    VStack(alignment: .leading, spacing: 2) {
+                        NowPlayingLabels(snapshot: s, titleSize: 15, showsDetail: s.nextTrack == nil)
+                        UpNextCaption(snapshot: s, size: 11)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 DynamicIslandExpandedRegion(.bottom) {
                     VStack(spacing: 6) {
@@ -102,9 +105,12 @@ private struct LiveActivityLockScreen: View {
             }
             .padding(10)
         default:
-            VStack(spacing: 10) {
+            // Lock Screen cards are capped at 160 pt: the art shrinks a
+            // little when an "Up next" line has to fit underneath.
+            let hasNext = snapshot.nextTrack != nil
+            VStack(spacing: hasNext ? 8 : 10) {
                 HStack(alignment: .center, spacing: 12) {
-                    NowPlayingArtwork(image: art, snapshot: snapshot, height: snapshot.isWide ? 54 : 62, cornerRadius: 12)
+                    NowPlayingArtwork(image: art, snapshot: snapshot, height: snapshot.isWide ? 50 : (hasNext ? 56 : 62), cornerRadius: 12)
                     NowPlayingLabels(snapshot: snapshot, titleSize: 16)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.trailing, 28) // room for the heart
@@ -116,9 +122,25 @@ private struct LiveActivityLockScreen: View {
                         NowPlayingControls(snapshot: snapshot, size: 19, spacing: 24, showsFavorite: false)
                     }
                 }
+                if hasNext {
+                    UpNextCaption(snapshot: snapshot, size: 11)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
             .padding(.horizontal, 16)
-            .padding(.vertical, 14)
+            .padding(.vertical, hasNext ? 12 : 14)
+            .background {
+                // The track's own art, blurred, behind the tint (the Live
+                // Activity thumbnail is small enough for its renderer).
+                if let art {
+                    Image(uiImage: art)
+                        .resizable()
+                        .scaledToFill()
+                        .blur(radius: 24, opaque: true)
+                        .opacity(0.35)
+                        .clipped()
+                }
+            }
             .overlay(alignment: .topTrailing) {
                 Button(intent: ToggleFavoriteIntent()) {
                     Image(systemName: snapshot.isFavorite ? "heart.fill" : "heart")
@@ -128,6 +150,33 @@ private struct LiveActivityLockScreen: View {
                 }
                 .buttonStyle(.plain)
                 .padding(6)
+            }
+        }
+    }
+}
+
+/// "Up next · Title — Artist", with the queue position on the right.
+private struct UpNextCaption: View {
+    let snapshot: NowPlayingSnapshot
+    var size: CGFloat = 11
+
+    var body: some View {
+        if let next = snapshot.nextTrack {
+            HStack(spacing: 6) {
+                Image(systemName: "text.line.first.and.arrowtriangle.forward")
+                    .font(.system(size: size * 0.9, weight: .semibold))
+                    .foregroundStyle(snapshot.tintColor)
+                Text(next.artist.isEmpty ? next.title : "\(next.title) — \(next.artist)")
+                    .font(.system(size: size, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.7))
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                if let q = snapshot.queueLabel {
+                    Text(q)
+                        .font(.system(size: size * 0.9, weight: .medium))
+                        .monospacedDigit()
+                        .foregroundStyle(.white.opacity(0.45))
+                }
             }
         }
     }

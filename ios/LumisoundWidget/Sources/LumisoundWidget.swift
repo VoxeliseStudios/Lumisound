@@ -8,6 +8,11 @@ struct LumisoundEntry: TimelineEntry {
     let date: Date
     let now: NowPlayingSnapshot
     let artwork: UIImage?
+
+    /// Smart Stack: rise to the top while music plays, sink when it stops.
+    var relevance: TimelineEntryRelevance? {
+        TimelineEntryRelevance(score: now.isPlaying ? 100 : now.hasTrack ? 5 : 0)
+    }
 }
 
 /// Reads the app's `NowPlayingSnapshot` (one atomic record, see
@@ -228,13 +233,13 @@ struct LumisoundWidgetEntryView: View {
                 .containerBackground(.clear, for: .widget)
         case .systemMedium:
             WidgetMediumView(entry: entry)
-                .containerBackground(for: .widget) { NowPlayingBackdrop(snapshot: entry.now) }
+                .containerBackground(for: .widget) { NowPlayingBackdrop(snapshot: entry.now, artwork: entry.artwork) }
         case .systemLarge:
             WidgetLargeView(entry: entry)
-                .containerBackground(for: .widget) { NowPlayingBackdrop(snapshot: entry.now) }
+                .containerBackground(for: .widget) { NowPlayingBackdrop(snapshot: entry.now, artwork: entry.artwork) }
         default:
             WidgetSmallView(entry: entry)
-                .containerBackground(for: .widget) { NowPlayingBackdrop(snapshot: entry.now) }
+                .containerBackground(for: .widget) { NowPlayingBackdrop(snapshot: entry.now, artwork: entry.artwork) }
         }
     }
 }
@@ -265,6 +270,11 @@ struct LumisoundWidget: Widget {
 struct LumisoundWidgetBundle: WidgetBundle {
     var body: some Widget {
         LumisoundWidget()
+        UpNextWidget()
         LumisoundLiveActivity()
+        LumisoundPlayPauseControl()
+        LumisoundNextControl()
+        LumisoundPreviousControl()
+        LumisoundFavoriteControl()
     }
 }

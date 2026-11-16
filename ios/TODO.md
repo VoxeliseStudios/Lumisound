@@ -2,6 +2,25 @@
 
 Full history and decisions: [`../RUST-PORT.md`](../RUST-PORT.md). Swift is views + app shell only.
 
+## Done (2026-11-16) — widgets + Live Activity upgrade
+- Control Center / Lock Screen / Action button controls (`LumisoundWidget/Sources/LumisoundControls.swift`):
+  Play/Pause and Favorite toggles that show the real state (App Group snapshot via `ControlValueProvider`),
+  Next and Previous buttons. Intents `SetPlayingIntent` / `SetFavoriteIntent` (SetValueIntent) run in the
+  app's process like the other buttons; the app reloads controls with the widgets. With the system media
+  player off (2.0.0.27) these are Lumisound's only Control Center controls.
+- Up Next widget (medium/large, `UpNextWidget.swift`): playing track + next 2/3 queue tracks with art; a row
+  tap skips to that track (`PlayUpNextIntent` → `AudioPlayerManager.playUpNext(trackID:)`), queue position.
+- Snapshot carries `upNext` (≤ 3: id, title, artist, 160 px art in `UpNextArt/`, tint), `queueIndex`,
+  `queueCount` (optional fields: older snapshots decode). `WidgetDataService` computes it on track change
+  (wraps on repeat-all), on queue/index edits (debounced 0.6 s), fetches missing art after, prunes old thumbs.
+- Live Activity: "Up next · title — artist" + queue position on the Lock Screen card (art 62 → 56 pt to stay
+  under 160 pt) and in the expanded Dynamic Island; blurred track art behind the Lock Screen card.
+- Widgets: blurred track art backdrop on small/medium/large; Smart Stack relevance (100 while playing).
+
+## Open (widgets, 2026-11-16)
+- Verify on device: controls in Control Center gallery, toggle state after app-side changes, Up Next row taps
+  launching a suspended app, Lock Screen card height with the Up next line.
+
 ## Done (2026-11-16) — inventory after a reinstall
 - `LibraryManager.hasCompletedLocalScan`: set when a Documents scan runs to the end; the inventory
   upload treats an empty library as loaded after that (was "library not loaded yet" forever on a fresh
