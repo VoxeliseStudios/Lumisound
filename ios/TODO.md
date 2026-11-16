@@ -2,6 +2,16 @@
 
 Full history and decisions: [`../RUST-PORT.md`](../RUST-PORT.md). Swift is views + app shell only.
 
+## Done (2026-11-16) — Live Activity switches tracks on time
+- iOS drops the app's Live Activity updates while it plays in the background (logs: "activity showed X,
+  resending Y" on return), and push updates need APNs, which sideloaded builds can't have. The snapshot now
+  carries `advanceAt` (planned Smart Crossfade start from `plannedBlendStart`, plain crossfade trigger, else
+  the track end; nil paused / repeat-one / nothing queued) and up-next lengths. The activity's stale date is
+  `advanceAt`, and `NowPlayingSnapshot.resolved(at:)` turns a playing snapshot past it into the next queue
+  track started at that instant (its art from `UpNextArt`), so the Lock Screen / Dynamic Island change track
+  exactly when the audio does. Widgets get the same switch as a timeline entry. Real updates (higher
+  revision) still win; `resync` republishes when a blend plan moves `advanceAt` by > 0.5 s.
+
 ## Done (2026-11-16) — widgets + Live Activity upgrade
 - Control Center / Lock Screen / Action button controls (`LumisoundWidget/Sources/LumisoundControls.swift`):
   Play/Pause and Favorite toggles that show the real state (App Group snapshot via `ControlValueProvider`),

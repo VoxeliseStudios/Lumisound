@@ -220,7 +220,9 @@ enum LiveActivityManager {
             // in the background, so that redraw is how an automatic advance or
             // crossfade reaches the Lock Screen: the view then reads the newer
             // snapshot the app has already saved in the App Group.
-            staleDate: snapshot.endDate.map { $0.addingTimeInterval(0.75) },
+            // With a next track known, the stale moment is when it takes over
+            // (`advanceAt`): the view then shows it on its own, on time.
+            staleDate: snapshot.advanceAt ?? snapshot.endDate.map { $0.addingTimeInterval(0.75) },
             relevanceScore: snapshot.isPlaying ? 100 : 50
         )
     }

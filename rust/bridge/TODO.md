@@ -19,6 +19,17 @@ Full history and decisions: [`RUST-PORT.md`](../../RUST-PORT.md).
 - A fresh install (v2.0.0.56, empty library) ran cloud "Delete All" (confirmed) and "Clear all backups";
   3,501 files were erased before the trash existed. The owner confirmed it was intended: no restore.
 
+## Done (2026-11-16) — YouTube rate limits, fallback verified
+- "Video unavailable. This content isn't available, try again later. The current session has been
+  rate-limited by YouTube for up to an hour" was read as a removed video: marked permanent (the phone then
+  suppresses the track for a day) and sent to the YouTube Music fallback. `ytdlp::is_rate_limited` now
+  excludes it from both. A rate limit holds that cookie owner's downloads (15 min for the session limit,
+  2 min for a 429): jobs end as retryable 503 and new `/api/download` / relay calls get 503 at once.
+  52 tracks were hit on 2026-11-16 08:45–09:05.
+- Fallback check (`delisted_replacements`, ignored network test): 53 of 62 genuinely delisted tracks get a
+  YouTube Music replacement; 12 sampled replacements all play with the same title and length (±3 s). Misses:
+  uploads/remixes that aren't on YouTube Music (No_Rush, Y&H Zeno, a Redfoo remix).
+
 ## Done (2026-11-16) — admin performance
 - `GET /admin/api/perf?hours=` (1..720): hourly CPU / power / hitch / fps / peak memory / underruns from
   `perf_window` + `perf_heartbeat`, the 15 screens with the most hitching, per-version summary. The admin

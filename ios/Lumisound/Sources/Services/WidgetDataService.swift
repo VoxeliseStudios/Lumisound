@@ -166,7 +166,17 @@ final class WidgetDataService {
         let rate = Self.playerRate
         let drift = abs(current.elapsed(at: now) - position)
         let durationChanged = duration > 0 && abs(duration - current.duration) > 0.5
-        let structural = isPlaying != current.isPlaying || durationChanged || abs(rate - current.rate) > 0.001 || (detail != nil && detail != current.detail)
+        // A blend planned after the track started moves when the next track
+        // takes over; the Live Activity is told that time in advance.
+        let advanceMoved: Bool = {
+            let predicted = Self.predictedAdvance(current)
+            switch (predicted, current.advanceAt) {
+            case (nil, nil): return false
+            case let (p?, c?): return abs(p.timeIntervalSince(c)) > 0.5
+            default: return true
+            }
+        }()
+        let structural = isPlaying != current.isPlaying || durationChanged || abs(rate - current.rate) > 0.001 || (detail != nil && detail != current.detail) || advanceMoved
         guard structural || drift > 1.0 else { return }
         // A frozen position (buffering) keeps "drifting": re-anchor at most
         // every 3 s for that, immediately for everything else.
@@ -206,6 +216,7 @@ final class WidgetDataService {
             snapshot.queueIndex = nil
             snapshot.queueCount = nil
         }
+        snapshot.advanceAt = Self.predictedAdvance(snapshot)
         // Strictly increasing, so the Live Activity view can tell which of its
         // two copies (ActivityKit state, App Group) is the newer one.
         let now = Int64(Date().timeIntervalSince1970 * 1000)
@@ -278,6 +289,23 @@ final class WidgetDataService {
 
     // MARK: - Up Next
 
+    /// When the next queue track will take over if nothing changes: the
+    /// planned Smart Crossfade start, the plain crossfade trigger, else the
+    /// track's end. nil while paused, on repeat-one, or with nothing queued.
+    static func predictedAdvance(_ s: NowPlayingSnapshot) -> Date? {
+        guard s.isPlaying, s.duration > 0, s.upNext?.isEmpty == false,
+              let player = AudioPlayerManager.shared, player.repeatMode != .one,
+              player.currentSong?.id == s.trackID else { return nil }
+        var at = s.duration
+        if let plan = player.plannedBlendStart, plan.songID == s.trackID, plan.position > s.position, plan.position < s.duration {
+            at = plan.position
+        } else if let trigger = player.crossfadeTriggerPosition, trigger > s.position, trigger < s.duration {
+            at = trigger
+        }
+        let rate = s.rate.isFinite && s.rate > 0.05 ? s.rate : 1
+        return s.anchor.addingTimeInterval(max(0, at - s.position) / rate)
+    }
+
     /// The queue changed (added, removed, reordered, shuffled, or the index
     /// moved without a track change). Coalesced: a drag-reorder or a batch
     /// edit fires many of these.
@@ -323,7 +351,8 @@ final class WidgetDataService {
             let have = file.flatMap { NowPlayingSnapshot.artworkURL($0, directory: NowPlayingSnapshot.upNextDirectory) }
                 .map { FileManager.default.fileExists(atPath: $0.path) } ?? false
             return NowPlayingSnapshot.UpNextItem(id: song.id, title: song.displayName, artist: song.artistName,
-                                                 artFile: have ? file : nil, tint: Self.upNextTints[song.id])
+                                                 artFile: have ? file : nil, tint: Self.upNextTints[song.id],
+                                                 duration: song.duration > 0 ? song.duration : nil)
         }
         fillUpNextArtwork(next)
     }

@@ -462,6 +462,11 @@ final class AudioPlayerManager: ObservableObject {
     /// the fade to fire early on wall-clock time.
     var crossfadeTriggerPosition: Double?
 
+    /// Where in the current song a planned Smart Crossfade blend starts
+    /// (the engine runs it itself, so `crossfadeTriggerPosition` is nil).
+    /// Tells the Live Activity/widgets when the next track takes over.
+    var plannedBlendStart: (songID: String, position: Double)?
+
     /// Grace-period timer armed by `pause()` — see `teardownEngineIfIdle()`.
     /// Lets a quick pause->resume avoid paying an engine restart, while a
     /// pause left sitting releases the audio engine/session instead of

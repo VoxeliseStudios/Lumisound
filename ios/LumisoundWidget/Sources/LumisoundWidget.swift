@@ -35,19 +35,28 @@ struct LumisoundWidgetProvider: TimelineProvider {
     }
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<LumisoundEntry>) -> Void) {
-        let first = entry(at: Date())
+        let now = Date()
+        let first = entry(at: now)
         var entries = [first]
-        // If the app says nothing more (killed, or a skipped reload), stop the
-        // bar at the end of the track instead of showing "playing" forever.
-        if let end = first.now.endDate, end > first.date {
+        if let adv = first.now.advanceAt, adv > now, first.now.nextTrack != nil {
+            // The next track takes over at `advanceAt` on its own: the widget
+            // switches then even if the app's reload comes late.
+            let next = entry(at: adv)
+            entries.append(next)
+            if let end = next.now.endDate, end > adv, next.now.advanceAt == nil {
+                entries.append(LumisoundEntry(date: end, now: next.now.finished, artwork: next.artwork))
+            }
+        } else if let end = first.now.endDate, end > first.date {
+            // If the app says nothing more (killed, or a skipped reload), stop
+            // the bar at the end of the track instead of "playing" forever.
             entries.append(LumisoundEntry(date: end, now: first.now.finished, artwork: first.artwork))
         }
         completion(Timeline(entries: entries, policy: .never))
     }
 
     private func entry(at date: Date) -> LumisoundEntry {
-        let s = NowPlayingSnapshot.load() ?? .empty
-        let art = s.hasTrack ? NowPlayingSnapshot.loadImage(s.artworkFile, maxPixel: 640) : nil
+        let s = (NowPlayingSnapshot.load() ?? .empty).resolved(at: date)
+        let art = s.hasTrack ? s.artworkImage(maxPixel: 640) : nil
         return LumisoundEntry(date: date, now: s, artwork: art)
     }
 }

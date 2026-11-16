@@ -189,6 +189,9 @@ pub struct Ytdlp {
     cookie_pref: TtlCache<String, String>,
     written_cookie_hash: dashmap::DashMap<String, [u8; 32]>,
     global_copy: Mutex<Option<(std::time::SystemTime, u64)>>,
+    /// YouTube rate-limited the session that a cookie owner (user id, or
+    /// "global") downloads with: hold that owner's downloads until then.
+    rate_hold: dashmap::DashMap<String, Instant>,
 }
 
 impl Ytdlp {
@@ -212,6 +215,7 @@ impl Ytdlp {
             cookie_pref: TtlCache::new(COOKIE_CACHE_TTL, 10_000),
             written_cookie_hash: dashmap::DashMap::new(),
             global_copy: Mutex::new(None),
+            rate_hold: dashmap::DashMap::new(),
             cfg: cfg.clone(),
             db,
         }
@@ -490,6 +494,39 @@ impl Ytdlp {
         }
     }
 
+    /// Seconds left on a rate-limit hold for this cookie owner.
+    pub fn rate_hold_left(&self, user: Option<&str>) -> Option<u64> {
+        let key = user.unwrap_or("global");
+        let until = *self.rate_hold.get(key)?;
+        let left = until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            self.rate_hold.remove(key);
+            return None;
+        }
+        Some(left.as_secs().max(1))
+    }
+
+    /// After a rate-limit answer: hold this owner's downloads (15 min for
+    /// YouTube's "session rate-limited for up to an hour", 2 min for a plain
+    /// 429) instead of burning through a playlist that fails the same way.
+    pub fn hold_if_rate_limited(&self, user: Option<&str>, stderr: &[u8]) {
+        let t = String::from_utf8_lossy(stderr).to_lowercase();
+        let secs = if t.contains("rate-limited") || t.contains("rate limited") {
+            900
+        } else if t.contains("http error 429") || t.contains("too many requests") {
+            120
+        } else {
+            return;
+        };
+        let key = user.unwrap_or("global").to_string();
+        let until = Instant::now() + Duration::from_secs(secs);
+        let longer = self.rate_hold.get(&key).is_none_or(|u| *u < until);
+        if longer {
+            self.rate_hold.insert(key.clone(), until);
+            tracing::warn!("YouTube rate-limited downloads for {key}; holding them for {} min", secs / 60);
+        }
+    }
+
     pub fn penalise_if_rate_limited(&self, stderr: &[u8]) -> bool {
         let t = String::from_utf8_lossy(stderr).to_lowercase();
         for m in RATE_LIMIT_MARKERS {
@@ -575,9 +612,17 @@ impl Ytdlp {
     }
 }
 
+/// YouTube is throttling, not refusing this video: its message ("Video
+/// unavailable. This content isn't available, try again later. The current
+/// session has been rate-limited…") must not read as a removed video.
+pub fn is_rate_limited(stderr: &[u8]) -> bool {
+    let t = String::from_utf8_lossy(stderr).to_lowercase();
+    t.contains("rate-limited") || t.contains("rate limited") || t.contains("try again later") || t.contains("http error 429") || t.contains("too many requests")
+}
+
 pub fn is_permanent_failure(stderr: &[u8]) -> bool {
     let t = String::from_utf8_lossy(stderr).to_lowercase();
-    if t.contains("sign in to confirm") || t.contains("not a bot") {
+    if t.contains("sign in to confirm") || t.contains("not a bot") || is_rate_limited(stderr) {
         return false;
     }
     PERMANENT_FAILURE_MARKERS.iter().any(|m| t.contains(m))
@@ -596,7 +641,7 @@ pub fn needs_age_fallback(stderr: &[u8]) -> bool {
 /// "This video is not available") — not a sign-in, bot or Premium problem.
 pub fn is_unavailable(stderr: &[u8]) -> bool {
     let t = String::from_utf8_lossy(stderr).to_lowercase();
-    (t.contains("video unavailable") || t.contains("this video is not available")) && !t.contains("premium") && !t.contains("sign in")
+    (t.contains("video unavailable") || t.contains("this video is not available")) && !t.contains("premium") && !t.contains("sign in") && !is_rate_limited(stderr)
 }
 
 pub fn generic_failure_summary(stderr: &[u8]) -> String {
@@ -832,6 +877,11 @@ mod tests {
         assert!(super::is_unavailable(b"ERROR: [youtube] ifDJ_aDgIXQ: Video unavailable. This video is not available"));
         assert!(!super::is_unavailable(b"ERROR: This video is only available to YouTube Music Premium members"));
         assert!(!super::is_unavailable(b"ERROR: Sign in to confirm you're not a bot. Video unavailable"));
+        let limited = b"ERROR: [youtube] TTSId7Uwtxs: Video unavailable. This content isn't available, try again later. The current session has been rate-limited by YouTube for up to an hour.";
+        assert!(!super::is_unavailable(limited));
+        assert!(!super::is_permanent_failure(limited));
+        assert!(super::is_rate_limited(limited));
+        assert!(super::is_permanent_failure(b"ERROR: [youtube] x: Video unavailable. This video has been removed by the uploader"));
     }
 
     #[test]

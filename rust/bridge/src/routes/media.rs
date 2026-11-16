@@ -494,6 +494,12 @@ fn safe_title(title: &Option<String>, id: &str) -> String {
 /// install uploaded last; a reinstall (or a second device) that doesn't have
 /// the file yet must still get it, so it never vetoes a download — it only
 /// trims playlist resolves.
+/// 503 (the app retries later; never a permanent failure) while YouTube
+/// is rate-limiting this account's downloads.
+fn rate_hold_err(left_secs: u64) -> AppError {
+    AppError::new(503, format!("YouTube is rate-limiting downloads; retrying in about {} min", left_secs.div_ceil(60)))
+}
+
 fn owned(existing: &Option<String>, key: &str) -> bool {
     existing.as_deref().is_some_and(|e| e.split(',').map(str::trim).any(|s| s == key))
 }
@@ -508,6 +514,9 @@ async fn download_relay(State(st): State<AppState>, _k: ApiKey, headers: HeaderM
     }
     let target = target_for(&source, &id, &p.url).await?;
     let user = uid(&st, &headers);
+    if let Some(left) = st.ytdlp.rate_hold_left(user.as_deref()) {
+        return Err(rate_hold_err(left));
+    }
     let key = format!("{source}:{id}");
     if owned(&p.existing_ids, &key) {
         tracing::info!("download_relay: skipping {key} — already in the device's manifest");
@@ -642,6 +651,9 @@ async fn download(State(st): State<AppState>, _k: ApiKey, headers: HeaderMap, Q(
         tracing::info!("download_track: skipping {key} — already in the device's manifest");
         return Ok(StatusCode::NO_CONTENT.into_response());
     }
+    if let Some(left) = st.ytdlp.rate_hold_left(user.as_deref()) {
+        return Err(rate_hold_err(left));
+    }
     let target = target_for(&source, &id, &p.url).await?;
     let job_id = uuid::Uuid::new_v4().simple().to_string();
     st.download_jobs.insert(job_id.clone(), Job { created: Instant::now(), state: JobState::Pending });
@@ -754,6 +766,12 @@ async fn do_download_job(
         if out.status != Some(0) {
             yt.flag_cookies_stale_if_needed(&out.stderr);
             yt.penalise_if_rate_limited(&out.stderr);
+            if ytdlp::is_rate_limited(&out.stderr) {
+                yt.hold_if_rate_limited(user, &out.stderr);
+                let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
+                tracing::warn!("yt-dlp rate-limited (attempt {attempt}/{max_attempts}) for {safe}; job ends retryable");
+                return Err((503, "YouTube is rate-limiting downloads right now; this track will be retried".into(), false));
+            }
             let err_text = ytdlp::tail(&String::from_utf8_lossy(&out.stderr), 500);
             tracing::error!("yt-dlp download failed (attempt {attempt}/{max_attempts}, downloader={downloader}, elapsed={elapsed:.1}s, exit={:?}): {err_text}", out.status);
             let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
@@ -961,6 +979,13 @@ async fn alternate_release(st: &AppState, id: &str, title: &str, artist: Option<
         _ => title.to_string(),
     };
     let results = crate::ytmusic::search(&st.http, &query, 8).await?;
+    pick_alternate(&results, id, title, artist, duration)
+}
+
+/// The search result that is the same song (see `alternate_release`).
+fn pick_alternate(results: &[Value], id: &str, title: &str, artist: Option<&str>, duration: Option<f64>) -> Option<String> {
+    let want = title_key(title);
+    let artist = artist.map(str::trim).filter(|a| !a.is_empty() && !a.eq_ignore_ascii_case("unknown artist"));
     let artist_key = artist.map(title_key).unwrap_or_default();
     results.iter().find_map(|r| {
         let rid = r["id"].as_str()?;
@@ -1758,6 +1783,32 @@ mod tests {
         assert_eq!(title_key("Kung Fu Fighting (From \"Kung Fu Panda\")"), "kungfufighting");
         assert_eq!(title_key("Time Attack - Sonic Advance 3 [OST]"), "timeattacksonicadvance3");
         assert_eq!(title_key("片翼の天使"), "片翼の天使");
+    }
+
+    /// LUMI_DELISTED=<json [{id,title,artist,duration}]>: which delisted
+    /// tracks get a replacement from YouTube Music (network).
+    #[tokio::test]
+    #[ignore]
+    async fn delisted_replacements() {
+        let Ok(p) = std::env::var("LUMI_DELISTED") else { return };
+        let list: Vec<Value> = serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap();
+        let http = reqwest::Client::new();
+        let mut found = 0;
+        for t in &list {
+            let (id, title, artist) = (t["id"].as_str().unwrap(), t["title"].as_str().unwrap(), t["artist"].as_str());
+            let a = artist.filter(|a| !a.is_empty());
+            let query = match a {
+                Some(a) if !title.to_lowercase().contains(&a.to_lowercase()) => format!("{a} {title}"),
+                _ => title.to_string(),
+            };
+            let results = crate::ytmusic::search(&http, &query, 8).await.unwrap_or_default();
+            let pick = pick_alternate(&results, id, title, a, t["duration"].as_f64());
+            if pick.is_some() {
+                found += 1;
+            }
+            println!("ALT {id} -> {} | {title} — {}", pick.unwrap_or_else(|| "-".into()), a.unwrap_or(""));
+        }
+        println!("replacements for {found} of {}", list.len());
     }
 
     #[test]

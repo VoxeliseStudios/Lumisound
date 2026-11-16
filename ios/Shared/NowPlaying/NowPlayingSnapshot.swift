@@ -53,6 +53,16 @@ struct NowPlayingSnapshot: Codable, Hashable, Sendable {
     /// 1-based position of this track in the queue, and the queue length.
     var queueIndex: Int?
     var queueCount: Int?
+    /// When the next queue track takes over if nothing changes: the planned
+    /// crossfade/blend start, else the track's end. nil when nothing follows
+    /// automatically (paused, repeat-one, end of queue). Lets the Live
+    /// Activity and widgets switch to `nextTrack` on their own at that
+    /// instant — the app's own updates don't reach the Lock Screen while it
+    /// plays in the background.
+    var advanceAt: Date?
+    /// Folder of `artworkFile`/`thumbFile` (nil = `artworkDirectory`); a
+    /// predicted next track points into `upNextDirectory`.
+    var artDirectory: String?
 
     /// One upcoming track. `artFile` lives in `upNextDirectory` (small
     /// thumbnails, separate from the current track's artwork files).
@@ -62,6 +72,8 @@ struct NowPlayingSnapshot: Codable, Hashable, Sendable {
         var artist: String
         var artFile: String?
         var tint: UInt32?
+        /// Seconds, for the predicted timeline once this track takes over.
+        var duration: Double?
     }
 
     static let upNextLimit = 3
@@ -70,7 +82,7 @@ struct NowPlayingSnapshot: Codable, Hashable, Sendable {
         trackID: "", title: "", artist: "", detail: nil, bpm: nil, isPlaying: false,
         position: 0, duration: 0, rate: 1, anchor: .distantPast, isFavorite: false,
         artworkFile: nil, thumbFile: nil, artworkAspect: 1, tint: nil, revision: nil,
-        upNext: nil, queueIndex: nil, queueCount: nil
+        upNext: nil, queueIndex: nil, queueCount: nil, advanceAt: nil, artDirectory: nil
     )
 
     /// Same content, ignoring the publish stamp.
@@ -99,6 +111,43 @@ struct NowPlayingSnapshot: Codable, Hashable, Sendable {
     static let wideAspect = 1.3
 
     var hasTrack: Bool { !title.isEmpty }
+
+    /// What is playing at `date`: this snapshot, or — once `advanceAt` has
+    /// passed while playing — the next queue track, started at `advanceAt`.
+    /// Keeps this revision, so any real update from the app wins.
+    func resolved(at date: Date = Date()) -> NowPlayingSnapshot {
+        guard isPlaying, let adv = advanceAt, date >= adv, let next = upNext?.first else { return self }
+        var s = self
+        s.trackID = next.id
+        s.title = next.title
+        s.artist = next.artist
+        s.detail = nil
+        s.bpm = nil
+        s.isFavorite = false
+        s.position = 0
+        s.anchor = adv
+        s.duration = max(0, next.duration ?? 0)
+        s.artworkFile = next.artFile
+        s.thumbFile = next.artFile
+        s.artDirectory = next.artFile == nil ? nil : Self.upNextDirectory
+        s.artworkAspect = 1
+        s.tint = next.tint ?? tint
+        s.upNext = Array((upNext ?? []).dropFirst())
+        s.queueIndex = queueIndex.map { i in queueCount.map { $0 > 0 ? i % $0 + 1 : i + 1 } ?? i + 1 }
+        // The track after that only if its length is known (one step is
+        // what matters: the app catches up as soon as it runs again).
+        s.advanceAt = s.duration > 0 && !(s.upNext ?? []).isEmpty ? adv.addingTimeInterval(s.duration / safeRate) : nil
+        return s
+    }
+
+    /// Artwork for this snapshot from its own folder.
+    func artworkImage(maxPixel: Int) -> UIImage? {
+        Self.loadImage(artworkFile, maxPixel: maxPixel, directory: artDirectory ?? Self.artworkDirectory)
+    }
+
+    func thumbImage(maxPixel: Int) -> UIImage? {
+        Self.loadImage(thumbFile, maxPixel: maxPixel, directory: artDirectory ?? Self.artworkDirectory)
+    }
     var nextTrack: UpNextItem? { upNext?.first }
     /// "3 of 24", when the queue has more than one track.
     var queueLabel: String? {

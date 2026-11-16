@@ -15,7 +15,7 @@ struct LumisoundLiveActivity: Widget {
                 .activitySystemActionForegroundColor(.white)
         } dynamicIsland: { context in
             let s = Self.snapshot(context)
-            let art = NowPlayingSnapshot.loadImage(s.thumbFile, maxPixel: 180)
+            let art = s.thumbImage(maxPixel: 180)
             return DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
                     NowPlayingArtwork(image: art, snapshot: s, height: s.isWide ? 44 : 56, cornerRadius: 12)
@@ -66,10 +66,17 @@ struct LumisoundLiveActivity: Widget {
     /// whichever has the higher revision is what the player is on now.
     /// Past its stale date (the track ran out with no update from the app),
     /// a playing snapshot shows the track stopped at its end.
+    ///
+    /// Past `advanceAt` (the activity's stale date, so iOS redraws exactly
+    /// then) a still-playing snapshot becomes the next queue track, started
+    /// at that instant: an automatic advance or crossfade shows on time even
+    /// though the app's updates don't reach the Lock Screen from the
+    /// background. A later real update (higher revision) replaces it.
     static func snapshot(_ context: ActivityViewContext<LumisoundActivityAttributes>) -> NowPlayingSnapshot {
-        let s = context.state.now.newest(NowPlayingSnapshot.load())
+        let now = Date()
+        let s = context.state.now.newest(NowPlayingSnapshot.load()).resolved(at: now)
         guard s.isPlaying, let end = s.endDate else { return s }
-        return context.isStale && end <= Date() ? s.finished : s
+        return context.isStale && end <= now ? s.finished : s
     }
 }
 
@@ -92,7 +99,7 @@ private struct LiveActivityLockScreen: View {
     let snapshot: NowPlayingSnapshot
 
     var body: some View {
-        let art = NowPlayingSnapshot.loadImage(snapshot.thumbFile, maxPixel: 180)
+        let art = snapshot.thumbImage(maxPixel: 180)
         switch family {
         case .small:
             // Watch Smart Stack / CarPlay: art, title, live bar.

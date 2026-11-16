@@ -202,6 +202,9 @@ extension AudioPlayerManager {
                 self.rustNextPath = inPath
                 self.rustNextStart = plan.inStart
                 self.rustNextBlendSecs = plan.fadeSecs
+                if let cur = self.currentSong?.id, plan.outStart > 0 {
+                    self.plannedBlendStart = (cur, plan.outStart)
+                }
                 appLog(String(format: "Blend planned: %.1fs at %.1fs → %@ from %.1fs (%@)", plan.fadeSecs, plan.outStart,
                               next.displayName, plan.inStart, plan.reason), category: "audio")
             }
