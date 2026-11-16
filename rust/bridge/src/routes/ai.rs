@@ -918,7 +918,11 @@ struct LyricsBody {
     plain_lyrics: Option<String>,
 }
 
-async fn api_lyrics_put(State(st): State<AppState>, _k: ApiKey, J(b): J<LyricsBody>) -> ApiResult<Json<Value>> {
+async fn api_lyrics_put(State(st): State<AppState>, k: ApiKey, J(b): J<LyricsBody>) -> ApiResult<Json<Value>> {
+    // Shared cache every user reads: cap edits per account.
+    if !st.rate_allow(&format!("lyrics-put:{}", k.user), 60, std::time::Duration::from_secs(3600)) {
+        return Err(AppError::new(429, "Too many lyrics edits. Try again later."));
+    }
     let ne = |s: &Option<String>| s.as_deref().is_some_and(|x| !x.is_empty());
     if !ne(&b.synced_lyrics) && !ne(&b.plain_lyrics) {
         return Err(AppError::bad_request("Provide synced_lyrics and/or plain_lyrics"));

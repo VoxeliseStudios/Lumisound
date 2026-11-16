@@ -65,6 +65,13 @@ extension StreamingService {
         }
     }
 
+    /// The cached ticket while it is still fresh, without a network call —
+    /// for URL builders that must stay synchronous (server library).
+    static var freshCachedTicket: String? {
+        guard let ticket = cachedTicket, Date() < cachedTicketExpiry else { return nil }
+        return ticket
+    }
+
     /// Drops the cached ticket — called on sign-out so a ticket belonging to the
     /// previous account is never appended to the next one's stream URLs.
     static func clearStreamTicket() {

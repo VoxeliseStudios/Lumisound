@@ -16,6 +16,9 @@ extension StreamingService {
         isSearchingServer = true
         errorMessage = nil
         defer { isSearchingServer = false }
+        // Warm the stream ticket so the track/artwork URLs built from these
+        // results carry one (the bridge needs a session or ticket for them).
+        _ = await streamTicket()
 
         var components = URLComponents()
         components.path = "/api/library/server"

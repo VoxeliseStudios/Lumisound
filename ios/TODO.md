@@ -2,6 +2,12 @@
 
 Full history and decisions: [`../RUST-PORT.md`](../RUST-PORT.md). Swift is views + app shell only.
 
+## Done (2026-11-15) — bridge security pass
+- `StreamingService.makeRequest` sends `X-Account-Token` whenever signed in: the bridge's shared-key
+  routes now require a session (the app key is public inside the IPA).
+- Server-library stream/artwork URLs carry the cached stream ticket (`&ticket=`); the server-library
+  search warms the ticket first.
+
 ## Done (2026-11-07)
 - Library Health > Listening > Often Skipped (`Views/OftenSkippedView.swift`).
 - Skip history sync on start / every 20 min / backgrounding (`Services/AccountService+SkipSync.swift`).

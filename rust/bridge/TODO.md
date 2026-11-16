@@ -2,6 +2,19 @@
 
 Full history and decisions: [`RUST-PORT.md`](../../RUST-PORT.md).
 
+## Done (2026-11-15) — security pass (see ~/Projects/SECURITY-AUDIT.md)
+- Shared-key routes (`ApiKey`: search, stream, download*, track, resolve, playlist, radio, lyrics,
+  trending/suggestions) now need a live signed-in session (`X-Account-Token`, or a user JWT as the
+  bearer). The app key ships inside the public IPAs/APK, so alone it no longer authorizes anything.
+- `/api/stream/proxy`: session (header, session-table checked) or stream ticket; key alone → 401.
+- `/ws/live`: token must be a live session (logout/revocation ends live events).
+- `/api/library/server`, `/stream`, `/artwork`: session or `?ticket=` (`SessionOrTicket`).
+- Per-IP limits: `/bug-report` 10/h (429), `/internal/logs` 1800/h, `/api/log-event` 3600/h (over cap → 204, dropped).
+  `PUT /api/lyrics` 60/h per account. Limiter: `AppState::rate_allow`.
+- ADMIN_TOKEN compared in constant time (`auth::ct_eq`).
+- Open: old app builds that call trending/suggestions without the session header get 401 until updated
+  (iOS 2.0.x with `makeRequest` sending X-Account-Token fixes it; Android/tvOS already send it).
+
 ## Done (2026-11-12)
 - `USER_MUSIC_EXTRA_DIRS`: user libraries can live on more drives (web-stack mounts the terabyte store at
   `/usermusic-terabyte`). A user's folder stays on the drive it's on; new users go to the emptiest drive.

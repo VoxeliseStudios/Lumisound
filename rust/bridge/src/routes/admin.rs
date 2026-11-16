@@ -7,7 +7,7 @@ use crate::extract::{J, Q, check_range, invalid};
 use crate::gemini::py_dumps;
 use crate::state::AppState;
 use axum::body::Bytes;
-use axum::extract::{Path, State};
+use axum::extract::{ConnectInfo, Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Html;
 use axum::routing::{get, post, put};
@@ -16,6 +16,8 @@ use chrono::NaiveDateTime;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use std::net::SocketAddr;
+use std::time::Duration;
 
 const DASHBOARD: &str = include_str!("../admin.html");
 
@@ -364,7 +366,11 @@ fn other() -> String {
     "other".into()
 }
 
-async fn bug_report(State(st): State<AppState>, h: HeaderMap, J(b): J<BugReport>) -> ApiResult<(StatusCode, Json<Value>)> {
+async fn bug_report(State(st): State<AppState>, ConnectInfo(peer): ConnectInfo<SocketAddr>, h: HeaderMap, J(b): J<BugReport>) -> ApiResult<(StatusCode, Json<Value>)> {
+    // Each report also posts to the bug webhook: keep anonymous spam out.
+    if !st.rate_allow(&format!("bug-report:{}", crate::auth::client_ip(&h, Some(peer))), 10, Duration::from_secs(3600)) {
+        return Err(AppError::new(429, "Too many bug reports from this address. Try again later."));
+    }
     if b.description.trim().is_empty() {
         return Err(AppError::bad_request("Description is required"));
     }
@@ -458,7 +464,12 @@ fn truthy(v: Option<&Value>) -> Option<&Value> {
     })
 }
 
-async fn ingest_logs(State(st): State<AppState>, raw: Bytes) -> ApiResult<StatusCode> {
+async fn ingest_logs(State(st): State<AppState>, ConnectInfo(peer): ConnectInfo<SocketAddr>, h: HeaderMap, raw: Bytes) -> ApiResult<StatusCode> {
+    // Anonymous: cap per client address (apps flush every 15 s + on errors).
+    // Over the cap the batch is dropped quietly so clients don't requeue it.
+    if !st.rate_allow(&format!("logs:{}", crate::auth::client_ip(&h, Some(peer))), 1800, Duration::from_secs(3600)) {
+        return Ok(StatusCode::NO_CONTENT);
+    }
     if raw.len() > 1_048_576 {
         return Err(AppError::new(413, "Log payload too large"));
     }
@@ -513,7 +524,10 @@ fn info() -> String {
     "info".into()
 }
 
-async fn log_event(State(st): State<AppState>, h: HeaderMap, J(b): J<LogEventBody>) -> ApiResult<StatusCode> {
+async fn log_event(State(st): State<AppState>, ConnectInfo(peer): ConnectInfo<SocketAddr>, h: HeaderMap, J(b): J<LogEventBody>) -> ApiResult<StatusCode> {
+    if !st.rate_allow(&format!("log-event:{}", crate::auth::client_ip(&h, Some(peer))), 3600, Duration::from_secs(3600)) {
+        return Ok(StatusCode::NO_CONTENT);
+    }
     let user = token_sub(&st, &h);
     crate::db::log_event_from(&st.db, "ios_client", &b.category, &b.event, user.as_deref(), &b.level, &b.message, b.detail.map(Value::Object)).await;
     Ok(StatusCode::NO_CONTENT)

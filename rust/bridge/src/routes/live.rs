@@ -20,7 +20,11 @@ struct LiveQ {
 }
 
 async fn live(State(st): State<AppState>, ws: WebSocketUpgrade, Query(q): Query<LiveQ>) -> Response {
-    let user = q.token.as_deref().and_then(|t| st.keys.decode(t)).filter(|c| c.purpose.is_none()).and_then(|c| c.sub);
+    // Session-checked: a logged-out or revoked token gets no live events.
+    let user = match q.token.as_deref() {
+        Some(t) => st.session_user(t).await,
+        None => None,
+    };
     ws.on_upgrade(move |socket| async move {
         match user {
             Some(u) => serve(st, u, socket).await,

@@ -5,7 +5,7 @@
 //! temporary unmasked copy and never rewrites them.
 
 use crate::analysis;
-use crate::auth::User;
+use crate::auth::{SessionOrTicket, User};
 use crate::error::{ApiResult, AppError};
 use crate::extract::{Q, check_range, invalid};
 use crate::files;
@@ -117,7 +117,7 @@ fn server_root(st: &AppState) -> Option<PathBuf> {
     Some(std::fs::canonicalize(d).unwrap_or_else(|_| PathBuf::from(d)))
 }
 
-async fn server_library(State(st): State<AppState>, Q(q): Q<ServerLibQ>) -> ApiResult<Json<Value>> {
+async fn server_library(State(st): State<AppState>, _a: SessionOrTicket, Q(q): Q<ServerLibQ>) -> ApiResult<Json<Value>> {
     let limit = q.limit.unwrap_or(200);
     check_range("limit", limit, 1, 500)?;
     let Some(root) = server_root(&st) else {
@@ -184,14 +184,14 @@ fn server_file(st: &AppState, rel: Option<String>) -> ApiResult<PathBuf> {
     Ok(p)
 }
 
-async fn server_stream(State(st): State<AppState>, headers: HeaderMap, Q(q): Q<ServerLibQ>) -> ApiResult<Response> {
+async fn server_stream(State(st): State<AppState>, _a: SessionOrTicket, headers: HeaderMap, Q(q): Q<ServerLibQ>) -> ApiResult<Response> {
     let p = server_file(&st, q.path)?;
     let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
     let name = p.file_name().unwrap().to_string_lossy().into_owned();
     Ok(files::serve(&p, audio_media_type(&ext), Some(&name), &headers, None).await)
 }
 
-async fn server_artwork(State(st): State<AppState>, Q(q): Q<ServerLibQ>) -> ApiResult<Response> {
+async fn server_artwork(State(st): State<AppState>, _a: SessionOrTicket, Q(q): Q<ServerLibQ>) -> ApiResult<Response> {
     let p = server_file(&st, q.path)?;
     let data = analysis::embedded_artwork_copy(&p).await.map_err(|e| match e {
         "timeout" => AppError::new(408, "Artwork extraction timed out"),

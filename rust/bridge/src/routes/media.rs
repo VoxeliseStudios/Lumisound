@@ -336,33 +336,25 @@ async fn stream_proxy(State(st): State<AppState>, headers: HeaderMap, Q(p): Q<St
     let id = p.id.clone().ok_or_else(|| invalid("id", "Field required"))?;
     let mut source = lower(&p.source, "youtube");
     let account_token = headers.get("x-account-token").and_then(|v| v.to_str().ok()).unwrap_or("");
-    let token_ok = !account_token.is_empty() && st.keys.decode(account_token).is_some();
+    // A live session (header) or a stream ticket (URL). The shared app key
+    // alone is not enough: it ships inside the public apps.
     let ticket_ok = p.ticket.as_deref().filter(|t| !t.is_empty()).is_some_and(|t| st.stream_tickets.get(&t.to_string()).is_some());
+    let token_ok = !ticket_ok && st.header_session_user(&headers).await.is_some();
     if !token_ok && !ticket_ok {
         let auth = headers.get("authorization").and_then(|v| v.to_str().ok()).unwrap_or("");
-        let rejected = if st.cfg.api_key.is_empty() {
-            None
-        } else if !auth.starts_with("Bearer ") {
-            Some((401, "Missing Authorization header"))
-        } else if &auth[7..] != st.cfg.api_key {
-            Some((403, "Invalid API key"))
-        } else {
-            None
-        };
-        if let Some((code, msg)) = rejected {
-            let detail = json!({
-                "source": source, "status_code": code,
-                "had_auth_header": !auth.is_empty(),
-                "had_account_token": !account_token.is_empty(),
-                "account_token_valid": token_ok,
-                "user_agent": crate::db::truncate(headers.get("user-agent").and_then(|v| v.to_str().ok()).unwrap_or(""), 80),
-                "has_range": headers.contains_key("range"),
-                "auth_scheme": describe_auth_scheme(auth),
-            });
-            let st2 = st.clone();
-            tokio::spawn(async move { crate::db::log_event(&st2.db, "streaming", "stream_proxy_auth_rejected", None, "error", msg, Some(detail)).await });
-            return Err(AppError::new(code, msg));
-        }
+        let (code, msg) = (401, "Sign in to use this feature");
+        let detail = json!({
+            "source": source, "status_code": code,
+            "had_auth_header": !auth.is_empty(),
+            "had_account_token": !account_token.is_empty(),
+            "had_ticket": p.ticket.as_deref().is_some_and(|t| !t.is_empty()),
+            "user_agent": crate::db::truncate(headers.get("user-agent").and_then(|v| v.to_str().ok()).unwrap_or(""), 80),
+            "has_range": headers.contains_key("range"),
+            "auth_scheme": describe_auth_scheme(auth),
+        });
+        let st2 = st.clone();
+        tokio::spawn(async move { crate::db::log_event(&st2.db, "streaming", "stream_proxy_auth_rejected", None, "error", msg, Some(detail)).await });
+        return Err(AppError::new(code, msg));
     }
     let mut format = lower(&p.format, "m4a");
     if source == "youtube" && RELAY_INCOMPATIBLE.contains(&format.as_str()) {

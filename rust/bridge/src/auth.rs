@@ -170,20 +170,75 @@ impl FromRequestParts<AppState> for MaybeUser {
     }
 }
 
-/// `Depends(check_auth)`: the shared app API key, when one is configured.
-pub struct ApiKey;
+/// Constant-time string comparison (only the length can leak).
+pub fn ct_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+impl AppState {
+    /// The account behind a session token: a validly signed, non-purpose JWT
+    /// whose session row is still live (logout/revocation ends it).
+    pub async fn session_user(&self, token: &str) -> Option<String> {
+        let c = self.keys.decode(token).filter(|c| c.purpose.is_none())?;
+        let jti = c.jti.as_deref()?;
+        if !self.session_alive(jti).await.ok()? {
+            return None;
+        }
+        c.sub
+    }
+
+    /// Session from `X-Account-Token`, or a user JWT in `Authorization`.
+    pub async fn header_session_user(&self, headers: &axum::http::HeaderMap) -> Option<String> {
+        if let Some(t) = headers.get("x-account-token").and_then(|v| v.to_str().ok()).filter(|t| !t.is_empty()) {
+            if let Some(u) = self.session_user(t).await {
+                return Some(u);
+            }
+        }
+        let b = headers.get("authorization")?.to_str().ok()?.strip_prefix("Bearer ")?;
+        if !self.cfg.api_key.is_empty() && ct_eq(b, &self.cfg.api_key) {
+            return None;
+        }
+        self.session_user(b).await
+    }
+}
+
+/// Shared-service routes (search, stream, download, lyrics, ...). The shared
+/// app key ships inside the public IPAs/APK, so it proves nothing on its own:
+/// these routes need a signed-in, unrevoked session as well (sent as
+/// `X-Account-Token` beside the key, or as the bearer itself). `user` is that
+/// account.
+pub struct ApiKey {
+    pub user: String,
+}
 
 impl FromRequestParts<AppState> for ApiKey {
     type Rejection = AppError;
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
-        if state.cfg.api_key.is_empty() {
-            return Ok(ApiKey);
+        match state.header_session_user(&parts.headers).await {
+            Some(user) => Ok(ApiKey { user }),
+            None => Err(AppError::unauthorized("Sign in to use this feature")),
         }
-        match bearer(parts) {
-            None => Err(AppError::unauthorized("Missing Authorization header")),
-            Some(t) if t == state.cfg.api_key => Ok(ApiKey),
-            Some(_) => Err(AppError::forbidden("Invalid API key")),
+    }
+}
+
+/// A live session from the headers, or a stream ticket (`?ticket=`) for URLs
+/// handed to a media player that cannot carry headers.
+pub struct SessionOrTicket {
+    pub user: String,
+}
+
+impl FromRequestParts<AppState> for SessionOrTicket {
+    type Rejection = AppError;
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
+        if let Some(user) = state.header_session_user(&parts.headers).await {
+            return Ok(SessionOrTicket { user });
         }
+        let ticket = parts.uri.query().unwrap_or("").split('&').find_map(|kv| kv.strip_prefix("ticket=")).filter(|t| !t.is_empty());
+        if let Some(user) = ticket.and_then(|t| state.stream_tickets.get(&t.to_string())) {
+            return Ok(SessionOrTicket { user });
+        }
+        Err(AppError::unauthorized("Sign in to use this feature"))
     }
 }
 
@@ -209,7 +264,7 @@ impl FromRequestParts<AppState> for Admin {
         if state.cfg.admin_token.is_empty() {
             return Err(AppError::new(503, "Admin dashboard not configured (set ADMIN_TOKEN)"));
         }
-        if token == Some(state.cfg.admin_token.as_str()) {
+        if token.is_some_and(|t| ct_eq(t, &state.cfg.admin_token)) {
             Ok(Admin)
         } else {
             Err(AppError::unauthorized("Invalid admin credentials"))
@@ -224,7 +279,7 @@ pub fn account_token_user_id(state: &AppState, headers: &axum::http::HeaderMap) 
     if t.is_empty() {
         return None;
     }
-    state.keys.decode(t)?.sub
+    state.keys.decode(t).filter(|c| c.purpose.is_none())?.sub
 }
 
 /// Client IP as the Python bridge computed it: last X-Forwarded-For hop

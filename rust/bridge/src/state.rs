@@ -53,6 +53,8 @@ pub struct Inner {
     pub motion_sem: tokio::sync::Semaphore,
     pub re_chosen_format: regex::Regex,
     pub auth_attempts: DashMap<String, Vec<Instant>>,
+    /// Sliding-window hits for `rate_allow` (anonymous writes, lyrics edits).
+    pub rate_hits: DashMap<String, Vec<Instant>>,
     pub release_cache: TtlCache<(), Value>,
     pub release_stale: std::sync::Mutex<Option<Value>>,
     /// Upload/backfill analysis runs (ffmpeg decodes) at once.
@@ -131,6 +133,7 @@ impl AppState {
             motion_sem: tokio::sync::Semaphore::new(2),
             re_chosen_format: regex::Regex::new(r"Downloading \d+ format\(s\): ([0-9+]+)").unwrap(),
             auth_attempts: DashMap::new(),
+            rate_hits: DashMap::new(),
             release_cache: TtlCache::new(Duration::from_secs(300), 2),
             release_stale: std::sync::Mutex::new(None),
             analysis_sem: tokio::sync::Semaphore::new(3),
@@ -150,6 +153,19 @@ impl AppState {
         })))
     }
 
+    /// Sliding-window limiter: true while `key` has made fewer than `limit`
+    /// calls in the last `window` (windows up to an hour).
+    pub fn rate_allow(&self, key: &str, limit: usize, window: Duration) -> bool {
+        let now = Instant::now();
+        let mut e = self.rate_hits.entry(key.to_string()).or_default();
+        e.retain(|t| now.duration_since(*t) < window);
+        if e.len() >= limit {
+            return false;
+        }
+        e.push(now);
+        true
+    }
+
     /// Background loops and periodic cache/rate-limit sweeps.
     pub fn spawn_background(&self) {
         crate::background::spawn_all(self);
@@ -164,6 +180,7 @@ impl AppState {
                 st.stream_urls.sweep();
                 st.stream_failures.sweep();
                 st.auth_attempts.retain(|_, v| v.iter().any(|t| now.duration_since(*t) < Duration::from_secs(60)));
+                st.rate_hits.retain(|_, v| v.iter().any(|t| now.duration_since(*t) < Duration::from_secs(3600)));
             }
         });
     }

@@ -22,6 +22,12 @@ extension StreamingService {
         if !apiKey.isEmpty {
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         }
+        // The bridge's shared-service routes (search, stream, download, lyrics,
+        // trending, ...) need the signed-in session too: the app key ships
+        // inside the IPA, so on its own it no longer authorizes anything.
+        if let accountToken = AccountService.shared?.token, !accountToken.isEmpty {
+            request.setValue(accountToken, forHTTPHeaderField: "X-Account-Token")
+        }
         return request
     }
 }
