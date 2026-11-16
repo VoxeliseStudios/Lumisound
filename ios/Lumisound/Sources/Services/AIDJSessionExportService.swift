@@ -4,17 +4,10 @@ import AVFoundation
 /// short clip of each track in the session, back-to-back with Aria's actual
 /// spoken transition lines between them.
 ///
-/// Scope note: this concatenates clips SEQUENTIALLY (track clip, then the
-/// transition speech, then the next track clip...) rather than reproducing
-/// the live experience's ducked-volume OVERLAP (speech starting under the
-/// tail of the outgoing track while it fades). True overlapping offline
-/// mixing needs AVAudioEngine's manual/offline rendering mode driven frame
-/// by frame — real, but a much larger and fiddlier surface for a feature
-/// that's fundamentally "save the set so it isn't gone the moment it
-/// ends." Sequential splicing via AVMutableComposition is simpler, still a
-/// genuine continuous file with the real commentary in the right order,
-/// and reuses the same composition approach already proven out in
-/// LyricVideoExportService.
+/// Rendered by the Rust core as one Lumi timeline (rust/core/src/
+/// lumiclip.rs): tracks are read in place (LMS3 included, no decoded
+/// copies), joined with 1.5 s equal-power crossfades, Aria's lines placed
+/// between them, and the whole set encoded once to AAC.
 @MainActor
 final class AIDJSessionExportService: ObservableObject {
     enum State: Equatable {
@@ -45,135 +38,92 @@ final class AIDJSessionExportService: ObservableObject {
 
     func reset() { state = .idle }
 
+    /// The whole set as one Lumi render (rust/core/src/lumiclip.rs): each
+    /// track's 20 s from the middle — read by the core in place, LMS3
+    /// included, no unlocked or decoded copies — joined with 1.5 s
+    /// equal-power crossfades, Aria's spoken transitions in between, encoded
+    /// once to AAC at the end.
     private func render(log: [AIDJSessionEntry], streaming: StreamingService) async throws -> URL {
-        let composition = AVMutableComposition()
-        guard let compTrack = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) else {
-            throw AIDJExportError.compositionFailed
-        }
-        var cursor = CMTime.zero
-        let tempDir = FileManager.default.temporaryDirectory
-        var scratchFiles: [URL] = []
+        let mix = LumiRender(sampleRate: 48_000, crossfadeSecs: 1.5)
+        var temporary: [URL] = []
+        defer { for t in temporary { try? FileManager.default.removeItem(at: t) } }
+        var added = 0
 
         for (index, entry) in log.enumerated() {
-            state = .rendering(progress: Double(index) / Double(log.count))
+            state = .rendering(progress: 0.5 * Double(index) / Double(max(1, log.count)))
             switch entry {
             case .track(let song):
-                guard let clipURL = try? await trimmedClip(for: song, streaming: streaming, tempDir: tempDir) else { continue }
-                scratchFiles.append(clipURL)
-                let asset = AVURLAsset(url: clipURL)
-                guard let track = try await asset.loadTracks(withMediaType: .audio).first else { continue }
-                let duration = try await asset.load(.duration)
-                try compTrack.insertTimeRange(CMTimeRange(start: .zero, duration: duration), of: track, at: cursor)
-                cursor = cursor + duration
+                guard let source = try? await sourceFile(for: song, streaming: streaming) else { continue }
+                if source.isTemporary { temporary.append(source.url) }
+                let path = source.url.path
+                let full = await Task.detached(priority: .userInitiated) { lumiDuration(path: path) }.value
+                guard full > 0 else { continue }
+                let clip = min(Self.clipDuration, full)
+                let seg = LumiSegment(path: path, startSecs: max(0, (full - clip) / 2), durationSecs: clip,
+                                      fadeInSecs: 0.5, fadeOutSecs: 0.5, gainDb: 0)
+                if mix.addTrack(seg: seg) { added += 1 }
 
             case .transition(let text):
-                guard let speechURL = try? await synthesizeToFile(text: text, tempDir: tempDir) else { continue }
-                scratchFiles.append(speechURL)
-                let asset = AVURLAsset(url: speechURL)
-                guard let track = try await asset.loadTracks(withMediaType: .audio).first else { continue }
-                let duration = try await asset.load(.duration)
-                try compTrack.insertTimeRange(CMTimeRange(start: .zero, duration: duration), of: track, at: cursor)
-                cursor = cursor + duration
+                guard let speech = try? await synthesizePCM(text: text) else { continue }
+                mix.addPcm(samples: speech.samples, sampleRate: speech.rate, channels: 1)
             }
         }
+        guard added > 0, mix.durationSecs() > 0 else { throw AIDJExportError.nothingToExport }
 
-        guard cursor.seconds > 0 else { throw AIDJExportError.nothingToExport }
-
-        let outputURL = tempDir.appendingPathComponent("lumisound-ai-dj-set-\(UUID().uuidString).m4a")
-        guard let export = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetAppleM4A) else {
-            throw AIDJExportError.compositionFailed
-        }
-        export.outputURL = outputURL
-        export.outputFileType = .m4a
-        await export.export()
-        for scratch in scratchFiles { try? FileManager.default.removeItem(at: scratch) }
-        guard export.status == .completed else {
-            throw AIDJExportError.exportFailed(export.error?.localizedDescription ?? "unknown")
+        let outputURL = FileManager.default.temporaryDirectory.appendingPathComponent("lumisound-ai-dj-set-\(UUID().uuidString).m4a")
+        do {
+            try await LumiAudioWriter.write(mix, to: outputURL) { p in
+                Task { @MainActor [weak self] in self?.state = .rendering(progress: 0.5 + 0.5 * p) }
+            }
+        } catch {
+            throw AIDJExportError.exportFailed(error.localizedDescription)
         }
         return outputURL
     }
 
-    /// Same "clip from the middle" idea as `LyricVideoExportService` — a
-    /// DJ set samples tracks, it doesn't play them in full.
-    private func trimmedClip(for song: Song, streaming: StreamingService, tempDir: URL) async throws -> URL {
-        let sourceURL: URL
+    /// The track's own file (read in place), or its stream fetched once.
+    private func sourceFile(for song: Song, streaming: StreamingService) async throws -> (url: URL, isTemporary: Bool) {
         if let localURL = song.url, localURL.isFileURL {
-            sourceURL = LumisoundExclusiveExtensionService.avFoundationURL(for: localURL)
-        } else if let sourceTrackID = song.sourceTrackID {
-            let parts = sourceTrackID.split(separator: ":", maxSplits: 1)
-            guard parts.count == 2 else { throw AIDJExportError.noAudio }
-            let track = StreamTrack(id: String(parts[1]), title: song.title, artist: song.artist,
-                                     durationSeconds: 0, thumbnailURL: "", source: String(parts[0]), youtubeURL: "")
-            sourceURL = try await streaming.streamURL(for: track)
-        } else {
-            throw AIDJExportError.noAudio
+            return (localURL, false)
         }
-
-        let asset = AVURLAsset(url: sourceURL)
-        let fullDuration = try await asset.load(.duration).seconds
-        guard fullDuration.isFinite, fullDuration > 0 else { throw AIDJExportError.noAudio }
-        let clipDuration = min(Self.clipDuration, fullDuration)
-        let clipStart = max(0, (fullDuration - clipDuration) / 2)
-
-        let clipComposition = AVMutableComposition()
-        guard let track = try await asset.loadTracks(withMediaType: .audio).first,
-              let compTrack = clipComposition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)
-        else { throw AIDJExportError.noAudio }
-        let range = CMTimeRange(start: CMTime(seconds: clipStart, preferredTimescale: 600),
-                                 duration: CMTime(seconds: clipDuration, preferredTimescale: 600))
-        try compTrack.insertTimeRange(range, of: track, at: .zero)
-
-        let dest = tempDir.appendingPathComponent("lumisound-dj-clip-\(UUID().uuidString).m4a")
-        guard let export = AVAssetExportSession(asset: clipComposition, presetName: AVAssetExportPresetAppleM4A) else {
-            throw AIDJExportError.noAudio
-        }
-        export.outputURL = dest
-        export.outputFileType = .m4a
-        await export.export()
-        guard export.status == .completed else { throw AIDJExportError.noAudio }
-        return dest
+        guard let sourceTrackID = song.sourceTrackID else { throw AIDJExportError.noAudio }
+        let parts = sourceTrackID.split(separator: ":", maxSplits: 1)
+        guard parts.count == 2 else { throw AIDJExportError.noAudio }
+        let track = StreamTrack(id: String(parts[1]), title: song.title, artist: song.artist,
+                                durationSeconds: 0, thumbnailURL: "", source: String(parts[0]), youtubeURL: "")
+        let remote = try await streaming.streamURL(for: track)
+        return try await LumiClipService.readableFile(for: remote)
     }
 
-    /// Renders `text` through `AVSpeechSynthesizer.write(_:toBufferCallback:)`
-    /// (the offline/non-speaking-aloud render path, distinct from
-    /// `AIDJService`'s live `speak()`) into a standalone audio file.
-    private func synthesizeToFile(text: String, tempDir: URL) async throws -> URL {
+    /// Aria's line as mono float PCM (AVSpeechSynthesizer's offline render).
+    private func synthesizePCM(text: String) async throws -> (samples: [Float], rate: UInt32) {
         let synthesizer = AVSpeechSynthesizer()
         let utterance = AVSpeechUtterance(string: text)
         utterance.voice = AVSpeechSynthesisVoice(language: AVSpeechSynthesisVoice.currentLanguageCode())
         utterance.rate = AVSpeechUtteranceDefaultSpeechRate
-
-        let dest = tempDir.appendingPathComponent("lumisound-dj-speech-\(UUID().uuidString).caf")
-        try? FileManager.default.removeItem(at: dest)
-
         return try await withCheckedThrowingContinuation { continuation in
-            var audioFile: AVAudioFile?
+            var samples: [Float] = []
+            var rate: UInt32 = 0
             var resumed = false
             synthesizer.write(utterance) { buffer in
-                guard let pcmBuffer = buffer as? AVAudioPCMBuffer else { return }
-                if pcmBuffer.frameLength == 0 {
-                    // Empty buffer signals completion (per
-                    // AVSpeechSynthesizer.write's documented contract).
-                    if !resumed {
-                        resumed = true
-                        if audioFile != nil {
-                            continuation.resume(returning: dest)
-                        } else {
-                            continuation.resume(throwing: AIDJExportError.speechSynthesisFailed)
-                        }
+                guard let pcm = buffer as? AVAudioPCMBuffer, !resumed else { return }
+                if pcm.frameLength == 0 {
+                    resumed = true
+                    if samples.isEmpty || rate == 0 {
+                        continuation.resume(throwing: AIDJExportError.speechSynthesisFailed)
+                    } else {
+                        continuation.resume(returning: (samples, rate))
                     }
                     return
                 }
-                do {
-                    if audioFile == nil {
-                        audioFile = try AVAudioFile(forWriting: dest, settings: pcmBuffer.format.settings)
-                    }
-                    try audioFile?.write(from: pcmBuffer)
-                } catch {
-                    if !resumed {
-                        resumed = true
-                        continuation.resume(throwing: error)
-                    }
+                rate = UInt32(pcm.format.sampleRate)
+                let n = Int(pcm.frameLength)
+                if let f = pcm.floatChannelData {
+                    samples.append(contentsOf: UnsafeBufferPointer(start: f[0], count: n))
+                } else if let i = pcm.int16ChannelData {
+                    samples.append(contentsOf: UnsafeBufferPointer(start: i[0], count: n).map { Float($0) / 32768 })
+                } else if let i = pcm.int32ChannelData {
+                    samples.append(contentsOf: UnsafeBufferPointer(start: i[0], count: n).map { Float($0) / 2_147_483_648 })
                 }
             }
         }

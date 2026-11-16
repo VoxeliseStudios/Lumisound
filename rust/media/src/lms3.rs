@@ -1087,6 +1087,12 @@ impl FormatReader for Lms3Reader {
                 back += self.index[i].size as u64;
             }
         }
+        // AAC / Vorbis (overlapped transforms): a frame decodes fully only
+        // after its predecessor, so start one packet early; the caller's
+        // exact-start trim drops the extra.
+        if matches!(self.header.codec_type(), symphonia::core::codecs::CODEC_TYPE_AAC | symphonia::core::codecs::CODEC_TYPE_VORBIS) {
+            i = i.saturating_sub(1);
+        }
         let actual_ts = self.index[i].ts;
         // Opus: decode ~80 ms before the target with the output discarded
         // (RFC 6716 pre-roll), so the decoder is warm at the target.
@@ -1156,6 +1162,15 @@ impl PacketIter {
 
     pub fn entries(&self) -> &[Entry] {
         &self.index
+    }
+
+    /// Packets `lo..hi` only (unmasked with their own offsets).
+    pub fn open_range(p: &Path, lo: usize, hi: usize) -> Option<PacketIter> {
+        let mut file = std::io::BufReader::with_capacity(1 << 20, std::fs::File::open(p).ok()?);
+        let (header, _, index) = read_layout(&mut file)?;
+        let index: Vec<Entry> = index.get(lo..hi)?.to_vec();
+        file.seek(SeekFrom::Start(header.payload_offset + index.first()?.off)).ok()?;
+        Some(PacketIter { file, header, index, i: 0 })
     }
 }
 

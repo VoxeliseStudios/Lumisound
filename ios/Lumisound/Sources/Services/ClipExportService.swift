@@ -1,6 +1,4 @@
 import Foundation
-import AVFoundation
-import CoreMedia
 
 /// Exports a time range of a local track's audio as a standalone `.m4a`
 /// file — for a ringtone (via Finder/GarageBand once saved out; there's no
@@ -28,60 +26,22 @@ enum ClipExportError: LocalizedError {
 
 enum ClipExportService {
     /// Exports `url`'s audio between `start` and `end` (seconds) to a
-    /// temporary `.m4a` file and returns its URL. The caller presents it
-    /// (e.g. via `ShareLink`); the OS reclaims `tmp/` on its own schedule,
-    /// same as every other short-lived export file in this app.
+    /// temporary `.m4a` and returns its URL (the caller presents it, e.g.
+    /// via `ShareLink`). Lumi clip: read by the Rust core in place (LMS3,
+    /// no unlocked copy); lossless for AAC LMS3 tracks.
     static func exportClip(from url: URL, start: TimeInterval, end: TimeInterval, title: String) async throws -> URL {
         guard url.isFileURL else { throw ClipExportError.notLocalFile }
         guard end > start else { throw ClipExportError.invalidRange }
-
-        // A `.lms`-locked url's on-disk bytes are XOR-masked and unreadable
-        // by AVURLAsset until unlocked -- without this, the AB-repeat/
-        // ringtone clip export in Practice Mode failed for every locked track.
-        let asset = AVURLAsset(url: LumisoundExclusiveExtensionService.avFoundationURL(for: url))
-        guard let sourceTrack = try await asset.loadTracks(withMediaType: .audio).first else {
-            throw ClipExportError.noAudioTrack
-        }
-
-        let composition = AVMutableComposition()
-        guard let compositionTrack = composition.addMutableTrack(
-            withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid
-        ) else {
-            throw ClipExportError.exportFailed("Could not create composition track.")
-        }
-
-        let range = CMTimeRange(
-            start: CMTime(seconds: start, preferredTimescale: 600),
-            end: CMTime(seconds: end, preferredTimescale: 600)
-        )
-        try compositionTrack.insertTimeRange(range, of: sourceTrack, at: .zero)
-
-        guard let exportSession = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetAppleM4A) else {
-            throw ClipExportError.exportFailed("Could not create export session.")
-        }
-
         let sanitizedTitle = title
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
             .filter { !$0.isEmpty }
             .joined(separator: "_")
-        let baseName = sanitizedTitle.isEmpty ? "clip" : sanitizedTitle
-        let outputURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("\(baseName)_\(UUID().uuidString.prefix(8))")
-            .appendingPathExtension("m4a")
-        try? FileManager.default.removeItem(at: outputURL)
-
-        exportSession.outputURL = outputURL
-        exportSession.outputFileType = .m4a
-
-        await withCheckedContinuation { continuation in
-            exportSession.exportAsynchronously {
-                continuation.resume()
-            }
+        do {
+            return try await LumiClipService.clip(from: url, start: start, end: end, baseName: sanitizedTitle.isEmpty ? "clip" : sanitizedTitle)
+        } catch LumiClipError.unreadable {
+            throw ClipExportError.noAudioTrack
+        } catch {
+            throw ClipExportError.exportFailed(error.localizedDescription)
         }
-
-        guard exportSession.status == .completed else {
-            throw ClipExportError.exportFailed(exportSession.error?.localizedDescription ?? "Unknown export error.")
-        }
-        return outputURL
     }
 }

@@ -375,3 +375,76 @@ pub fn fingerprint(path: &Path) -> Option<Fingerprint> {
     });
     ok.then(|| Fingerprint { frames, rate: spec.0, channels: spec.1, crc: crc.finalize() })
 }
+
+/// Stereo float PCM from `start` seconds, block by block, at the decoder's
+/// rate: sample-exact start (`start_at`), gapless trimmed, mono doubled,
+/// more than two channels folded to their first two. Reads LMS3 / locked /
+/// plain files in place. The building block for Lumi clips and mixes.
+pub struct PcmStream {
+    fmt: Box<dyn symphonia::core::formats::FormatReader>,
+    dec: Box<dyn symphonia::core::codecs::Decoder>,
+    id: u32,
+    trim: crate::gapless::Trim,
+    pub rate: u32,
+    buf: Option<SampleBuffer<f32>>,
+    done: bool,
+}
+
+impl PcmStream {
+    pub fn open(path: &Path, start: f64) -> Option<PcmStream> {
+        let (mut fmt, id) = open(path)?;
+        let params = fmt.tracks().iter().find(|t| t.id == id)?.codec_params.clone();
+        let dec = crate::opus::codecs().make(&params, &DecoderOptions::default()).ok()?;
+        let rate = dec.codec_params().sample_rate.or(params.sample_rate)?;
+        let (trim, _) = start_at(&mut *fmt, id, rate, crate::gapless::for_track(path, params.codec), Some(start).filter(|s| *s > 0.0));
+        Some(PcmStream { fmt, dec, id, trim, rate, buf: None, done: false })
+    }
+
+    /// Next block of interleaved stereo, or None at the end.
+    pub fn next_block(&mut self) -> Option<Vec<f32>> {
+        while !self.done {
+            let packet = match self.fmt.next_packet() {
+                Ok(p) => p,
+                Err(_) => {
+                    self.done = true;
+                    break;
+                }
+            };
+            if packet.track_id() != self.id {
+                continue;
+            }
+            let decoded = match self.dec.decode(&packet) {
+                Ok(d) => d,
+                Err(Error::DecodeError(_)) => continue,
+                Err(_) => {
+                    self.done = true;
+                    break;
+                }
+            };
+            let spec = *decoded.spec();
+            let ch = spec.channels.count().max(1);
+            let b = self.buf.get_or_insert_with(|| SampleBuffer::new(decoded.capacity() as u64, spec));
+            if b.capacity() < decoded.capacity() * ch {
+                *b = SampleBuffer::new(decoded.capacity() as u64, spec);
+            }
+            b.copy_interleaved_ref(decoded);
+            let keep = self.trim.keep(b.samples().len() / ch);
+            if keep.is_empty() {
+                if self.trim.done() {
+                    self.done = true;
+                }
+                continue;
+            }
+            let s = &b.samples()[keep.start * ch..keep.end * ch];
+            let mut out = Vec::with_capacity((keep.end - keep.start) * 2);
+            for f in s.chunks(ch) {
+                let l = f[0];
+                let r = if ch > 1 { f[1] } else { f[0] };
+                out.push(l);
+                out.push(r);
+            }
+            return Some(out);
+        }
+        None
+    }
+}

@@ -99,18 +99,6 @@ enum LumisoundExclusiveExtensionService {
         return URL(fileURLWithPath: out)
     }
 
-    /// A URL AVURLAsset/AVAssetReader/AVAssetExportSession can always open
-    /// (clip maker, lyric video, AI DJ export, identify): the playable copy,
-    /// except Opus/Vorbis (no AVFoundation demuxer for Ogg/WebM), which the
-    /// core decodes once to a cached 16-bit WAV. Plain non-Opus files are
-    /// returned unchanged.
-    static func avFoundationURL(for url: URL) -> URL {
-        guard url.isFileURL else { return url }
-        let ext = effectiveExtension(for: url)
-        guard isConverted(url) || ["opus", "ogg", "webm", "mka"].contains(ext) else { return url }
-        return URL(fileURLWithPath: lmsAvfoundationPath(path: url.path, cacheDir: playableCacheDir.path))
-    }
-
     static func hasWarmPlayableCache(for url: URL) -> Bool {
         lmsHasWarmCache(path: url.path, cacheDir: playableCacheDir.path)
     }

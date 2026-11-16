@@ -43,10 +43,16 @@ final class LyricVideoExportService: ObservableObject {
     func reset() { state = .idle }
 
     private func render(song: Song, lyrics: [LrcLine], artwork: UIImage?) async throws -> URL {
-        guard let songURL = song.url else { throw LyricVideoError.noAudio }
-        let playableURL = LumisoundExclusiveExtensionService.avFoundationURL(for: songURL)
-        let sourceAsset = AVURLAsset(url: playableURL)
-        let fullDuration = try await sourceAsset.load(.duration).seconds
+        guard let rawURL = song.url else { throw LyricVideoError.noAudio }
+        // A streamed song is fetched once; a library file is read in place.
+        guard let source = try? await LumiClipService.readableFile(for: rawURL) else { throw LyricVideoError.noAudio }
+        defer { if source.isTemporary { try? FileManager.default.removeItem(at: source.url) } }
+        let songURL = source.url
+        // Lumi system: the Rust core reads the track itself (LMS3 in place,
+        // no unlocked or decoded copy) for its length, the visualizer
+        // envelope and the clip's audio.
+        let path = songURL.path
+        let fullDuration = await Task.detached(priority: .userInitiated) { lumiDuration(path: path) }.value
         guard fullDuration.isFinite, fullDuration > 0 else { throw LyricVideoError.noAudio }
 
         // Center the clip in the track rather than always starting at 0 —
@@ -55,7 +61,10 @@ final class LyricVideoExportService: ObservableObject {
         let clipDuration = min(Self.clipDuration, fullDuration)
         let clipStart = max(0, (fullDuration - clipDuration) / 2)
 
-        let envelope = try await amplitudeEnvelope(url: playableURL, start: clipStart, duration: clipDuration)
+        let fps = UInt32(Self.frameRate)
+        let envelope = await Task.detached(priority: .userInitiated) {
+            lumiEnvelope(path: path, startSecs: clipStart, durationSecs: clipDuration, fps: fps)
+        }.value
 
         let tempDir = FileManager.default.temporaryDirectory
         let videoOnlyURL = tempDir.appendingPathComponent("lumisound-clip-video-\(UUID().uuidString).mov")
@@ -63,65 +72,22 @@ final class LyricVideoExportService: ObservableObject {
             song: song, lyrics: lyrics, artwork: artwork, envelope: envelope,
             clipStart: clipStart, clipDuration: clipDuration, outputURL: videoOnlyURL
         )
+        let audioURL: URL
+        do {
+            audioURL = try await LumiClipService.clip(from: songURL, start: clipStart, end: clipStart + clipDuration, baseName: "lyric-audio")
+        } catch {
+            try? FileManager.default.removeItem(at: videoOnlyURL)
+            throw LyricVideoError.noAudio
+        }
 
         let finalURL = tempDir.appendingPathComponent("\(safeFilename(song.title))-clip.mp4")
         try? FileManager.default.removeItem(at: finalURL)
-        try await mux(videoOnlyURL: videoOnlyURL, audioAsset: sourceAsset,
-                       clipStart: clipStart, clipDuration: clipDuration, outputURL: finalURL)
-        try? FileManager.default.removeItem(at: videoOnlyURL)
+        defer {
+            try? FileManager.default.removeItem(at: videoOnlyURL)
+            try? FileManager.default.removeItem(at: audioURL)
+        }
+        try await mux(videoOnlyURL: videoOnlyURL, audioURL: audioURL, clipDuration: clipDuration, outputURL: finalURL)
         return finalURL
-    }
-
-    // MARK: - Amplitude envelope (drives the bar visualizer)
-
-    /// One RMS amplitude value per video frame across the clip — cheap
-    /// (single pass, no FFT) and more than enough for a few animated bars;
-    /// real spectral analysis would be wasted precision for this.
-    private func amplitudeEnvelope(url: URL, start: TimeInterval, duration: TimeInterval) async throws -> [Float] {
-        try await Task.detached(priority: .utility) {
-            guard let file = try? AVAudioFile(forReading: url) else { return [] }
-            let sampleRate = file.processingFormat.sampleRate
-            let channels = Int(file.processingFormat.channelCount)
-            guard channels > 0, sampleRate > 0 else { return [] }
-
-            let startFrame = AVAudioFramePosition(start * sampleRate)
-            file.framePosition = max(0, min(startFrame, file.length))
-
-            let frameCount = AVAudioFrameCount(min(Double(file.length - file.framePosition), duration * sampleRate))
-            guard frameCount > 0,
-                  let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: frameCount),
-                  (try? file.read(into: buffer, frameCount: frameCount)) != nil,
-                  let channelData = buffer.floatChannelData
-            else { return [] }
-
-            let totalFrames = Int(buffer.frameLength)
-            let videoFrameCount = max(1, Int(duration * Double(Self.frameRate)))
-            let samplesPerVideoFrame = max(1, totalFrames / videoFrameCount)
-
-            var envelope: [Float] = []
-            envelope.reserveCapacity(videoFrameCount)
-            var cursor = 0
-            while cursor < totalFrames {
-                let end = min(cursor + samplesPerVideoFrame, totalFrames)
-                var sumSquares: Float = 0
-                var count: Float = 0
-                for ch in 0..<channels {
-                    let p = channelData[ch]
-                    for i in cursor..<end {
-                        sumSquares += p[i] * p[i]
-                        count += 1
-                    }
-                }
-                let rms = count > 0 ? sqrt(sumSquares / count) : 0
-                envelope.append(rms)
-                cursor = end
-            }
-            // Normalize to 0...1 against this clip's own peak so quiet
-            // sections still animate visibly instead of sitting flat.
-            let peak = envelope.max() ?? 1
-            guard peak > 0 else { return envelope }
-            return envelope.map { min(1, $0 / peak) }
-        }.value
     }
 
     // MARK: - Frame rendering
@@ -226,7 +192,10 @@ final class LyricVideoExportService: ObservableObject {
 
     // MARK: - Mux video + trimmed audio
 
-    private func mux(videoOnlyURL: URL, audioAsset: AVURLAsset, clipStart: TimeInterval, clipDuration: TimeInterval, outputURL: URL) async throws {
+    /// Video frames + the Lumi-rendered clip audio (both written by this
+    /// app just now) into one `.mp4`.
+    private func mux(videoOnlyURL: URL, audioURL: URL, clipDuration: TimeInterval, outputURL: URL) async throws {
+        let audioAsset = AVURLAsset(url: audioURL)
         let videoAsset = AVURLAsset(url: videoOnlyURL)
         let composition = AVMutableComposition()
 
@@ -238,8 +207,7 @@ final class LyricVideoExportService: ObservableObject {
 
         if let audioTrack = try await audioAsset.loadTracks(withMediaType: .audio).first,
            let compAudioTrack = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) {
-            let range = CMTimeRange(start: CMTime(seconds: clipStart, preferredTimescale: 600),
-                                     duration: CMTime(seconds: clipDuration, preferredTimescale: 600))
+            let range = CMTimeRange(start: .zero, duration: CMTime(seconds: clipDuration, preferredTimescale: 600))
             try? compAudioTrack.insertTimeRange(range, of: audioTrack, at: .zero)
         }
 

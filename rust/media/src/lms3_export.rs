@@ -431,6 +431,24 @@ fn ilst(meta: &Meta, smpb: Option<String>) -> Vec<u8> {
 
 fn m4a<W: Write>(h: &Header, extra: Option<&[u8]>, packets: PacketIter, meta: &Meta, w: &mut W, entry: SampleEntry) -> std::io::Result<()> {
     let entries: Vec<Entry> = packets.entries().to_vec();
+    m4a_parts(h, extra, &entries, h.payload_len, h.gapless, packets.map(|i| i.map(|(_, d)| d)), meta, w, entry)
+}
+
+/// MP4 audio from a run of packets: `entries` with offsets relative to the
+/// first one, `payload_len` their total size, `gapless` the playable range
+/// (edit list + iTunSMPB), `data` the unmasked packets in order.
+#[allow(clippy::too_many_arguments)]
+fn m4a_parts<W: Write>(
+    h: &Header,
+    extra: Option<&[u8]>,
+    entries: &[Entry],
+    payload_len: u64,
+    gapless: Option<crate::gapless::Gapless>,
+    data: impl Iterator<Item = std::io::Result<Vec<u8>>>,
+    meta: &Meta,
+    w: &mut W,
+    entry: SampleEntry,
+) -> std::io::Result<()> {
     if entries.is_empty() {
         return Err(io_err("no packets"));
     }
@@ -456,7 +474,7 @@ fn m4a<W: Write>(h: &Header, extra: Option<&[u8]>, packets: PacketIter, meta: &M
             _ => stts.push((1, d)),
         }
     }
-    let gap = h.gapless.filter(|g| g.frames.is_some());
+    let gap = gapless.filter(|g| g.frames.is_some());
     let shown = gap.and_then(|g| g.frames).unwrap_or(total);
     let smpb = gap.map(|g| {
         let frames = g.frames.unwrap_or(0);
@@ -482,7 +500,7 @@ fn m4a<W: Write>(h: &Header, extra: Option<&[u8]>, packets: PacketIter, meta: &M
                     Some(e) if !e.is_empty() => e.to_vec(),
                     _ => synth_asc(h.sample_rate, channels as u8),
                 };
-                let avg = (h.payload_len as f64 * 8.0 / (total as f64 / timescale as f64).max(0.001)) as u32;
+                let avg = (payload_len as f64 * 8.0 / (total as f64 / timescale as f64).max(0.001)) as u32;
                 let mut dc = vec![0x40, 0x15, 0, 0x18, 0];
                 dc.extend_from_slice(&avg.to_be_bytes());
                 dc.extend_from_slice(&avg.to_be_bytes());
@@ -521,12 +539,12 @@ fn m4a<W: Write>(h: &Header, extra: Option<&[u8]>, packets: PacketIter, meta: &M
     }
     let mut stsz = 0u32.to_be_bytes().to_vec();
     stsz.extend_from_slice(&(entries.len() as u32).to_be_bytes());
-    for e in &entries {
+    for e in entries {
         stsz.extend_from_slice(&e.size.to_be_bytes());
     }
     let ftyp = bx(b"ftyp", b"M4A \0\0\x02\0M4A isommp42");
     let build_moov = |mdat_data_start: u64| -> Vec<u8> {
-        let use64 = mdat_data_start + h.payload_len > u32::MAX as u64;
+        let use64 = mdat_data_start + payload_len > u32::MAX as u64;
         let mut co = (chunks as u32).to_be_bytes().to_vec();
         for c in 0..chunks {
             let off = mdat_data_start + entries[c * per_chunk].off;
@@ -585,7 +603,7 @@ fn m4a<W: Write>(h: &Header, extra: Option<&[u8]>, packets: PacketIter, meta: &M
         bx(b"moov", &cat(&[full(b"mvhd", 1, 0, &mvhd), trak, ilst(meta, smpb.clone())]))
     };
     let moov_len = build_moov(0).len() as u64;
-    let big_mdat = h.payload_len + 8 > u32::MAX as u64;
+    let big_mdat = payload_len + 8 > u32::MAX as u64;
     let mdat_header = if big_mdat { 16 } else { 8 };
     let data_start = ftyp.len() as u64 + moov_len + mdat_header;
     let moov = build_moov(data_start);
@@ -595,13 +613,13 @@ fn m4a<W: Write>(h: &Header, extra: Option<&[u8]>, packets: PacketIter, meta: &M
     if big_mdat {
         w.write_all(&1u32.to_be_bytes())?;
         w.write_all(b"mdat")?;
-        w.write_all(&(h.payload_len + 16).to_be_bytes())?;
+        w.write_all(&(payload_len + 16).to_be_bytes())?;
     } else {
-        w.write_all(&((h.payload_len + 8) as u32).to_be_bytes())?;
+        w.write_all(&((payload_len + 8) as u32).to_be_bytes())?;
         w.write_all(b"mdat")?;
     }
-    for item in packets {
-        w.write_all(&item?.1)?;
+    for d in data {
+        w.write_all(&d?)?;
     }
     Ok(())
 }
@@ -824,4 +842,51 @@ fn wav_decoded<W: Write + Seek>(p: &Path, w: &mut W) -> std::io::Result<()> {
     w.write_all(&wav_header(3, ch, rate, 32, frames * ch as u64 * 4))?;
     w.seek(SeekFrom::End(0))?;
     Ok(())
+}
+
+/// A clip of an AAC LMS3 track as M4A, without re-encoding: the packets
+/// covering [start, end] (plus two before, for the decoder's overlap) and an
+/// edit list cutting them to the exact samples. None when the track isn't
+/// AAC in LMS3 (the caller renders instead).
+pub fn export_aac_clip(p: &Path, start: f64, end: f64, out: &Path) -> Option<()> {
+    let (h, extra, all) = PacketIter::open(p)?;
+    if h.codec_type() != CODEC_TYPE_AAC || end <= start {
+        return None;
+    }
+    let rate = match h.time_base {
+        Some((1, d)) => d as f64,
+        None => h.sample_rate as f64,
+        _ => return None,
+    };
+    let entries = all.entries().to_vec();
+    drop(all);
+    let delay = h.gapless.map(|g| g.delay).unwrap_or(0);
+    let from = delay + (start.max(0.0) * rate).round() as u64;
+    let to = delay + (end * rate).round() as u64;
+    let target = entries.partition_point(|e| e.ts <= from).saturating_sub(1);
+    // Two packets of lead-in: the decoder's overlap-add (and its first
+    // frame's own warm-up) settle before the cut.
+    let lo = target.saturating_sub(2);
+    let hi = entries.partition_point(|e| e.ts < to).max(lo + 1).min(entries.len());
+    let slice = &entries[lo..hi];
+    let base = slice[0].off;
+    let rebased: Vec<Entry> = slice.iter().map(|e| Entry { off: e.off - base, ..*e }).collect();
+    let end_of = |e: &Entry| e.ts + e.dur;
+    let have = end_of(slice.last()?).min(to);
+    let gap = crate::gapless::Gapless { delay: from - slice[0].ts, frames: Some(have.saturating_sub(from)) };
+    let payload_len: u64 = slice.iter().map(|e| e.size as u64).sum();
+    let meta = crate::lms3::read_meta(p).unwrap_or_default();
+    let data = PacketIter::open_range(p, lo, hi)?;
+    let dir = out.parent().unwrap_or(Path::new("."));
+    let tmp = dir.join(format!(".{}.clip-{}", out.file_name()?.to_str()?, nanos()));
+    let r = (|| {
+        let mut f = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
+        m4a_parts(&h, extra.as_deref(), &rebased, payload_len, Some(gap), data.map(|i| i.map(|(_, d)| d)), &meta, &mut f, SampleEntry::Aac)?;
+        f.into_inner().map_err(|e| e.into_error())?.sync_all()?;
+        std::fs::rename(&tmp, out)
+    })();
+    if r.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    r.ok()
 }

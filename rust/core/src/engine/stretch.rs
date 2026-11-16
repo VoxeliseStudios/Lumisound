@@ -24,6 +24,16 @@
 //!   heard at every pitch (sustained bass fell 4-8 dB on each drum hit;
 //!   ~320 dips a minute on cloud tracks). Trade-off measured: drum attacks
 //!   at 1.25x speed are a little softer (pre-echo -13.8 dB vs -25 before).
+//! * Attack gating (pre-echo): onsets are found in the input itself (a jump
+//!   in high-frequency energy). An analysis frame whose second half would
+//!   reach an onset is faded out just before it, so the hit can't leak into
+//!   frames that are synthesised earlier in time — the pre-echo a long
+//!   window otherwise smears ahead of every drum hit when stretching. The
+//!   overlap-add is normalised by the window weight each output sample
+//!   actually received, so the gated frames leave no level dip; the frames
+//!   that do contain the hit start with it near their centre, where the
+//!   bin-wise phase reset keeps it sharp. 1.25x: pre-echo -12 → see
+//!   tests/engine_quality.rs; sustained notes under the hits keep level.
 //! * At ratio 1 every frame is a phase reset: the overlap-add reconstructs
 //!   the input exactly, so a stretch that returns to 1 (beat-matched
 //!   crossfades) never jumps.
@@ -45,6 +55,15 @@ const BINS: usize = N / 2 + 1;
 const OLA_GAIN: f32 = 3.0;
 /// Fraction of rising bins that marks a transient.
 const TRANSIENT_FRACTION: f32 = 0.38;
+/// Onset detector block (frames) and its thresholds: high-frequency energy
+/// 8x the recent average, above an absolute floor, at most one per 60 ms.
+const OD_BLOCK: usize = 128;
+const OD_HISTORY: usize = 8;
+const OD_JUMP: f32 = 8.0;
+const OD_FLOOR: f32 = 1e-4;
+const OD_SPACING: u64 = 2880;
+/// Fade (frames) ending at a gated onset.
+const GATE_FADE: usize = 64;
 /// A bin "jumped" when its magnitude at least doubled (+6 dB): what was
 /// there before is then at most a quarter of the power, so resetting its
 /// phase can't audibly cancel it.
@@ -89,6 +108,24 @@ pub struct Wsola {
     new_synth: Vec<f32>,
     /// Bins that jumped this frame (transient frames only).
     jumped: Vec<bool>,
+    /// Overlap-add weight each output sample received (gated) and would
+    /// have received (ungated): output is scaled by their ratio.
+    acc_w: Vec<f32>,
+    acc_full: Vec<f32>,
+    gate: Vec<f32>,
+    /// Onset detector: recent block energies, the block being summed, the
+    /// previous sample (for the first difference), detected onsets
+    /// (absolute input frames).
+    od_hist: std::collections::VecDeque<f32>,
+    od_acc: f32,
+    od_n: usize,
+    od_prev: f32,
+    od_pos: u64,
+    od_last: u64,
+    onsets: std::collections::VecDeque<u64>,
+    /// Input frames owed by transient holds (frames walked at ratio 1 while
+    /// a hit sat in the first half of the window), repaid over later hops.
+    debt: f64,
 }
 
 fn wrap(x: f32) -> f32 {
@@ -129,6 +166,17 @@ impl Wsola {
             peaks: Vec::with_capacity(BINS / 2),
             new_synth: vec![0.0; BINS],
             jumped: vec![false; BINS],
+            acc_w: vec![0.0; N],
+            acc_full: vec![0.0; N],
+            gate: vec![1.0; N],
+            od_hist: std::collections::VecDeque::with_capacity(OD_HISTORY + 1),
+            od_acc: 0.0,
+            od_n: 0,
+            od_prev: 0.0,
+            od_pos: 0,
+            od_last: 0,
+            onsets: std::collections::VecDeque::new(),
+            debt: 0.0,
         }
     }
 
@@ -169,7 +217,9 @@ impl Wsola {
             self.skip = (N - HS) as u64;
         }
         self.expected += (interleaved.len() / 2) as f64 / self.ratio;
+        let at = self.dropped + self.input.len() as u64;
         self.input.extend(interleaved.chunks_exact(2).map(|c| [c[0], c[1]]));
+        self.detect_onsets(at);
         self.run(out);
     }
 
@@ -188,30 +238,92 @@ impl Wsola {
         self.emitted = before + ((out.len() - start) / 2) as u64;
     }
 
+    /// Scan input appended from absolute frame `from` for onsets.
+    fn detect_onsets(&mut self, from: u64) {
+        // Positions are absolute input frames, priming silence included.
+        if self.od_pos == 0 && self.od_n == 0 && self.od_hist.is_empty() {
+            self.od_pos = from;
+        }
+        let start = (from - self.dropped) as usize;
+        for i in start..self.input.len() {
+            let m = 0.5 * (self.input[i][0] + self.input[i][1]);
+            let d = m - self.od_prev;
+            self.od_prev = m;
+            self.od_acc += d * d;
+            self.od_n += 1;
+            if self.od_n < OD_BLOCK {
+                continue;
+            }
+            let e = self.od_acc / OD_BLOCK as f32;
+            let block_start = self.od_pos;
+            self.od_pos += OD_BLOCK as u64;
+            self.od_acc = 0.0;
+            self.od_n = 0;
+            let avg = if self.od_hist.is_empty() { f32::MAX } else { self.od_hist.iter().sum::<f32>() / self.od_hist.len() as f32 };
+            if e > OD_FLOOR && e > avg * OD_JUMP && block_start >= self.od_last + OD_SPACING && self.od_hist.len() == OD_HISTORY {
+                // The attack may have begun late in the previous block:
+                // date it a block early (an early cut is renormalised away;
+                // a late one lets the attack leak).
+                self.onsets.push_back(block_start.saturating_sub(OD_BLOCK as u64));
+                self.od_last = block_start;
+            }
+            self.od_hist.push_back(e);
+            if self.od_hist.len() > OD_HISTORY {
+                self.od_hist.pop_front();
+            }
+        }
+    }
+
     fn run(&mut self, out: &mut Vec<f32>) {
         while (self.pos as usize) + N <= self.input.len() {
             let start = self.pos as usize;
             let abs = self.dropped + start as u64;
             let hop = self.prev_start.map_or(HS as u64, |p| abs - p).max(1) as usize;
             let priming = abs < (N - HS) as u64;
-            let ratio = if priming { 1.0 } else { self.ratio };
+            // Transient hold: while a fresh hit is in the first half of the
+            // window, walk the input at ratio 1 so every frame places the
+            // attack at the same output time (stretching across it moves it
+            // earlier frame by frame: pre-echo). The time is repaid on the
+            // following hops (≤ 25 % per hop), so tempo and length hold.
+            let wanted = self.ratio;
+            let stretching = !priming && (wanted - 1.0).abs() > 1e-6;
+            let hold = stretching && self.debt.abs() < N as f64 && self.onsets.iter().any(|o| *o >= abs && *o < abs + (N / 2) as u64);
+            let step = if priming {
+                HS as f64
+            } else if hold {
+                self.debt += HS as f64 * (wanted - 1.0);
+                HS as f64
+            } else {
+                let base = HS as f64 * wanted;
+                let extra = self.debt.clamp(-0.25 * base, 0.25 * base);
+                self.debt -= extra;
+                base + extra
+            };
+            let ratio = if priming { 1.0 } else { wanted };
             self.frame(start, hop, (ratio - 1.0).abs() < 1e-6);
             self.prev_start = Some(abs);
             // Emit the finished front hop, shift the accumulator.
-            for f in &self.acc[..HS] {
+            for (i, f) in self.acc[..HS].iter().enumerate() {
                 if self.skip > 0 {
                     self.skip -= 1;
                     continue;
                 }
-                out.push(f[0] / OLA_GAIN);
-                out.push(f[1] / OLA_GAIN);
+                // Make up for weight that gated frames didn't contribute.
+                let (w, full) = (self.acc_w[i], self.acc_full[i]);
+                let g = if w < full - 1e-4 { full / w.max(full * 0.3) } else { 1.0 };
+                out.push(f[0] / OLA_GAIN * g);
+                out.push(f[1] / OLA_GAIN * g);
                 self.emitted += 1;
             }
             self.acc.copy_within(HS.., 0);
             for f in &mut self.acc[N - HS..] {
                 *f = [0.0; 2];
             }
-            self.pos += HS as f64 * ratio;
+            self.acc_w.copy_within(HS.., 0);
+            self.acc_full.copy_within(HS.., 0);
+            self.acc_w[N - HS..].fill(0.0);
+            self.acc_full[N - HS..].fill(0.0);
+            self.pos += step;
             // Drop consumed input to bound memory.
             let drop = self.pos as usize;
             if drop > 16_384 {
@@ -223,10 +335,35 @@ impl Wsola {
     }
 
     fn frame(&mut self, at: usize, hop: usize, exact: bool) {
+        // Attack gate: an onset in this frame's second half is left out of it
+        // (faded just before), so it can't be synthesised ahead of time.
+        let abs = self.dropped + at as u64;
+        while self.onsets.front().is_some_and(|o| *o < abs) {
+            self.onsets.pop_front();
+        }
+        let cut = if exact {
+            None
+        } else {
+            self.onsets.iter().find(|o| **o >= abs + (N / 2) as u64 && **o < abs + N as u64).map(|o| (o - abs) as usize)
+        };
+        match cut {
+            Some(c) => {
+                let fade_from = c.saturating_sub(GATE_FADE);
+                for i in 0..N {
+                    self.gate[i] = if i < fade_from { 1.0 } else if i >= c { 0.0 } else { 0.5 + 0.5 * (PI * (i - fade_from) as f32 / GATE_FADE as f32).cos() };
+                }
+            }
+            None => self.gate.fill(1.0),
+        }
+        for i in 0..N {
+            let w2 = self.window[i] * self.window[i];
+            self.acc_full[i] += w2;
+            self.acc_w[i] += w2 * self.gate[i];
+        }
         // Analysis: windowed FFT of both channels and their mid.
         for ch in 0..2 {
             for i in 0..N {
-                self.buf[ch][i] = Complex32::new(self.input[at + i][ch] * self.window[i], 0.0);
+                self.buf[ch][i] = Complex32::new(self.input[at + i][ch] * self.window[i] * self.gate[i], 0.0);
             }
             self.fwd.process_with_scratch(&mut self.buf[ch], &mut self.scratch);
         }
@@ -414,6 +551,49 @@ mod tests {
             let head = rms(0, 480);
             let body = rms(frames / 2, frames / 2 + 4800);
             assert!((head / body - 1.0).abs() < 0.1, "ratio {ratio}: first 10 ms at {:.2} of full level", head / body);
+        }
+    }
+}
+
+#[cfg(test)]
+mod pre_echo_probe {
+    use super::*;
+    /// Per-hit pre-echo straight on the stretcher (engine_quality's fixture).
+    #[test]
+    #[ignore]
+    fn per_hit() {
+        let sr = 48_000f64;
+        let sig: Vec<f32> = (0..(sr * 8.0) as usize).flat_map(|i| {
+            let t = i as f64 / sr;
+            let k = (t / 0.4).floor();
+            let dt = t - k * 0.4 - 0.2;
+            let pad = 0.03 * (std::f64::consts::TAU * 220.0 * t).sin();
+            let v = if dt < 0.0 { pad } else {
+                let n = ((t * 48_000.0).round() * 12.9898).sin() * 43758.5453;
+                pad + 0.6 * (-dt / 0.015).exp() * (n - n.floor() - 0.5) * 2.0
+            };
+            [v as f32, v as f32]
+        }).collect();
+        for ratio in [1.0, 1.25, 0.8] {
+            let mut w = Wsola::new(ratio);
+            let mut out = Vec::new();
+            if ratio == 1.0 { out = sig.clone(); } else {
+            for c in sig.chunks(2048) { w.process(c, &mut out); }
+            }
+            let x: Vec<f64> = out.iter().step_by(2).map(|v| *v as f64).collect();
+            let win = (sr * 0.025) as usize / 5;
+            let env: Vec<f64> = x.chunks(win).map(|c| c.iter().map(|v| v * v).sum()).collect();
+            let mut i = 10;
+            let mut vals = vec![];
+            while i + 10 < env.len() {
+                if env[i] > 10.0 * env[i - 1] && env[i] > 1e-3 {
+                    let b: f64 = env[i - 5..i].iter().sum();
+                    let a: f64 = env[i..i + 5].iter().sum();
+                    vals.push(format!("{:.1}@{:.2}s", 10.0 * (b / a).log10(), (i * win) as f64 / sr));
+                    i += 20;
+                } else { i += 1; }
+            }
+            eprintln!("ratio {ratio}: onsets detected {} | {}", w.onsets.len(), vals.join(" "));
         }
     }
 }

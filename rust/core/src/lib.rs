@@ -27,6 +27,7 @@ pub mod import;
 pub mod library;
 pub mod live;
 pub mod lock;
+pub mod lumiclip;
 pub mod logger;
 pub mod lyrics;
 pub mod lua;

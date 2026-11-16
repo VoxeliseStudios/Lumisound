@@ -58,7 +58,9 @@ fn check(src: &Path, dir: &Path) -> Vec<String> {
     // Opus: anything that starts mid-track meets LMS3's warm seek (decoder
     // pre-roll) where the source file's reader starts the decoder cold, so
     // LMS3 must match a continuous decode at least as well as the source.
-    let opus = matches!(ext.as_str(), "opus" | "webm");
+    // (AAC too: LMS3 starts it a packet early so the overlapped transform
+    // is complete at the start; the plain file's reader starts it cold.)
+    let opus = matches!(ext.as_str(), "opus" | "webm" | "m4a");
     if opus {
         let mono = |p: &str, st: f64, len: f64| analysis::decode_mono(p.into(), cache.clone(), 11025, st, len).unwrap_or_default();
         let truth: Vec<i16> = mono(&a, 0.0, 9.0).into_iter().skip(5 * 11025).collect();
@@ -145,12 +147,53 @@ fn check(src: &Path, dir: &Path) -> Vec<String> {
     if badge.version != 3 || badge.codec.is_empty() || badge.bitrate_kbps == 0 {
         bad.push(format!("badge {badge:?}"));
     }
-    let avf = lock::lms_avfoundation_path(b.clone(), cache.clone());
-    let fa = decode::fingerprint(Path::new(&avf));
-    let fl = decode::fingerprint(&lms);
-    match (fa, fl) {
-        (Some(x), Some(y)) if x.frames == y.frames && x.rate == y.rate => {}
-        _ => bad.push(format!("avfoundation copy {avf}: {fa:?} vs {fl:?}")),
+    // Lumi clips read LMS3 directly: a rendered clip equals the track's own
+    // decode over that range; AAC LMS3 clips cut losslessly.
+    let r = lumisound_core::lumiclip::LumiRender::new(48_000, 0.0);
+    let seg = lumisound_core::lumiclip::LumiSegment { path: b.clone(), start_secs: 10.0, duration_secs: 4.0, fade_in_secs: 0.0, fade_out_secs: 0.0, gain_db: 0.0 };
+    if !r.add_track(seg) || (r.duration_secs() - 4.0).abs() > 0.01 {
+        bad.push("LumiRender add_track".into());
+    }
+    let mut frames = 0usize;
+    loop {
+        let c = r.next_chunk(4096);
+        if c.is_empty() {
+            break;
+        }
+        if c.iter().any(|v| !v.is_finite()) {
+            bad.push("LumiRender non-finite".into());
+        }
+        frames += c.len() / 2;
+    }
+    if frames != 4 * 48_000 {
+        bad.push(format!("LumiRender {frames} frames"));
+    }
+    if ext == "m4a" {
+        let clip = dir.join("clip.m4a");
+        if !lumisound_core::lumiclip::lumi_clip_lossless(b.clone(), 10.0, 14.0, s(&clip)) {
+            bad.push("lossless clip refused".into());
+        } else {
+            let fp = decode::fingerprint(&clip);
+            match fp {
+                Some(f) if (f.frames as f64 / f.rate as f64 - 4.0).abs() < 0.002 => {}
+                other => bad.push(format!("lossless clip length {other:?}")),
+            }
+            let o = Command::new("ffmpeg").args(["-v", "error", "-i"]).arg(&clip).args(["-f", "null", "-"]).output().unwrap();
+            if !o.stderr.is_empty() {
+                bad.push(format!("ffmpeg on lossless clip: {}", String::from_utf8_lossy(&o.stderr)));
+            }
+            // Same samples as the track at 10–14 s.
+            let a1: Vec<i16> = analysis::decode_mono(b.clone(), cache.clone(), 11025, 0.0, 13.0).unwrap_or_default().into_iter().skip(10 * 11025).collect();
+            let a2 = analysis::decode_mono(s(&clip), cache.clone(), 11025, 0.0, 3.0).unwrap_or_default();
+            let n = a1.len().min(a2.len());
+            let err: f64 = a1[..n].iter().zip(&a2[..n]).map(|(x, y)| (*x as f64 - *y as f64).powi(2)).sum::<f64>() / n.max(1) as f64;
+            let sig: f64 = a1[..n].iter().map(|x| (*x as f64).powi(2)).sum::<f64>() / n.max(1) as f64;
+            if 10.0 * (err.max(1e-9) / sig.max(1e-9)).log10() > -40.0 {
+                bad.push(format!("lossless clip differs from the track ({:.1} dB)", 10.0 * (err.max(1e-9) / sig.max(1e-9)).log10()));
+            }
+        }
+    } else if lumisound_core::lumiclip::lumi_clip_lossless(b.clone(), 10.0, 14.0, s(&dir.join("x.m4a"))) {
+        bad.push("lossless clip on a non-AAC track".into());
     }
     if !lock::lms_convertible(a.clone()) {
         bad.push("source not reported convertible".into());

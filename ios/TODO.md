@@ -2,11 +2,17 @@
 
 Full history and decisions: [`../RUST-PORT.md`](../RUST-PORT.md). Swift is views + app shell only.
 
+## Done (2026-11-16) — Lumi clip systems
+- `Services/LumiClipService.swift`: clips read by the Rust core (LMS3 in place, no unlocked or decoded
+  copy): lossless for AAC LMS3, else `LumiRender` PCM → AVAssetWriter AAC (`LumiAudioWriter`).
+- Clip maker, clip export → LumiClipService. Song identify → `lumi_identify_clip` WAV (ext=wav).
+  Lyric video → core duration/envelope/clip audio, mux of the app's own files only (streamed songs
+  fetched once). AI DJ export → one LumiRender timeline: 1.5 s crossfades, Aria's speech as PCM,
+  encoded once. `avFoundationURL` removed; BPM fallback back on the playable file.
+
 ## Done (2026-11-15) — LMS3 in the UI and every feature
 - Format tags: "LMS3 OPUS/AAC/FLAC…" from the core's cached header badge; Now Playing shows codec +
   real bitrate and a PREMIUM chip; ALAC in LMS3 counts as lossless.
-- Clip maker, clip export, lyric video, AI DJ export, AcoustID identify, BPM fallback open
-  `avFoundationURL` (Opus decoded to WAV once) — they couldn't read Ogg Opus before at all.
 - Library conversion: ordered (library order, never random), ≤30 tracks / 150 s per 5-minute pass,
   thermal check before every track, never the playing/queued track; your own imports in Documents
   (audio-only) convert too; files in linked external folders never. Settings → Streaming & Downloads

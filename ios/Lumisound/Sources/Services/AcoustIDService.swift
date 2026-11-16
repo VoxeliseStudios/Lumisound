@@ -66,18 +66,17 @@ final class AcoustIDService {
         guard let rawURL = song.url, rawURL.isFileURL else {
             throw IdentifyError.noLocalFile
         }
-        // A `.lms`-locked url's on-disk bytes are XOR-masked and unreadable
-        // by AVURLAsset until unlocked -- without this, AcoustID identification
-        // threw .trimFailed for every locked track.
-        let sourceURL = LumisoundExclusiveExtensionService.avFoundationURL(for: rawURL)
-
-        let clipURL = try await trimmedClip(from: sourceURL)
-        defer { try? FileManager.default.removeItem(at: clipURL) }
-
-        guard let clipData = try? Data(contentsOf: clipURL) else {
+        // Lumi identify clip: the Rust core reads the track in place (LMS3
+        // included, no unlocked copy) and returns its first 2 minutes as an
+        // 11.025 kHz mono WAV — Chromaprint's own working format, so nothing
+        // is lost and nothing needs encoding on the phone.
+        let path = rawURL.path
+        guard let clipData = await Task.detached(priority: .userInitiated, operation: {
+            lumiIdentifyClip(path: path, startSecs: 0, maxSecs: 120)
+        }).value else {
             throw IdentifyError.trimFailed
         }
-        return try await uploadForIdentification(clipData)
+        return try await uploadForIdentification(clipData, ext: "wav")
     }
 
     /// Identifies whatever's in an already-recorded `.m4a` clip — used by
@@ -89,18 +88,18 @@ final class AcoustIDService {
         guard let clipData = try? Data(contentsOf: recordingURL) else {
             throw IdentifyError.trimFailed
         }
-        return try await uploadForIdentification(clipData)
+        return try await uploadForIdentification(clipData, ext: "m4a")
     }
 
     /// Shared upload + response-parsing path for both entry points above.
-    private func uploadForIdentification(_ clipData: Data) async throws -> Match {
+    private func uploadForIdentification(_ clipData: Data, ext: String) async throws -> Match {
         guard let account = AccountService.shared, account.isLoggedIn, let token = account.token else {
             throw IdentifyError.notLoggedIn
         }
 
         let base = account.bridgeURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         var components = URLComponents(string: base + "/api/fingerprint/identify")
-        components?.queryItems = [URLQueryItem(name: "ext", value: "m4a")]
+        components?.queryItems = [URLQueryItem(name: "ext", value: ext)]
         guard let requestURL = components?.url else {
             throw IdentifyError.server("Invalid bridge URL")
         }
@@ -125,43 +124,6 @@ final class AcoustIDService {
             throw IdentifyError.notMatched
         }
         return Match(title: title, artist: decoded.artist, album: decoded.album, score: decoded.score ?? 0)
-    }
-
-    // MARK: - Trim to a small AAC clip
-
-    /// Exports the first 120s (or the whole track, if shorter) of `url` as a
-    /// small AAC-M4A clip in a temp location. Same export pattern as
-    /// `AudioEncoderService.aacExport` — a proven, low-risk AVFoundation
-    /// path — with a `timeRange` added to cap the clip length.
-    private func trimmedClip(from url: URL) async throws -> URL {
-        let asset = AVURLAsset(url: url)
-        guard let session = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetAppleM4A) else {
-            throw IdentifyError.trimFailed
-        }
-
-        let outURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("acoustid_clip_\(UUID().uuidString).m4a")
-
-        guard let duration = try? await asset.load(.duration), duration.seconds.isFinite, duration.seconds > 0 else {
-            throw IdentifyError.trimFailed
-        }
-        let clipSeconds = min(duration.seconds, 120)
-        session.timeRange = CMTimeRange(
-            start: .zero,
-            duration: CMTime(seconds: clipSeconds, preferredTimescale: 600)
-        )
-        session.outputFileType = .m4a
-        session.outputURL = outURL
-
-        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-            session.exportAsynchronously { cont.resume() }
-        }
-
-        guard session.status == .completed else {
-            try? FileManager.default.removeItem(at: outURL)
-            throw IdentifyError.trimFailed
-        }
-        return outURL
     }
 
     // MARK: - Response types

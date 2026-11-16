@@ -2,6 +2,25 @@
 
 Full history and decisions: [`RUST-PORT.md`](../../RUST-PORT.md).
 
+## Done (2026-11-16) — time-stretch pre-echo, Lumi clips
+- `engine/stretch.rs`: onset detector on the input; frames whose second half reaches an onset are
+  gated just before it (overlap-add renormalised by received weight); while a hit sits in the first
+  half the input is walked at ratio 1 (attack placed once) and the time repaid over later hops (≤ 25 %
+  per hop). engine_quality pre-echo: 1.25x −12.0 → −18.1 dB, 0.8x −16.0 → −18.2 dB (metric floor of
+  the unprocessed fixture −18.7); chord THD+N unchanged; real tracks keep exact 1.25x/0.8x timing.
+  Trade-off: sustained-note low-band dip under hits 0.1 → ~1.3 dB (pitch_cloud still passes).
+- `lumiclip.rs`: `LumiRender` (segments read in place incl. LMS3, sample-exact, fades/crossfades,
+  PCM segments, 48 kHz stereo chunks), `lumi_clip_lossless` (AAC LMS3 → M4A packet cut + edit list,
+  matches a continuous decode), `lumi_identify_clip` (11.025 kHz mono WAV), `lumi_envelope`,
+  `lumi_duration`. `lms_avfoundation_path` (decoded copies) removed.
+- LMS3 AAC/Vorbis seeks start a packet early (overlapped transform complete): mid-track AAC decode now
+  bit-identical to a continuous decode (plain M4A reader: −26.5 dB).
+- blend_cloud / pitch_cloud now pass.
+
+## Open (found 2026-11-16, not stretch/LMS3)
+- engine_cloud effect checks: "spatial (yaw 0)" on FFVII REMAKE- 嵐の前 (ILD −3.0 dB vs dry) and
+  "reverb smallRoom 35%" on Titan (crest 11.6 → 14.0 dB) flag FAIL rows (suite still passes).
+
 ## Done (2026-11-15) — every system on LMS3
 - `tests/lms3_systems.rs`: probe, decode, BPM, key, waveform, transition/spectral profiles, loudness,
   beat grid, pitch contour, fingerprint, validation, intro detection, haptics, blend profile, lyric
@@ -10,11 +29,8 @@ Full history and decisions: [`RUST-PORT.md`](../../RUST-PORT.md).
   for the plain Ogg file (warm seek).
 - `decode::start_at` trims to the exact requested time after a seek (readers land on a packet/page/
   reservoir frame): engine seeks and every mid-track analysis are sample-accurate for all formats.
-- `lock.rs`: `lms_badge` (cached codec/kbps/Premium/lossless for the UI), `lms_avfoundation_path`
-  (Opus/Vorbis decoded once to WAV so AVAsset features work), `lms_convertible`, `lms_library_status`.
+- `lock.rs`: `lms_badge` (cached codec/kbps/Premium/lossless for the UI), `lms_convertible`, `lms_library_status`.
   `import::vorbis_comments_read` reads LMS3 metadata.
-- Pre-existing (not LMS3, same numbers on d57ad502): `tests/engine_quality.rs` time-stretch pre-echo at
-  1.25x (−12.0 dB) and 0.8x (−16.0 dB) over the −18 dB limit.
 
 ## Done (2026-11-15) — performance telemetry + LMS3 engine tests
 - `perf.rs`: sampler thread (1 s fg / 5 s bg): per-thread CPU with names (Mach THREAD_EXTENDED_INFO),
