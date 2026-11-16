@@ -14,6 +14,10 @@ struct AudioFormatDetails: Equatable {
     var bitrateKbps: Int?
     var fileSizeBytes: Int64?
     var isPlayingViaCompatibilityFallback: Bool
+    /// Stored as Lumisound Audio (LMS3).
+    var isLumisoundAudio = false
+    /// YouTube Premium quality (YouTube Music ~256 kbps).
+    var isPremiumQuality = false
 
     /// Hi-Res Lossless requires both a lossless source and more than CD
     /// resolution. This is intentionally derived from the inspected file
@@ -85,7 +89,21 @@ struct AudioFormatDetails: Equatable {
             }
         }
 
-        let bitrateKbps: Int? = song.bitrate > 0 ? song.bitrate / 1000 : nil
+        var bitrateKbps: Int? = song.bitrate > 0 ? song.bitrate / 1000 : nil
+        var isLumisoundAudio = false
+        var isPremiumQuality = false
+        // LMS3: the header knows the real codec and bitrate (the song's
+        // cached bitrate may predate a Premium upgrade).
+        if let url = song.url, url.isFileURL {
+            let info = lmsInfo(path: url.path)
+            if info.version == 3 {
+                isLumisoundAudio = true
+                isPremiumQuality = info.premium
+                container = "Lumisound Audio (\(info.codec.uppercased()))"
+                if info.bitrateKbps > 0 { bitrateKbps = Int(info.bitrateKbps) }
+                if info.codec == "flac" || info.codec == "alac" || info.codec.hasPrefix("pcm") { isLossless = true }
+            }
+        }
 
         if container == "Unknown", song.persistentID != nil {
             container = "Apple Music"
@@ -99,7 +117,9 @@ struct AudioFormatDetails: Equatable {
             channelCount: channelCount,
             bitrateKbps: bitrateKbps,
             fileSizeBytes: fileSizeBytes,
-            isPlayingViaCompatibilityFallback: isUsingFallback
+            isPlayingViaCompatibilityFallback: isUsingFallback,
+            isLumisoundAudio: isLumisoundAudio,
+            isPremiumQuality: isPremiumQuality
         )
     }
 }

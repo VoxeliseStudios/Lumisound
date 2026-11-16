@@ -231,12 +231,15 @@ enum LumisoundExclusiveExtensionService {
     /// to a temp file first and only swapped in via `replaceItemAt` once
     /// verified. Returns `false` (leaving `url` untouched) if `url` isn't
     /// `.lms`-marked, is already locked, or any step fails.
+    /// Since LMS3 this also brings LMSLOCK1/2 files up to Lumisound Audio
+    /// (`lms_relock_in_place`: packets copied into the LMS3 container, proven
+    /// to decode sample-identically before the swap).
     static func relockLegacyFile(at url: URL) -> Bool {
-        guard isConverted(url), !LumisoundLockFormat.isLocked(at: url) else { return false }
+        guard isConverted(url), lmsNeedsUpgrade(path: url.path) else { return false }
         let ok = lmsRelockInPlace(path: url.path, tmpDir: FileManager.default.temporaryDirectory.path,
                                   verifier: AVFoundationAudioVerifier.shared)
         if ok {
-            appLog("LumisoundExclusiveExtensionService.relockLegacyFile: migrated \(url.lastPathComponent) from legacy plain bytes to real lock, verified", category: "background")
+            appLog("LumisoundExclusiveExtensionService.relockLegacyFile: \(url.lastPathComponent) is now Lumisound Audio (LMS3), verified", category: "background")
         } else {
             appWarn("LumisoundExclusiveExtensionService.relockLegacyFile: lock/verify failed for \(url.lastPathComponent); left as is", category: "background")
         }

@@ -76,6 +76,10 @@ impl Trim {
 /// and Opus pre-skip by ours, so only AAC in an MP4 family container
 /// is handled here.
 pub fn for_track(path: &Path, codec: symphonia::core::codecs::CodecType) -> Option<Gapless> {
+    // LMS3 carries the range its source had in the header.
+    if let Some(h) = crate::lms3::read_header(path) {
+        return h.gapless;
+    }
     use symphonia::core::codecs::{CODEC_TYPE_AAC, CODEC_TYPE_ADPCM_IMA_WAV, CODEC_TYPE_ADPCM_MS};
     let read: fn(&mut dyn ReadSeek) -> Option<Gapless> = match codec {
         CODEC_TYPE_AAC => |r| mp4(r),

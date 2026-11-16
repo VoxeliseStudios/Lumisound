@@ -25,6 +25,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/admin", get(|| async { Html(DASHBOARD) }))
         .route("/admin/api/overview", get(overview))
+        .route("/admin/api/lms3", get(lms3_status).post(lms3_run))
         .route("/admin/api/download-jobs", get(download_jobs).delete(clear_download_jobs))
         .route("/admin/api/errors", get(errors).delete(clear_errors))
         .route("/admin/api/logs", get(logs))
@@ -70,6 +71,20 @@ fn disk_usage(p: &std::path::Path) -> Option<Value> {
     let f = s.f_frsize as u64;
     let total = s.f_blocks as u64 * f;
     Some(json!({"total_bytes": total, "used_bytes": (s.f_blocks as u64 - s.f_bfree as u64) * f, "free_bytes": s.f_bavail as u64 * f}))
+}
+
+/// Cloud library → LMS3 migration / Premium upgrade progress.
+async fn lms3_status(_a: Admin) -> Json<Value> {
+    Json(crate::lms3_cloud::status())
+}
+
+/// Start a migration + upgrade pass now (one runs every 6 h anyway).
+async fn lms3_run(State(st): State<AppState>, _a: Admin) -> Json<Value> {
+    tokio::spawn(async move {
+        crate::lms3_cloud::migrate_all(&st).await;
+        crate::lms3_cloud::upgrade_all(&st).await;
+    });
+    Json(json!({"status": "started"}))
 }
 
 async fn overview(State(st): State<AppState>, _a: Admin) -> ApiResult<Json<Value>> {

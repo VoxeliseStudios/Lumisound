@@ -115,7 +115,8 @@ final class StreamingService: ObservableObject {
     // MARK: Available formats
 
     static let availableFormats: [(label: String, value: String)] = [
-        ("M4A (Default)", "m4a"),
+        ("Lumisound Audio (Best)", "lumi"),
+        ("M4A", "m4a"),
         ("MP3",           "mp3"),
         ("FLAC",          "flac"),
         ("Opus",          "opus"),
@@ -292,7 +293,9 @@ final class StreamingService: ObservableObject {
     }
 
     var preferredFormat: String {
-        get { UserDefaults.standard.string(forKey: Self.preferredFormatKey) ?? "m4a" }
+        // Lumisound Audio: YouTube's best stream as it is (Premium Opus with
+        // Premium cookies), stored as LMS3. Explicit choices are kept.
+        get { UserDefaults.standard.string(forKey: Self.preferredFormatKey) ?? "lumi" }
         set {
             UserDefaults.standard.set(newValue, forKey: Self.preferredFormatKey)
             objectWillChange.send()

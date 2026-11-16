@@ -289,6 +289,9 @@ enum LumisoundTrackVaultService {
         appLog("LumisoundTrackVaultService: converted \(converted)/\(candidates.count) track(s) to the Lumisound-exclusive extension" + (failedSongIDs.isEmpty ? "" : "; sample failures: \(failedSongIDs)") + ", elapsed=\(String(format: "%.2f", Date().timeIntervalSince(passStartedAt)))s", category: "background")
 
         await runLegacyRelockPass(library: library)
+        // Premium audio: re-fetch YouTube tracks below Premium quality when
+        // the account's cookies are Premium (bounded batch, own interval).
+        await QualityUpgradeService.shared.runPassIfNeeded()
     }
 
     /// Upgrades already-`.lms`-marked tracks whose bytes are still the
@@ -341,7 +344,7 @@ enum LumisoundTrackVaultService {
                 await Task.yield()
             }
         }
-        appLog("LumisoundTrackVaultService: relocked \(relocked)/\(legacyCandidates.count) legacy .lms track(s) into the real locked format", category: "background")
+        appLog("LumisoundTrackVaultService: converted \(relocked)/\(legacyCandidates.count) older .lms track(s) to Lumisound Audio (LMS3)", category: "background")
     }
 
     /// Repair pass for tracks that ended up "converted" (see

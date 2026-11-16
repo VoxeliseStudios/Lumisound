@@ -94,6 +94,10 @@ pub async fn readable_copy(p: &Path) -> Readable {
         if !is_gzip(&src) && !crate::lock::is_locked(&src) {
             return Readable { path: src, tmp: false };
         }
+        // LMS3 (possibly gzip-stored): exported to its standard container.
+        if let Some(r) = lms3_readable(&src) {
+            return r;
+        }
         let suffix = inner_suffix(&src);
         let tmp = std::env::temp_dir().join(format!("lms-{}{suffix}", uuid::Uuid::new_v4().simple()));
         let ok = std::fs::File::create(&tmp).and_then(|mut f| decode_to(&src, &mut f)).is_ok();
@@ -106,6 +110,49 @@ pub async fn readable_copy(p: &Path) -> Readable {
     })
     .await
     .unwrap_or_else(|_| Readable { path: p.to_path_buf(), tmp: false })
+}
+
+fn lms3_readable(src: &Path) -> Option<Readable> {
+    let tmp_dir = std::env::temp_dir();
+    let mut unpacked: Option<PathBuf> = None;
+    let lms = if is_gzip(src) {
+        let t = tmp_dir.join(format!("lms-gz-{}.lms", uuid::Uuid::new_v4().simple()));
+        let ok = std::fs::File::open(src)
+            .and_then(|f| {
+                let mut d = flate2::read::GzDecoder::new(std::io::BufReader::new(f));
+                let mut head = [0u8; 8];
+                d.read_exact(&mut head)?;
+                if &head != lumisound_media::lms3::MAGIC {
+                    return Err(std::io::Error::other("not lms3"));
+                }
+                let mut out = std::fs::File::create(&t)?;
+                std::io::Write::write_all(&mut out, &head)?;
+                std::io::copy(&mut d, &mut out).map(|_| ())
+            })
+            .is_ok();
+        if !ok {
+            let _ = std::fs::remove_file(&t);
+            return None;
+        }
+        unpacked = Some(t.clone());
+        t
+    } else if lumisound_media::lms3::is_lms3(src) {
+        src.to_path_buf()
+    } else {
+        return None;
+    };
+    let ext = lumisound_media::lms3_export::export_ext_of(&lms).unwrap_or("bin");
+    let out = tmp_dir.join(format!("lms3-{}.{ext}", uuid::Uuid::new_v4().simple()));
+    let ok = lumisound_media::lms3_export::export_to_path(&lms, &out).is_ok();
+    if let Some(u) = unpacked {
+        let _ = std::fs::remove_file(u);
+    }
+    if ok {
+        Some(Readable { path: out, tmp: true })
+    } else {
+        let _ = std::fs::remove_file(&out);
+        Some(Readable { path: src.to_path_buf(), tmp: false })
+    }
 }
 
 /// Gzip-only view (what /user/music/stream serves: locked bytes stay locked,

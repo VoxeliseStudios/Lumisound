@@ -6,6 +6,7 @@ use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
 use base64::Engine;
 use lumisound_media::lock as fmt;
+use lumisound_media::lms3;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -15,6 +16,10 @@ use std::time::SystemTime;
 pub const MARKER: &str = "lms";
 
 /// `x.m4a.lms` -> "m4a"; otherwise the plain extension, lowercased.
+/// An LMS3 file answers with the extension of the standard file it exports
+/// to (its packets' natural container), which can differ from the name
+/// ("Song.webm.lms" holding Opus plays as `.opus`). Cached per path + mtime:
+/// format badges call this for every visible row.
 #[uniffi::export]
 pub fn lms_effective_extension(path: String) -> String {
     let p = Path::new(&path);
@@ -22,7 +27,28 @@ pub fn lms_effective_extension(path: String) -> String {
     if outer != MARKER {
         return outer;
     }
+    if let Some(e) = lms3_export_ext_cached(p) {
+        return e.to_string();
+    }
     Path::new(p.file_stem().and_then(|s| s.to_str()).unwrap_or("")).extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase()
+}
+
+type ExtCache = HashMap<String, (Option<SystemTime>, Option<&'static str>)>;
+static LMS3_EXT_CACHE: LazyLock<Mutex<ExtCache>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn lms3_export_ext_cached(p: &Path) -> Option<&'static str> {
+    let key = p.to_string_lossy().into_owned();
+    let m = mtime(p);
+    if let Some((_, e)) = LMS3_EXT_CACHE.lock().unwrap().get(&key).filter(|(t, _)| *t == m) {
+        return *e;
+    }
+    let e = lumisound_media::lms3_export::export_ext_of(p);
+    let mut c = LMS3_EXT_CACHE.lock().unwrap();
+    if c.len() > 20_000 {
+        c.clear();
+    }
+    c.insert(key, (m, e));
+    e
 }
 
 #[uniffi::export]
@@ -35,12 +61,23 @@ pub fn lms_is_converted(path: String) -> bool {
 /// has to upgrade. Reads one header per marked file: call it off the main
 /// thread (doing this per song on the main actor stalled the UI 1.5–2.9 s
 /// on a full library, 2.0.0.44 telemetry). Missing files are left out.
+///
+/// Since LMS3 this is every `.lms` file not in LMS3 yet (legacy plain bytes
+/// and LMSLOCK1/2 wraps): `lms_relock_in_place` converts them. Files that
+/// can't become LMS3 (a video track) are left out after the first try.
 #[uniffi::export]
 pub fn lms_legacy_unlocked(paths: Vec<String>) -> Vec<String> {
-    paths
-        .into_iter()
-        .filter(|p| lms_is_converted(p.clone()) && Path::new(p).is_file() && !fmt::is_locked(Path::new(p)))
-        .collect()
+    paths.into_iter().filter(|p| lms_needs_upgrade(p.clone())).collect()
+}
+
+static NOT_CONVERTIBLE: LazyLock<Mutex<std::collections::HashSet<String>>> = LazyLock::new(|| Mutex::new(Default::default()));
+
+/// A `.lms` file that should become LMS3 (plain or LMSLOCK1/2 bytes, and not
+/// known to hold video).
+#[uniffi::export]
+pub fn lms_needs_upgrade(path: String) -> bool {
+    let p = Path::new(&path);
+    lms_is_converted(path.clone()) && p.is_file() && !lumisound_media::lms3::is_lms3(p) && !NOT_CONVERTIBLE.lock().unwrap().contains(&path)
 }
 
 /// True when the file starts with the LMSLOCK1 header (reads 8 bytes).
@@ -66,6 +103,11 @@ fn mtime(p: &Path) -> Option<SystemTime> {
 }
 
 fn cache_path(locked: &Path, cache_dir: &Path) -> PathBuf {
+    // LMS3: "Song.webm.lms" -> "<cache>/Song.opus" (its export container).
+    if let Some(ext) = lms3_export_ext_cached(locked) {
+        let name = locked.file_name().and_then(|n| n.to_str()).unwrap_or("track");
+        return cache_dir.join(format!("{}.{ext}", fmt::display_stem(name)));
+    }
     // "Song.m4a.lms" -> "<cache>/Song.m4a"
     cache_dir.join(locked.file_stem().unwrap_or_default())
 }
@@ -311,10 +353,14 @@ pub fn lms_verify_round_trip(locked_path: String, tmp_dir: String, verifier: Opt
     round_trips(Path::new(&locked_path), &ext, Path::new(&tmp_dir), &verifier)
 }
 
-/// Lock `plain_path` into `locked_path` as-is (no re-encode), verify the
-/// round trip, then remove the original — never on faith. An existing file
-/// at `locked_path` is verified and adopted, or discarded and redone if it
-/// is a half-written leftover. A failed verify never leaves a locked file.
+/// Convert `plain_path` into `locked_path` — as LMS3 (the Lumisound Audio
+/// file: packets copied as they are, so nothing is re-encoded), proven by a
+/// decode of both that must match sample for sample — then remove the
+/// original, never on faith. Sources LMS3 can't hold (a video track, a codec
+/// the engine can't decode) get the LMSLOCK1 wrap instead, verified by an
+/// unlock + decode round trip. An existing file at `locked_path` is
+/// verified and adopted, or discarded and redone if it is a half-written
+/// leftover. A failed verify never leaves a converted file behind.
 #[uniffi::export]
 pub fn lms_convert(plain_path: String, locked_path: String, tmp_dir: String, verifier: Option<Arc<dyn AudioVerifier>>) -> LmsConvertOutcome {
     let (plain, locked, tmp) = (Path::new(&plain_path), Path::new(&locked_path), Path::new(&tmp_dir));
@@ -325,45 +371,76 @@ pub fn lms_convert(plain_path: String, locked_path: String, tmp_dir: String, ver
         return out(Some(plain_path), true, before, false, "already converted".into());
     }
     if locked.exists() {
-        if round_trips(locked, &ext, tmp, &verifier) {
-            return out(Some(locked_path.clone()), true, size_of(locked), false, "adopted existing locked file".into());
+        let good = if lms3::is_lms3(locked) { lms3::check_integrity(locked) } else { round_trips(locked, &ext, tmp, &verifier) };
+        if good {
+            return out(Some(locked_path.clone()), true, size_of(locked), false, "adopted existing converted file".into());
         }
         let _ = std::fs::remove_file(locked);
     }
-    if fmt::lock_file(plain, locked).is_err() {
-        return out(None, false, -1, false, "lock failed".into());
-    }
+    let detail = match lms3::write_verified(plain, locked, &lms3::WriteOpts::default()) {
+        Ok(w) => format!("converted to LMS3 ({}, {} kbps, {} packets)", w.codec, w.header.bitrate_kbps(), w.header.packet_count),
+        Err(lms3::WriteError::Io(e)) => return out(None, false, -1, false, format!("LMS3 write failed: {e}")),
+        Err(why) => {
+            // Not LMS3 material: the byte-for-byte LMSLOCK1 wrap.
+            if fmt::lock_file(plain, locked).is_err() {
+                return out(None, false, -1, false, "lock failed".into());
+            }
+            if !round_trips(locked, &ext, tmp, &verifier) {
+                let locked_bytes = size_of(locked);
+                let _ = std::fs::remove_file(locked);
+                return out(None, false, locked_bytes, false, "locked file failed round-trip verification".into());
+            }
+            NOT_CONVERTIBLE.lock().unwrap().insert(locked_path.clone());
+            format!("wrapped (LMSLOCK1: {why})")
+        }
+    };
     let locked_bytes = size_of(locked);
-    if !round_trips(locked, &ext, tmp, &verifier) {
-        let _ = std::fs::remove_file(locked);
-        return out(None, false, locked_bytes, false, "locked file failed round-trip verification".into());
-    }
     let removed = std::fs::remove_file(plain).is_ok();
-    out(Some(locked_path.clone()), false, locked_bytes, removed, if removed { "converted".into() } else { "converted; original could not be removed".into() })
+    out(Some(locked_path.clone()), false, locked_bytes, removed, if removed { detail } else { format!("{detail}; original could not be removed") })
 }
 
-/// Migrate a `.lms`-named file that still holds plain (legacy) bytes into
-/// the real lock in place: lock to a temp file, verify, then atomically
-/// rename over `path`. `path` is untouched on any failure.
+/// Bring a `.lms` file up to LMS3 in place: legacy plain bytes and LMSLOCK1/2
+/// wraps are converted to a staged file beside it, proven identical by a
+/// full decode of both, the vault xattr carried over, then renamed over
+/// `path` (an open decoder keeps reading the old inode). `path` is untouched
+/// on any failure. Files LMS3 can't hold keep the old lock (plain bytes
+/// still get it) and aren't retried this session.
 #[uniffi::export]
 pub fn lms_relock_in_place(path: String, tmp_dir: String, verifier: Option<Arc<dyn AudioVerifier>>) -> bool {
     let p = Path::new(&path);
-    if !lms_is_converted(path.clone()) || fmt::is_locked(p) {
+    if !lms_is_converted(path.clone()) || lms3::is_lms3(p) {
         return false;
     }
     let tmp = Path::new(&tmp_dir);
     let _ = std::fs::create_dir_all(tmp);
     // Same directory as `path` so the final rename can't cross volumes.
-    let staged = p.with_file_name(format!(".{}.relock", uuid::Uuid::new_v4()));
-    let ext = lms_effective_extension(path.clone());
+    let staged = p.with_file_name(format!(".{}.lms3", uuid::Uuid::new_v4()));
     // The vault tag is an xattr on the old inode; carry it to the new one.
     let tag = xattr_get(&path);
-    let ok = fmt::lock_file(p, &staged).is_ok() && round_trips(&staged, if ext.is_empty() { "m4a" } else { &ext }, tmp, &verifier) && {
+    let commit = |staged: &Path| {
         if let Some(t) = &tag {
             xattr_set(&staged.to_string_lossy(), t);
         }
-        std::fs::rename(&staged, p).is_ok()
+        std::fs::rename(staged, p).is_ok()
     };
+    match lms3::write_verified(p, &staged, &lms3::WriteOpts::default()) {
+        Ok(_) => {
+            let ok = commit(&staged);
+            if !ok {
+                let _ = std::fs::remove_file(&staged);
+            }
+            return ok;
+        }
+        Err(lms3::WriteError::Io(_)) => return false,
+        Err(_) => {
+            NOT_CONVERTIBLE.lock().unwrap().insert(path.clone());
+        }
+    }
+    if fmt::is_locked(p) {
+        return false;
+    }
+    let ext = lms_effective_extension(path.clone());
+    let ok = fmt::lock_file(p, &staged).is_ok() && round_trips(&staged, if ext.is_empty() { "m4a" } else { &ext }, tmp, &verifier) && commit(&staged);
     if !ok {
         let _ = std::fs::remove_file(&staged);
     }
@@ -443,8 +520,24 @@ mod convert_tests {
         // Validation decoded in place: no unlocked copies were written.
         assert!(!cache.exists() || std::fs::read_dir(&cache).unwrap().next().is_none());
         let s = |p: &Path| p.to_string_lossy().to_string();
+        // LMSLOCK1 and legacy plain `.lms` both still need the LMS3 upgrade.
         let out = lms_legacy_unlocked(vec![s(&plain), s(&locked), s(&legacy), s(&d.join("missing.wav.lms"))]);
-        assert_eq!(out, vec![s(&legacy)]);
+        assert_eq!(out, vec![s(&locked), s(&legacy)]);
+        let tmp = d.join("tmp").to_string_lossy().to_string();
+        for f in [&locked, &legacy] {
+            let before = lumisound_media::decode::fingerprint(f).unwrap();
+            assert!(lms_relock_in_place(s(f), tmp.clone(), None));
+            assert!(lms3::is_lms3(f) && lms_info(s(f)).version == 3);
+            assert_eq!(lumisound_media::decode::fingerprint(f).unwrap(), before);
+            // LMS3 flags rewrite in place; export for AVFoundation is a WAV.
+            assert!(lms_set_flags(s(f), Some(true), None, tmp.clone(), None));
+            assert!(lms_info(s(f)).engine_exclusive);
+            assert_eq!(lms_effective_extension(s(f)), "wav");
+            let play = lms_playable_path(s(f), cache_s.clone());
+            assert!(play.ends_with(".wav") && play != s(f), "{play}");
+            assert!(matches!(crate::analysis::validate_audio(play, cache_s.clone(), None), crate::analysis::AudioValidation::Valid));
+        }
+        assert!(lms_legacy_unlocked(vec![s(&locked), s(&legacy)]).is_empty());
         let _ = std::fs::remove_dir_all(d);
     }
 }
@@ -454,19 +547,49 @@ mod convert_tests {
 #[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
 pub struct LmsInfo {
     pub locked: bool,
-    /// 0 = not locked, 1 = LMSLOCK1, 2 = LMSLOCK2.
+    /// 0 = not locked, 1 = LMSLOCK1, 2 = LMSLOCK2, 3 = LMS3 (Lumisound Audio).
     pub version: u8,
     /// Only the Lumisound Audio Engine may play it.
     pub engine_exclusive: bool,
     /// Its lyrics were force time-synced.
     pub lyrics_synced: bool,
+    /// LMS3 only: codec of the stored packets ("opus", "aac", …).
+    pub codec: String,
+    /// LMS3 only: average bitrate of the audio.
+    pub bitrate_kbps: u32,
+    /// LMS3 only: how it was fetched ("yt:774" = YouTube Premium Opus, …).
+    pub quality: Option<String>,
+    /// LMS3 only: YouTube Premium quality (nothing better to fetch).
+    pub premium: bool,
+}
+
+/// Premium = fetched as YouTube Premium audio, or at a bitrate only Premium
+/// serves.
+pub fn is_premium(quality: Option<&str>, kbps: u32) -> bool {
+    lms3::is_premium(quality, kbps)
 }
 
 #[uniffi::export]
 pub fn lms_info(path: String) -> LmsInfo {
-    match fmt::read_header(Path::new(&path)) {
-        Some(h) => LmsInfo { locked: true, version: h.version, engine_exclusive: h.flags & fmt::FLAG_ENGINE_EXCLUSIVE != 0, lyrics_synced: h.flags & fmt::FLAG_LYRICS_SYNCED != 0 },
-        None => LmsInfo { locked: false, version: 0, engine_exclusive: false, lyrics_synced: false },
+    let p = Path::new(&path);
+    if let Some(h) = lms3::read_header(p) {
+        let m = lms3::read_meta(p).unwrap_or_default();
+        let kbps = h.bitrate_kbps();
+        return LmsInfo {
+            locked: true,
+            version: 3,
+            engine_exclusive: h.flags & fmt::FLAG_ENGINE_EXCLUSIVE != 0,
+            lyrics_synced: h.flags & fmt::FLAG_LYRICS_SYNCED != 0,
+            codec: lms3::codec_name(h.codec_type()),
+            bitrate_kbps: kbps,
+            premium: is_premium(m.quality.as_deref(), kbps),
+            quality: m.quality,
+        };
+    }
+    let blank = LmsInfo { locked: false, version: 0, engine_exclusive: false, lyrics_synced: false, codec: String::new(), bitrate_kbps: 0, quality: None, premium: false };
+    match fmt::read_header(p) {
+        Some(h) => LmsInfo { locked: true, version: h.version, engine_exclusive: h.flags & fmt::FLAG_ENGINE_EXCLUSIVE != 0, lyrics_synced: h.flags & fmt::FLAG_LYRICS_SYNCED != 0, ..blank },
+        None => blank,
     }
 }
 
@@ -478,6 +601,18 @@ pub fn lms_info(path: String) -> LmsInfo {
 #[uniffi::export]
 pub fn lms_set_flags(path: String, engine_exclusive: Option<bool>, lyrics_synced: Option<bool>, tmp_dir: String, verifier: Option<Arc<dyn AudioVerifier>>) -> bool {
     let p = Path::new(&path);
+    // LMS3: flags live in the checksummed header; rewritten in place.
+    if let Some(h) = lms3::read_header(p) {
+        let mut flags = h.flags;
+        for (want, bit) in [(engine_exclusive, fmt::FLAG_ENGINE_EXCLUSIVE), (lyrics_synced, fmt::FLAG_LYRICS_SYNCED)] {
+            match want {
+                Some(true) => flags |= bit,
+                Some(false) => flags &= !bit,
+                None => {}
+            }
+        }
+        return lms3::set_flags(p, flags).is_ok();
+    }
     let Some(h) = fmt::read_header(p) else { return false };
     let mut flags = h.flags;
     for (want, bit) in [(engine_exclusive, fmt::FLAG_ENGINE_EXCLUSIVE), (lyrics_synced, fmt::FLAG_LYRICS_SYNCED)] {
@@ -538,9 +673,10 @@ mod flag_tests {
         assert!(lms_lock(plain.to_string_lossy().into(), locked.to_string_lossy().into()));
         let lp: String = locked.to_string_lossy().into();
         let tmp: String = d.join("tmp").to_string_lossy().into();
-        assert_eq!(lms_info(lp.clone()), LmsInfo { locked: true, version: 1, engine_exclusive: false, lyrics_synced: false });
+        let blank = LmsInfo { locked: true, version: 1, engine_exclusive: false, lyrics_synced: false, codec: String::new(), bitrate_kbps: 0, quality: None, premium: false };
+        assert_eq!(lms_info(lp.clone()), blank);
         assert!(lms_set_flags(lp.clone(), Some(true), None, tmp.clone(), None));
-        assert_eq!(lms_info(lp.clone()), LmsInfo { locked: true, version: 2, engine_exclusive: true, lyrics_synced: false });
+        assert_eq!(lms_info(lp.clone()), LmsInfo { version: 2, engine_exclusive: true, ..blank.clone() });
         assert!(lms_verify_round_trip(lp.clone(), tmp.clone(), None));
         assert!(lms_set_flags(lp.clone(), None, Some(true), tmp.clone(), None));
         assert!(lms_info(lp.clone()).lyrics_synced && lms_info(lp.clone()).engine_exclusive);

@@ -6,6 +6,8 @@ description = "Lumisound media primitives shared by the bridge and the app core 
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
+crc32fast = "1"
+base64 = "0.22"
 lofty = "0.22"
 opus-decoder = "0.1"
 syom = "0.10"

@@ -7,6 +7,9 @@ use std::path::Path;
 
 /// First embedded picture (front cover preferred) larger than 500 bytes.
 pub fn embedded(path: &Path) -> Option<Vec<u8>> {
+    if let Some(m) = crate::lms3::read_meta(path) {
+        return m.art.filter(|a| a.len() > 500);
+    }
     use lofty::file::TaggedFileExt;
     use lofty::picture::PictureType;
     let f = crate::tags::open_tagged(path)?;

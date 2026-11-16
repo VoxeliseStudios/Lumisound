@@ -1949,3 +1949,14 @@ ALTER TABLE ios_announcements ADD COLUMN IF NOT EXISTS below_version VARCHAR(32)
 -- again every N hours to users who are still eligible — with below_version,
 -- a "please update" notice that persists until they update.
 ALTER TABLE ios_announcements ADD COLUMN IF NOT EXISTS repeat_hours INTEGER;
+
+-- YouTube Premium status of an account's cookies (premium.rs): which
+-- player_client serves the Premium formats, per cookie-file hash.
+CREATE TABLE IF NOT EXISTS ios_ytdlp_premium (
+    user_id VARCHAR(36) PRIMARY KEY REFERENCES ios_users(id) ON DELETE CASCADE,
+    cookie_hash TEXT NOT NULL,
+    premium BOOLEAN NOT NULL DEFAULT FALSE,
+    best_kbps INTEGER NOT NULL DEFAULT 0,
+    client TEXT,
+    checked_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);

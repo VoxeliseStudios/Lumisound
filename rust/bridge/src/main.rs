@@ -35,6 +35,9 @@ mod taste;
 mod totp;
 mod youtube;
 mod ytdlp;
+mod lms3_cloud;
+mod premium;
+mod ytmusic;
 
 use std::net::SocketAddr;
 use tracing_subscriber::EnvFilter;
@@ -93,6 +96,7 @@ async fn main() -> anyhow::Result<()> {
     }
     tokio::task::spawn_blocking(background::cleanup_orphan_temp_dirs);
     state.spawn_background();
+    lms3_cloud::spawn(&state);
 
     let app = routes::router(state.clone());
     let addr: SocketAddr = format!("{}:{}", state.cfg.host, state.cfg.port).parse()?;

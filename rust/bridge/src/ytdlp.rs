@@ -617,15 +617,39 @@ fn redact(args: &[String]) -> String {
 
 pub fn format_flag(format: &str) -> &'static str {
     match format {
+        "lumi" => "251/bestaudio[acodec=opus]/bestaudio/best",
         "mp3" | "flac" | "wav" | "best" => "bestaudio/best",
         "opus" => "bestaudio[ext=webm]/bestaudio/best",
         _ => "bestaudio[ext=m4a]/bestaudio/best",
     }
 }
 
+/// yt-dlp args + expected extension for a download format, for an account
+/// whose cookies are YouTube Premium (`premium`): Premium Opus (774, ~256
+/// kbps) first wherever the format asks for the best audio.
+///
+/// "lumi" (Lumisound Audio, the app's default since LMS3) takes the best
+/// stream as it is (`--audio-format best` copies, never re-encodes): Opus
+/// lands in `.opus`, AAC in `.m4a`, and the app stores the packets in LMS3.
+pub fn download_format_args_for(format: &str, premium: bool) -> (Vec<&'static str>, &'static str) {
+    match (format, premium) {
+        ("lumi", true) => (vec!["-f", "774/251/bestaudio[acodec=opus]/bestaudio/best", "-x", "--audio-format", "best"], "opus"),
+        ("lumi", false) => (vec!["-f", "251/bestaudio[acodec=opus]/bestaudio/best", "-x", "--audio-format", "best"], "opus"),
+        ("opus", true) => (vec!["-f", "774/bestaudio[ext=webm]/bestaudio", "-x", "--audio-format", "opus", "--audio-quality", "0"], "opus"),
+        ("best", true) => (vec!["-f", "774/bestaudio/best", "-x"], "m4a"),
+        (f, true) if matches!(f, "mp3" | "flac" | "wav") => {
+            let (mut a, e) = download_format_args(f);
+            a[1] = "774/bestaudio";
+            (a, e)
+        }
+        (f, _) => download_format_args(f),
+    }
+}
+
 /// yt-dlp args + expected extension for a download format.
 pub fn download_format_args(format: &str) -> (Vec<&'static str>, &'static str) {
     match format {
+        "lumi" => download_format_args_for("lumi", false),
         "mp3" => (vec!["-f", "bestaudio", "-x", "--audio-format", "mp3", "--audio-quality", "0"], "mp3"),
         "flac" => (vec!["-f", "bestaudio", "-x", "--audio-format", "flac", "--audio-quality", "0"], "flac"),
         "opus" => (vec!["-f", "bestaudio[ext=webm]/bestaudio", "-x", "--audio-format", "opus", "--audio-quality", "0"], "opus"),

@@ -674,6 +674,8 @@ async fn artwork_flag(State(st): State<AppState>, u: User, Q(q): Q<FlagQ>) -> Ap
 
 #[derive(Deserialize)]
 struct IdQ {
+    /// The client plays LMS3 (Lumisound Audio) files itself.
+    lms3: Option<bool>,
     metadata_id: Option<String>,
     id: Option<String>,
     path: Option<String>,
@@ -703,6 +705,53 @@ fn user_file(st: &AppState, uid: &str, rel: Option<String>) -> ApiResult<(PathBu
     Ok((dir, p))
 }
 
+/// LMSLOCK1 wrap of an LMS3 file's standard export, for apps that unlock
+/// cloud tracks the old way. Cached by path + mtime + size (players fetch a
+/// track in many range requests; a long mix shouldn't be re-exported for
+/// each). Entries untouched for 3 h are swept on each build.
+async fn legacy_wrap_cached(src: &Path) -> Option<PathBuf> {
+    static BUILDING: std::sync::LazyLock<dashmap::DashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>> = std::sync::LazyLock::new(Default::default);
+    let meta = tokio::fs::metadata(src).await.ok()?;
+    let ext = lumisound_media::lms3_export::export_ext_of(src)?;
+    let stamp = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_nanos()).unwrap_or(0);
+    let key = {
+        use sha2::Digest;
+        format!("{:x}", sha2::Sha256::digest(format!("{}|{stamp}|{}", src.display(), meta.len()).as_bytes()))
+    };
+    let dir = std::env::temp_dir().join("lms3-legacy-cache");
+    let out = dir.join(format!("{}.{ext}.lms", &key[..32]));
+    if out.is_file() {
+        return Some(out);
+    }
+    let lock = BUILDING.entry(key.clone()).or_default().clone();
+    let _g = lock.lock().await;
+    if out.is_file() {
+        return Some(out);
+    }
+    let (src, o, d) = (src.to_path_buf(), out.clone(), dir.clone());
+    let ok = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+        std::fs::create_dir_all(&d)?;
+        if let Ok(rd) = std::fs::read_dir(&d) {
+            for e in rd.flatten() {
+                let old = e.metadata().and_then(|m| m.accessed().or_else(|_| m.modified())).ok().and_then(|t| t.elapsed().ok()).is_some_and(|a| a > Duration::from_secs(3 * 3600));
+                if old {
+                    let _ = std::fs::remove_file(e.path());
+                }
+            }
+        }
+        let plain = d.join(format!(".{}.{ext}", uuid::Uuid::new_v4().simple()));
+        let r = lumisound_media::lms3_export::export_to_path(&src, &plain).and_then(|_| lock::lock_file(&plain, &o));
+        let _ = std::fs::remove_file(&plain);
+        r
+    })
+    .await
+    .ok()
+    .and_then(|r| r.ok())
+    .is_some();
+    BUILDING.remove(&key);
+    ok.then_some(out)
+}
+
 async fn stream_music(State(st): State<AppState>, u: User, headers: HeaderMap, Q(q): Q<IdQ>) -> ApiResult<Response> {
     let (dir, p) = user_file(&st, &u.id, q.path)?;
     let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
@@ -719,6 +768,32 @@ async fn stream_music(State(st): State<AppState>, u: User, headers: HeaderMap, Q
     let mut name = p.file_name().unwrap().to_string_lossy().into_owned();
     let mut serve_path = servable.path().to_path_buf();
     let mut transcoded: Option<PathBuf> = None;
+    // An LMS3 file goes out as is to clients that read it; transcodes and
+    // older apps get its standard export (older apps: re-locked LMSLOCK1,
+    // which they unlock as before).
+    let wants_transcode = matches!(q.quality.as_deref(), Some("low" | "medium"));
+    let mut exported: Option<PathBuf> = None;
+    if lumisound_media::lms3::is_lms3(&serve_path) {
+        if wants_transcode {
+            let src = serve_path.clone();
+            let r = tokio::task::spawn_blocking(move || {
+                let ext = lumisound_media::lms3_export::export_ext_of(&src)?;
+                let plain = std::env::temp_dir().join(format!("lms3x-{}.{ext}", uuid::Uuid::new_v4().simple()));
+                lumisound_media::lms3_export::export_to_path(&src, &plain).ok().map(|_| plain)
+            })
+            .await
+            .ok()
+            .flatten();
+            if let Some(plain) = r {
+                serve_path = plain.clone();
+                exported = Some(plain);
+            }
+        } else if !q.lms3.unwrap_or(false) {
+            if let Some(cached) = legacy_wrap_cached(&serve_path).await {
+                serve_path = cached;
+            }
+        }
+    }
     let bitrate = match q.quality.as_deref() {
         Some("low") => Some("64k"),
         Some("medium") => Some("128k"),
@@ -750,6 +825,9 @@ async fn stream_music(State(st): State<AppState>, u: User, headers: HeaderMap, Q
         Some(Box::new(move || {
             drop(servable);
             if let Some(t) = transcoded {
+                let _ = std::fs::remove_file(t);
+            }
+            if let Some(t) = exported {
                 let _ = std::fs::remove_file(t);
             }
         })),

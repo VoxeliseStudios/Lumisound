@@ -68,6 +68,7 @@ extension StreamSearchView {
     func sourceLabel(_ src: String) -> String {
         switch src {
         case "youtube":    return "YouTube"
+        case "ytmusic":    return "YT Music"
         case "soundcloud": return "SoundCloud"
         case "server":     return "Server"
         case "my":         return "My Library"
@@ -80,6 +81,7 @@ extension StreamSearchView {
     func sourceIcon(_ src: String) -> String {
         switch src {
         case "youtube":    return "play.rectangle.fill"
+        case "ytmusic":    return "music.note"
         case "soundcloud": return "cloud.fill"
         case "server":     return "externaldrive.fill"
         case "my":         return "person.crop.circle.fill"

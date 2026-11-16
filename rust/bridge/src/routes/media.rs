@@ -232,8 +232,8 @@ async fn search(State(st): State<AppState>, _k: ApiKey, headers: HeaderMap, Q(p)
     let limit = p.limit.unwrap_or(20);
     check_range("limit", limit, 1, 50)?;
     let source = lower(&p.source, "youtube");
-    if source != "youtube" && source != "soundcloud" {
-        return Err(AppError::bad_request("source must be 'youtube' or 'soundcloud'"));
+    if source != "youtube" && source != "soundcloud" && source != "ytmusic" {
+        return Err(AppError::bad_request("source must be 'youtube', 'ytmusic' or 'soundcloud'"));
     }
     {
         let (st, q, s) = (st.clone(), q.clone(), source.clone());
@@ -251,6 +251,18 @@ async fn search(State(st): State<AppState>, _k: ApiKey, headers: HeaderMap, Q(p)
         return Ok(Json(v));
     }
     let user = uid(&st, &headers);
+    // YouTube Music: songs from music.youtube.com's own search (album,
+    // every artist, square art). Falls back to a YouTube search.
+    if source == "ytmusic" {
+        if let Some(tracks) = crate::ytmusic::search(&st.http, &q, limit as usize).await.filter(|t| !t.is_empty()) {
+            tracing::info!("Search via YouTube Music: {} result(s) for {q:?}", tracks.len());
+            let v = Value::Array(tracks);
+            st.search_cache.set(key, v.clone());
+            return Ok(Json(v));
+        }
+        tracing::warn!("YouTube Music search gave nothing for {q:?}; using YouTube search");
+    }
+    let source = if source == "ytmusic" { "youtube".to_string() } else { source };
     if source == "youtube" {
         if let Some(u) = &user {
             let api_key = st.yt.key_for_user(&st.db, u, st.cfg.youtube_api_key.as_deref()).await;
@@ -664,7 +676,10 @@ async fn do_download_job(
 ) -> Result<(), JobErr> {
     let yt = &st.ytdlp;
     let max_attempts = 3;
-    let (extra, expected_ext) = ytdlp::download_format_args(format);
+    // Premium cookies: YouTube Music's ~256 kbps Opus through the client
+    // that serves it (stored status only: a download never waits on a check).
+    let premium = if source == "youtube" { crate::premium::cached(st, user).await.filter(|s| s.premium) } else { None };
+    let (extra, expected_ext) = ytdlp::download_format_args_for(format, premium.is_some());
     let is_transcode = extra.contains(&"-x");
     let safe = safe_title(&p.title, id);
     let use_aria2 = p.use_aria2.unwrap_or(false);
@@ -687,6 +702,8 @@ async fn do_download_job(
         let mut cmd: Vec<String> = yt.network_args().to_vec();
         if attempt == max_attempts || age_fallback {
             cmd.extend(["--extractor-args".into(), format!("youtube:player_client={}", st.cfg.ytdlp_fallback_client)]);
+        } else if let Some(c) = premium.as_ref().and_then(|p| p.client.as_deref()) {
+            cmd.extend(["--extractor-args".into(), format!("youtube:player_client={c}")]);
         }
         cmd.extend(["--no-playlist", "--embed-metadata", "--embed-thumbnail"].map(String::from));
         if fragments > 1 {
@@ -781,6 +798,10 @@ async fn do_download_job(
         return Err((404, "Downloaded file not found".into(), false));
     };
     warn_if_muxed(st, &ytdlp_stdout, &safe, downloader);
+    // What was fetched ("yt:774" = Premium Opus): stored in the file's tags,
+    // carried into the app's LMS3 metadata, drives quality upgrades.
+    let chosen = st.re_chosen_format.captures(&String::from_utf8_lossy(&ytdlp_stdout)).and_then(|c| c.get(1)).map(|m| m.as_str().to_string());
+    let quality = chosen.map(|f| format!("{}:{f}", if source == "youtube" { "yt" } else { source }));
 
     // Tag LUMISOUND_ID + display title/artist with a stream-copy remux.
     let source_id = format!("{source}:{id}");
@@ -791,6 +812,9 @@ async fn do_download_job(
         tag.extend(["-movflags".into(), "+faststart+use_metadata_tags".into()]);
     }
     tag.extend(["-metadata".into(), format!("LUMISOUND_ID={source_id}")]);
+    if let Some(q) = &quality {
+        tag.extend(["-metadata".into(), format!("LUMISOUND_QUALITY={q}")]);
+    }
     if !display.is_empty() {
         tag.extend(["-metadata".into(), format!("title={display}")]);
     }

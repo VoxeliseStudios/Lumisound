@@ -96,7 +96,7 @@ extension StreamSearchView {
                 suggestions = []
                 return
             }
-            if selectedSource == "youtube" || selectedSource == "soundcloud" {
+            if selectedSource == "youtube" || selectedSource == "ytmusic" || selectedSource == "soundcloud" {
                 Task {
                     try? await Task.sleep(nanoseconds: 250_000_000)
                     if searchText == newValue {

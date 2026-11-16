@@ -29,6 +29,9 @@ struct FormatInfoSheet: View {
                         if let bitDepth = details.bitDepth {
                             row("Bit Depth", "\(bitDepth)-bit")
                         }
+                        if details.isPremiumQuality {
+                            row("Source", "YouTube Music Premium")
+                        }
                         if let bitrateKbps = details.bitrateKbps {
                             row("Bitrate", "\(bitrateKbps) kbps")
                         }

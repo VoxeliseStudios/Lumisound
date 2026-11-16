@@ -69,7 +69,7 @@ struct StreamSearchView: View {
     // Namespace for the source-picker pill's sliding selection indicator.
     @Namespace var sourcePillNamespace
 
-    let sources = ["youtube", "soundcloud", "server", "my"]
+    let sources = ["youtube", "ytmusic", "soundcloud", "server", "my"]
 
     /// Defaulted so the existing `StreamSearchView()` call site (the Cloud
     /// Services tab itself) is unaffected — only callers that want to deep

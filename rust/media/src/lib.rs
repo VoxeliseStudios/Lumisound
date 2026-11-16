@@ -8,6 +8,8 @@ pub mod decode;
 pub mod fdfile;
 pub mod gallery;
 pub mod gapless;
+pub mod lms3;
+pub mod lms3_export;
 pub mod lock;
 pub mod opus;
 pub mod tags;

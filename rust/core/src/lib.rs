@@ -32,6 +32,7 @@ pub mod lyrics;
 pub mod lua;
 pub mod metadata;
 pub mod mood;
+pub mod quality;
 pub mod radio;
 pub mod error;
 pub mod retry;

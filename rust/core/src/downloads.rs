@@ -188,6 +188,8 @@ pub fn failure_suppressed_total() -> u32 {
 pub fn download_extension(format: String) -> String {
     match format.as_str() {
         "mp3" | "flac" | "opus" | "wav" => format,
+        // Lumisound Audio: the best stream as it is (Opus, else AAC).
+        "lumi" => "opus".into(),
         _ => "m4a".into(),
     }
 }

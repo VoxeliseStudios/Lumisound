@@ -2,6 +2,23 @@
 
 Full history and decisions: [`RUST-PORT.md`](../../RUST-PORT.md).
 
+## Done (2026-11-15) — LMS3 + Premium upgrades
+- `lock.rs`: `lms_convert` writes LMS3 (falls back to the LMSLOCK1 wrap for video/undecodable sources);
+  `lms_relock_in_place` brings plain/LMSLOCK1/2 `.lms` up to LMS3 in place (vault xattr carried);
+  `lms_legacy_unlocked` = everything not LMS3 yet (`lms_needs_upgrade`); `lms_info` v3 + codec/kbps/
+  quality/premium; `lms_set_flags` rewrites the LMS3 header in place; `lms_effective_extension` and the
+  playable cache use the LMS3 export container (cached per path+mtime).
+- `quality.rs`: `quality_upgrade_candidates` (YouTube id from LMS3 meta / vault / tag; not Premium) and
+  `quality_replace_audio` (→ `lms3::replace_audio`). Test: worse/different recording refused, Premium
+  copy swapped in with tags kept.
+- `downloads.rs`: format "lumi" → `.opus`.
+- Engine deck probes with `decode::format_probe()` (LMS3 reader registered).
+
+## Open (found 2026-11-15, not from LMS3)
+- `tests/blend_cloud.rs` `blend_starts_on_cue_with_bass_swap` ("level hole in the blend: 0.02") and
+  `tests/pitch_cloud.rs` `pitch_keeps_sustained_notes_through_drum_hits` fail on main without the LMS3
+  changes too — DSP thresholds to look at.
+
 ## Done (2026-11-07)
 - Engine: 60 ms start head-start before a deck's first frame (`mixer.rs` `start_prefill_samples`).
 - Engine: decode threads at user-interactive QoS on Apple platforms (`deck.rs` `raise_decode_priority`).

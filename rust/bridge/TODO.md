@@ -2,6 +2,30 @@
 
 Full history and decisions: [`RUST-PORT.md`](../../RUST-PORT.md).
 
+## Done (2026-11-15) — LMS3 cloud, YouTube Premium, YouTube Music
+- `premium.rs`: is an account's cookie file YouTube Premium? yt-dlp `-J` on YouTube Music tracks per
+  client (web_music, web_creator, tv, web+default) until one lists 774/141 or ≥200 kbps; stored in
+  `ios_ytdlp_premium` (per cookie hash, re-checked daily, re-probed on cookie put/delete/preference).
+  `GET /user/ytdlp-cookies/premium[?refresh=true]`.
+- Downloads: format `lumi` (best stream as is, `--audio-format best`), Premium accounts get `774` first
+  (also for opus/best/mp3/flac/wav) through the client that served it; the chosen format is tagged
+  `LUMISOUND_QUALITY=yt:<itag>` (the app's LMS3 meta keeps it).
+- `ytmusic.rs`: `/api/search?source=ytmusic` straight from music.youtube.com's WEB_REMIX search (songs
+  filter): every artist, album, length, 544 px square art; falls back to YouTube search.
+- `lms3_cloud.rs`: cloud `.lms` → LMS3 in place (gzip too), proven identical, originals moved to
+  `<root>/.lms3-backup/originals/<user>/<rel>`; then Premium accounts' YouTube tracks re-fetched as 774 and
+  replaced (old copy in `.lms3-backup/upgrades/`), 150/user/pass, 20 s apart. Every 6 h; `LMS3_CLOUD=off`
+  disables. `GET/POST /admin/api/lms3` (status / run now).
+- `/user/music/stream`: LMS3 goes out as a cached LMSLOCK1 wrap of its export (current apps unlock it as
+  before; 3 h cache) unless `lms3=true`; low/medium transcodes read the export.
+- `storage::readable_copy` exports LMS3 (gzip or not) for ffprobe/ffmpeg.
+
+## Open (LMS3 / Premium)
+- Verify the 774 path with a real Premium cookie file (none on the server now: global cookies probe
+  at 130 kbps). If no client lists 774, try `youtube:player_client=web_music;formats=...` per yt-dlp docs.
+- Delete `<root>/.lms3-backup` once the converted cloud library has been played for a while (~22 GB).
+- Streaming (not downloads) still uses the m4a stream; Premium streaming could use 774 via the engine.
+
 ## Done (2026-11-15) — repeating announcements
 - `ios_announcements.repeat_hours` (NULL = once): shown again every N hours while the user is still
   eligible; `/seen` upserts `seen_at`. Admin create accepts `repeat_hours` (1..720).

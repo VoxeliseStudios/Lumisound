@@ -17,6 +17,8 @@ struct CookiesFileView: View {
     @State private var isShowingPicker = false
     @State private var errorText: String?
     @State private var validation: YtdlpCookiesValidation?
+    @ObservedObject private var quality = QualityUpgradeService.shared
+    @State private var isCheckingPremium = false
 
     var body: some View {
         LKPage(title: "YouTube Cookies", subtitle: "Download as your own YouTube session.", icon: "doc.text.fill", tint: .orange) {
@@ -38,6 +40,10 @@ struct CookiesFileView: View {
                 ForEach(validation.missing, id: \.self) { item in
                     LKBanner(icon: "exclamationmark.triangle.fill", text: item, tint: AppTheme.warning)
                 }
+            }
+
+            if status?.configured == true {
+                premiumCard
             }
 
             HStack(spacing: 10) {
@@ -71,6 +77,41 @@ struct CookiesFileView: View {
                 upload(from: url)
             }
         }
+    }
+
+    /// YouTube Premium audio: what these cookies unlock, and the library
+    /// upgrade to it (QualityUpgradeService).
+    private var premiumCard: some View {
+        LKCard(title: "Premium Audio", footer: "With YouTube Premium cookies, downloads come from YouTube Music at up to 256 kbps instead of 130, and tracks you already have are upgraded in the background (same song, tags and history; only a better copy of the same recording replaces one).") {
+            VStack(alignment: .leading, spacing: 12) {
+                checkRow("YouTube Premium",
+                         ok: quality.status.map { $0.premium },
+                         detail: quality.status.map { $0.premium ? "Up to \($0.maxKbps) kbps (YouTube Music)" : "Not Premium: up to \($0.maxKbps) kbps" })
+                if quality.status?.premium == true {
+                    LKToggle(icon: "arrow.up.circle.fill", tint: .orange, title: "Upgrade my library",
+                             subtitle: quality.isRunning ? "Upgrading… \(quality.remaining) left" : "\(quality.upgradedTotal) track(s) upgraded so far",
+                             isOn: Binding(get: { quality.isEnabled }, set: { quality.isEnabled = $0 }))
+                    if let d = quality.lastDetail {
+                        Text(d).font(.caption2).foregroundStyle(AppTheme.textSecondary)
+                    }
+                }
+                HStack(spacing: 10) {
+                    LKPrimaryButton(title: "Check Again", icon: "arrow.clockwise", tint: .orange, prominent: false, busy: isCheckingPremium) {
+                        isCheckingPremium = true
+                        Task {
+                            await quality.refreshStatus(force: true)
+                            isCheckingPremium = false
+                        }
+                    }
+                    if quality.status?.premium == true && quality.isEnabled {
+                        LKPrimaryButton(title: "Upgrade Now", icon: "bolt.fill", tint: .green, prominent: false, busy: quality.isRunning) {
+                            Task { await quality.runPassIfNeeded(force: true) }
+                        }
+                    }
+                }
+            }
+        }
+        .task { await quality.refreshStatus() }
     }
 
     /// ok: true = done, false = failed, nil = not checked yet.

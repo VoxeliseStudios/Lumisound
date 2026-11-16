@@ -74,12 +74,19 @@ pub fn apply_mask(buf: &mut [u8], offset: u64) {
     }
 }
 
+/// Locked = not a plain audio file: LMSLOCK1/2 or LMS3.
 pub fn is_locked(p: &Path) -> bool {
-    read_header(p).is_some()
+    read_header(p).is_some() || crate::lms3::is_lms3(p)
 }
 
 /// Stream-unmask `src` into `dst` (a plain copy when `src` is not locked).
+/// An LMS3 file is exported to its standard container instead.
 pub fn unmask_into(src: &Path, dst: &mut impl Write) -> std::io::Result<()> {
+    if crate::lms3::is_lms3(src) {
+        let mut cur = std::io::Cursor::new(Vec::new());
+        crate::lms3_export::export_to(src, &mut cur)?;
+        return dst.write_all(cur.get_ref());
+    }
     let mut f = std::io::BufReader::with_capacity(1 << 20, std::fs::File::open(src)?);
     let mut head = [0u8; HEADER2_LEN];
     let n = read_full(&mut f, &mut head)?;
@@ -193,6 +200,12 @@ pub fn lock_file_flags(plain: &Path, locked: &Path, flags: u32) -> std::io::Resu
 /// masked payload is copied byte for byte (offsets are payload-relative), so
 /// this is a fast stream copy, never a re-mask. `out` may equal `locked`.
 pub fn rewrite_header(locked: &Path, out: &Path, flags: u32) -> std::io::Result<()> {
+    if crate::lms3::is_lms3(locked) {
+        if locked != out {
+            std::fs::copy(locked, out)?;
+        }
+        return crate::lms3::set_flags(out, flags);
+    }
     let h = read_header(locked).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "not a locked file"))?;
     let mut src = std::io::BufReader::with_capacity(1 << 20, std::fs::File::open(locked)?);
     let mut skip = vec![0u8; h.payload_offset];
@@ -206,7 +219,11 @@ pub fn rewrite_header(locked: &Path, out: &Path, flags: u32) -> std::io::Result<
 }
 
 /// Unlock `locked` into `out` (legacy unmasked `.lms` files pass through).
+/// An LMS3 file is exported to its standard container (see `lms3_export`).
 pub fn unlock_file(locked: &Path, out: &Path) -> std::io::Result<()> {
+    if crate::lms3::is_lms3(locked) {
+        return crate::lms3_export::export_to_path(locked, out);
+    }
     atomic_write_with(out, |f| {
         let mut w = std::io::BufWriter::with_capacity(1 << 20, f);
         unmask_into(locked, &mut w)?;

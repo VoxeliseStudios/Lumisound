@@ -33,6 +33,12 @@ impl symphonia::core::io::MediaSource for crate::lock::MaskedFile {
 pub fn media_source(path: &Path) -> std::io::Result<(MediaSourceStream, Hint)> {
     let mut hint = Hint::new();
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    // LMS3: the file itself is the container (its reader unmasks packets).
+    if crate::lms3::is_lms3(path) {
+        hint.with_extension("lms");
+        let file = std::fs::File::open(path)?;
+        return Ok((MediaSourceStream::new(Box::new(file), Default::default()), hint));
+    }
     if let Some(m) = crate::lock::MaskedFile::open(path) {
         if let Some(e) = crate::lock::inner_ext(name) {
             hint.with_extension(&e);
@@ -51,9 +57,20 @@ pub fn media_source(path: &Path) -> std::io::Result<(MediaSourceStream, Hint)> {
     Ok((MediaSourceStream::new(Box::new(file), Default::default()), hint))
 }
 
+/// symphonia's probe with every enabled format plus LMS3.
+pub fn format_probe() -> &'static symphonia::core::probe::Probe {
+    static P: std::sync::LazyLock<symphonia::core::probe::Probe> = std::sync::LazyLock::new(|| {
+        let mut p = symphonia::core::probe::Probe::default();
+        symphonia::default::register_enabled_formats(&mut p);
+        p.register_all::<crate::lms3::Lms3Reader>();
+        p
+    });
+    &P
+}
+
 fn open(path: &Path) -> Option<(Box<dyn symphonia::core::formats::FormatReader>, u32)> {
     let (mss, hint) = media_source(path).ok()?;
-    let probed = symphonia::default::get_probe().format(&hint, mss, &FormatOptions { enable_gapless: true, ..Default::default() }, &MetadataOptions::default()).ok()?;
+    let probed = format_probe().format(&hint, mss, &FormatOptions { enable_gapless: true, ..Default::default() }, &MetadataOptions::default()).ok()?;
     let fmt = probed.format;
     let track = audio_track(&*fmt)?;
     let id = track.id;
@@ -283,4 +300,69 @@ pub fn planar(path: &Path, start: Option<f64>, max_len: Option<f64>) -> Option<(
         chans.iter_mut().for_each(|c| c.truncate(w));
     }
     (!chans.is_empty() && !chans[0].is_empty()).then_some((rate, chans))
+}
+
+/// Whole-file decode in the engine's pipeline (gapless trimmed), handing
+/// interleaved native-rate float blocks to `f(rate, channels, samples)`.
+/// `f` returns false to stop. False when nothing could be decoded.
+pub fn for_each_block(path: &Path, mut f: impl FnMut(u32, usize, &[f32]) -> bool) -> bool {
+    let Some((mut fmt, id)) = open(path) else { return false };
+    let Some(params) = fmt.tracks().iter().find(|t| t.id == id).map(|t| t.codec_params.clone()) else { return false };
+    let Ok(mut dec) = crate::opus::codecs().make(&params, &DecoderOptions::default()) else { return false };
+    let Some(rate) = dec.codec_params().sample_rate.or(params.sample_rate) else { return false };
+    let mut trim = crate::gapless::for_track(path, params.codec).map(|g| g.trim_from(0)).unwrap_or_default();
+    let mut buf: Option<SampleBuffer<f32>> = None;
+    let mut any = false;
+    while let Ok(packet) = fmt.next_packet() {
+        if packet.track_id() != id {
+            continue;
+        }
+        let decoded = match dec.decode(&packet) {
+            Ok(d) => d,
+            Err(Error::DecodeError(_)) => continue,
+            Err(_) => break,
+        };
+        let spec = *decoded.spec();
+        let ch = spec.channels.count().max(1);
+        let b = buf.get_or_insert_with(|| SampleBuffer::new(decoded.capacity() as u64, spec));
+        if b.capacity() < decoded.capacity() * ch {
+            *b = SampleBuffer::new(decoded.capacity() as u64, spec);
+        }
+        b.copy_interleaved_ref(decoded);
+        let keep = trim.keep(b.samples().len() / ch);
+        if keep.is_empty() {
+            continue;
+        }
+        any = true;
+        if !f(rate, ch, &b.samples()[keep.start * ch..keep.end * ch]) {
+            return true;
+        }
+    }
+    any
+}
+
+/// What a file sounds like, exactly: (frames, rate, channels, CRC32 of the
+/// decoded float samples). Two files with equal fingerprints decode to the
+/// same audio sample for sample.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Fingerprint {
+    pub frames: u64,
+    pub rate: u32,
+    pub channels: u16,
+    pub crc: u32,
+}
+
+pub fn fingerprint(path: &Path) -> Option<Fingerprint> {
+    let mut crc = crc32fast::Hasher::new();
+    let (mut frames, mut spec) = (0u64, (0u32, 0u16));
+    let mut bytes: Vec<u8> = Vec::new();
+    let ok = for_each_block(path, |rate, ch, s| {
+        spec = (rate, ch as u16);
+        frames += (s.len() / ch) as u64;
+        bytes.clear();
+        bytes.extend(s.iter().flat_map(|v| v.to_bits().to_le_bytes()));
+        crc.update(&bytes);
+        true
+    });
+    ok.then(|| Fingerprint { frames, rate: spec.0, channels: spec.1, crc: crc.finalize() })
 }

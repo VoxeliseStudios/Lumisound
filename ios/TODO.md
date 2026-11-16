@@ -2,6 +2,21 @@
 
 Full history and decisions: [`../RUST-PORT.md`](../RUST-PORT.md). Swift is views + app shell only.
 
+## Done (2026-11-15) — Lumisound Audio (LMS3) + Premium
+- Download format "Lumisound Audio (Best)" (`lumi`) is the new default (explicit choices kept).
+- The 5-minute library pass converts every older `.lms` (plain/LMSLOCK1/2) to LMS3 in place
+  (`relockLegacyFile` → `lms_relock_in_place`), then runs `QualityUpgradeService`.
+- `Services/QualityUpgradeService.swift`: Premium status (`/user/ytdlp-cookies/premium`), up to 25
+  YouTube tracks per 30 min re-fetched as `lumi` and swapped in place by the core (never the playing
+  track, waits for thermal headroom). Settings → YouTube Cookies → Premium Audio card (status, toggle,
+  progress, Upgrade Now).
+- Search: "YT Music" source tab (`source=ytmusic`).
+
+## Open (LMS3)
+- Format Info sheet: show "Lumisound Audio", codec, kbps and Premium from `lmsInfo` (v3 fields exist).
+- Cloud tracks: opt in to `lms3=true` on `/user/music/stream` once the cloud playback path reads LMS3
+  directly (today the bridge sends the LMSLOCK1 wrap of the export).
+
 ## Done (2026-11-15) — bridge security pass
 - `StreamingService.makeRequest` sends `X-Account-Token` whenever signed in: the bridge's shared-key
   routes now require a session (the app key is public inside the IPA).

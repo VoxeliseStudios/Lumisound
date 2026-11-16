@@ -39,6 +39,25 @@ fn nonempty(s: &Option<String>) -> Option<&str> {
 
 pub fn write(path: &Path, f: &Fields) -> Result<(), String> {
     use lofty::tag::TagExt;
+    if crate::lms3::is_lms3(path) {
+        let mut m = crate::lms3::read_meta(path).unwrap_or_default();
+        let set = |dst: &mut Option<String>, v: &Option<String>| {
+            if let Some(v) = nonempty(v) {
+                *dst = Some(v.to_string());
+            }
+        };
+        set(&mut m.title, &f.title);
+        set(&mut m.artist, &f.artist);
+        set(&mut m.album, &f.album);
+        set(&mut m.genre, &f.genre);
+        set(&mut m.year, &f.year);
+        set(&mut m.source_id, &f.source_id);
+        set(&mut m.thumbnail, &f.thumbnail);
+        if let Some(n) = f.track.filter(|n| *n > 0) {
+            m.track = Some(n);
+        }
+        return crate::lms3::set_meta(path, &m).map_err(|e| e.to_string());
+    }
     let file = lofty::read_from_path(path).map_err(|e| e.to_string())?;
     let tt = file.primary_tag_type();
     let mut tag = file.tag(tt).cloned().unwrap_or_else(|| Tag::new(tt));
@@ -109,7 +128,23 @@ pub fn open_tagged(path: &Path) -> Option<lofty::file::TaggedFile> {
     }
 }
 
+/// A Lumisound custom tag (`LUMISOUND_<NAME>`) from any container.
+pub fn read_custom(path: &Path, name: &str) -> Option<String> {
+    let file = open_tagged(path)?;
+    file.tags().iter().find_map(|tag| {
+        let tt = tag.tag_type();
+        tag.get_string(&custom_key(tt, name)).map(str::to_string).or_else(|| {
+            tag.items().find(|i| matches!(i.key(), ItemKey::Unknown(k) if k.eq_ignore_ascii_case(name) || k.to_uppercase().ends_with(&format!(":{name}")))).and_then(|i| i.value().text()).map(str::to_string)
+        })
+    })
+}
+
+pub const QUALITY_KEY: &str = "LUMISOUND_QUALITY";
+
 pub fn read_lumisound(path: &Path) -> (Option<String>, Option<String>) {
+    if let Some(m) = crate::lms3::read_meta(path) {
+        return (m.source_id, m.thumbnail);
+    }
     let Some(file) = open_tagged(path) else { return (None, None) };
     let mut out = (None, None);
     for tag in file.tags() {
@@ -126,6 +161,9 @@ pub fn read_lumisound(path: &Path) -> (Option<String>, Option<String>) {
 }
 
 pub fn can_tag(path: &Path) -> bool {
+    if crate::lms3::is_lms3(path) {
+        return true;
+    }
     matches!(lofty::probe::Probe::open(path).ok().and_then(|p| p.guess_file_type().ok()).and_then(|p| p.file_type()), Some(FileType::Mpeg | FileType::Mp4 | FileType::Flac | FileType::Opus | FileType::Vorbis | FileType::Wav | FileType::Aiff))
 }
 
@@ -161,6 +199,22 @@ pub fn cleaned_genre(raw: &str) -> String {
 
 pub fn read_info(path: &Path) -> Option<Info> {
     use lofty::file::AudioFile;
+    if let Some(h) = crate::lms3::read_header(path) {
+        let m = crate::lms3::read_meta(path).unwrap_or_default();
+        let dec_rate = if h.codec_type() == symphonia::core::codecs::CODEC_TYPE_OPUS { 48_000 } else { h.sample_rate };
+        return Some(Info {
+            title: m.title,
+            artist: m.artist,
+            album: m.album,
+            genre: m.genre.map(|g| cleaned_genre(&g)),
+            year: m.year,
+            track: m.track,
+            source_id: m.source_id,
+            duration: h.duration_secs(),
+            sample_rate: dec_rate,
+            bitrate_kbps: h.bitrate_kbps(),
+        });
+    }
     let file = open_tagged(path)?;
     let props = file.properties();
     let mut info = Info {
@@ -186,6 +240,9 @@ pub fn read_info(path: &Path) -> Option<Info> {
 
 /// BPM written in the file's tags (TBPM / tmpo / BPM comment), if any.
 pub fn read_bpm(path: &Path) -> Option<f64> {
+    if let Some(m) = crate::lms3::read_meta(path) {
+        return m.bpm.filter(|b| *b > 0.0);
+    }
     let file = open_tagged(path)?;
     file.tags().iter().find_map(|t| t.get_string(&ItemKey::Bpm).or(t.get_string(&ItemKey::IntegerBpm)).and_then(|v| v.trim().parse::<f64>().ok()).filter(|b| *b > 0.0))
 }

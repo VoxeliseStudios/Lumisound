@@ -68,6 +68,7 @@ pub fn routes() -> Router<AppState> {
         .route("/user/ytdlp-cookies", get(cookies_status).put(put_cookies).delete(delete_cookies))
         .route("/user/ytdlp-cookies/preference", get(get_pref).put(put_pref))
         .route("/user/ytdlp-cookies/validate", post(validate_cookies))
+        .route("/user/ytdlp-cookies/premium", get(premium_status))
         .route("/api/gif-search", get(gif_search))
         .route("/api/gif-search/trending", get(gif_trending))
 }
@@ -1531,12 +1532,25 @@ async fn put_cookies(State(st): State<AppState>, u: User, J(b): J<CookiesBody>) 
     .execute(&st.db)
     .await?;
     drop_cookie_file(&st, &u.id);
+    crate::premium::refresh_later(&st, &u.id);
     Ok(Json(json!({"status": "ok"})))
+}
+
+#[derive(Deserialize)]
+struct PremiumQ {
+    refresh: Option<bool>,
+}
+
+/// Whether the account's YouTube cookies are Premium (YouTube Music's
+/// ~256 kbps audio). Cached a day per cookie file; `?refresh=true` re-probes.
+async fn premium_status(State(st): State<AppState>, u: User, Q(q): Q<PremiumQ>) -> ApiResult<Json<Value>> {
+    Ok(Json(crate::premium::status(&st, &u.id, q.refresh.unwrap_or(false)).await.json()))
 }
 
 async fn delete_cookies(State(st): State<AppState>, u: User) -> ApiResult<StatusCode> {
     sqlx::query("UPDATE ios_user_settings SET ytdlp_cookies = NULL, ytdlp_cookies_updated_at = NULL WHERE user_id = $1").bind(&u.id).execute(&st.db).await?;
     drop_cookie_file(&st, &u.id);
+    crate::premium::refresh_later(&st, &u.id);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1562,6 +1576,7 @@ async fn put_pref(State(st): State<AppState>, u: User, J(b): J<PrefBody>) -> Api
         .execute(&st.db)
         .await?;
     st.ytdlp.invalidate_user_cookies(&u.id);
+    crate::premium::refresh_later(&st, &u.id);
     Ok(Json(json!({"status": "ok", "preference": b.preference})))
 }
 
