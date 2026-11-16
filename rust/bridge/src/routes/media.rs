@@ -489,8 +489,13 @@ fn safe_title(title: &Option<String>, id: &str) -> String {
     t[..end].to_string()
 }
 
-fn owned(inv: &HashSet<String>, existing: &Option<String>, key: &str) -> bool {
-    inv.contains(key) || existing.as_deref().is_some_and(|e| e.split(',').map(str::trim).any(|s| s == key))
+/// A single download is skipped only when the asking device lists the track
+/// in its own manifest. The stored inventory is a snapshot of whichever
+/// install uploaded last; a reinstall (or a second device) that doesn't have
+/// the file yet must still get it, so it never vetoes a download — it only
+/// trims playlist resolves.
+fn owned(existing: &Option<String>, key: &str) -> bool {
+    existing.as_deref().is_some_and(|e| e.split(',').map(str::trim).any(|s| s == key))
 }
 
 async fn download_relay(State(st): State<AppState>, _k: ApiKey, headers: HeaderMap, Q(p): Q<StreamQ>) -> ApiResult<Response> {
@@ -504,8 +509,8 @@ async fn download_relay(State(st): State<AppState>, _k: ApiKey, headers: HeaderM
     let target = target_for(&source, &id, &p.url).await?;
     let user = uid(&st, &headers);
     let key = format!("{source}:{id}");
-    if owned(&*st.inventory_ids(user.as_deref()).await, &p.existing_ids, &key) {
-        tracing::info!("download_relay: skipping {key} — already owned (manifest/inventory)");
+    if owned(&p.existing_ids, &key) {
+        tracing::info!("download_relay: skipping {key} — already in the device's manifest");
         return Ok(StatusCode::NO_CONTENT.into_response());
     }
     let cache_key = format!("{source}:{id}:{format}");
@@ -633,8 +638,8 @@ async fn download(State(st): State<AppState>, _k: ApiKey, headers: HeaderMap, Q(
     let format = lower(&p.format, "m4a");
     let user = uid(&st, &headers);
     let key = format!("{source}:{id}");
-    if owned(&*st.inventory_ids(user.as_deref()).await, &p.existing_ids, &key) {
-        tracing::info!("download_track: skipping {key} — already owned (manifest/inventory)");
+    if owned(&p.existing_ids, &key) {
+        tracing::info!("download_track: skipping {key} — already in the device's manifest");
         return Ok(StatusCode::NO_CONTENT.into_response());
     }
     let target = target_for(&source, &id, &p.url).await?;
@@ -676,6 +681,9 @@ async fn do_download_job(
 ) -> Result<(), JobErr> {
     let yt = &st.ytdlp;
     let max_attempts = 3;
+    // Swapped for a matching YouTube Music release when this id is delisted.
+    let mut target = target.to_string();
+    let mut alternate_tried = false;
     // Premium cookies: YouTube Music's ~256 kbps Opus through the client
     // that serves it (stored status only: a download never waits on a check).
     let premium = if source == "youtube" { crate::premium::cached(st, user).await.filter(|s| s.premium) } else { None };
@@ -718,7 +726,7 @@ async fn do_download_job(
         cmd.extend(["-o".into(), template]);
         cmd.extend(cookies.iter().cloned());
         cmd.extend(extra.iter().map(|s| s.to_string()));
-        cmd.push(target.into());
+        cmd.push(target.clone());
         let downloader = if aria2 { "aria2c" } else { "native" };
         tracing::info!("Download cmd (attempt {attempt}/{max_attempts}, downloader={downloader}): yt-dlp {}", cmd.join(" "));
         let timeout = Duration::from_secs(if is_transcode { 240 } else { 140 });
@@ -761,6 +769,17 @@ async fn do_download_job(
                 age_fallback = true;
                 tracing::info!("Age-restricted ({safe}): retrying with the {} client", st.cfg.ytdlp_fallback_client);
                 continue;
+            }
+            // Delisted (label pulled or replaced it): the same song is usually
+            // still on YouTube Music under another id. The file keeps the
+            // requested id, so the device's dedup still matches it.
+            if !alternate_tried && attempt < max_attempts && source == "youtube" && ytdlp::is_unavailable(&out.stderr) {
+                alternate_tried = true;
+                if let Some(alt) = alternate_release(st, id, display, p.artist.as_deref(), expected_duration).await {
+                    tracing::info!("{id} is unavailable; downloading the matching YouTube Music release {alt} for {safe:?}");
+                    target = format!("https://music.youtube.com/watch?v={alt}");
+                    continue;
+                }
             }
             // A removed/private/Premium-only video fails the same way every time.
             if attempt == max_attempts || is_permanent_failure(&out.stderr) {
@@ -911,6 +930,55 @@ async fn do_download_job(
         });
     }
     Ok(())
+}
+
+/// Lowercase letters and digits only, bracketed asides ("(Official Video)",
+/// "[OST]") dropped, for comparing titles across uploads.
+fn title_key(t: &str) -> String {
+    let mut out = String::new();
+    let mut depth = 0i32;
+    for c in t.chars() {
+        match c {
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth = (depth - 1).max(0),
+            _ if depth == 0 && c.is_alphanumeric() => out.extend(c.to_lowercase()),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// A playable YouTube Music release of the same song: same title (ignoring
+/// asides) and, when known, the same length within 3 s or 3 %.
+async fn alternate_release(st: &AppState, id: &str, title: &str, artist: Option<&str>, duration: Option<f64>) -> Option<String> {
+    let want = title_key(title);
+    if want.len() < 2 {
+        return None;
+    }
+    let artist = artist.map(str::trim).filter(|a| !a.is_empty() && !a.eq_ignore_ascii_case("unknown artist"));
+    let query = match artist {
+        Some(a) if !title.to_lowercase().contains(&a.to_lowercase()) => format!("{a} {title}"),
+        _ => title.to_string(),
+    };
+    let results = crate::ytmusic::search(&st.http, &query, 8).await?;
+    let artist_key = artist.map(title_key).unwrap_or_default();
+    results.iter().find_map(|r| {
+        let rid = r["id"].as_str()?;
+        if rid == id {
+            return None;
+        }
+        let got = title_key(r["title"].as_str().unwrap_or(""));
+        let same_title = !got.is_empty() && (got == want || (got.len() >= 4 && want.contains(&got)) || (want.len() >= 4 && got.contains(&want)));
+        if !same_title {
+            return None;
+        }
+        let d = r["duration_seconds"].as_f64().unwrap_or(0.0);
+        match duration {
+            Some(e) if e > 0.0 => ((d - e).abs() <= (e * 0.03).max(3.0)).then(|| rid.to_string()),
+            // No length to check against: the artist has to match instead.
+            _ => (!artist_key.is_empty() && title_key(r["artist"].as_str().unwrap_or("")).contains(&artist_key)).then(|| rid.to_string()),
+        }
+    })
 }
 
 /// The finished file in a yt-dlp output dir (skipping partials and sidecar images).
@@ -1679,4 +1747,24 @@ async fn extract_motion_clip(st: &AppState, vid: &str, dest: &Path) -> bool {
     .await;
     let _ = tokio::fs::remove_file(&raw).await;
     result.is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn title_key_ignores_asides_and_punctuation() {
+        assert_eq!(title_key("Kung Fu Fighting (From \"Kung Fu Panda\")"), "kungfufighting");
+        assert_eq!(title_key("Time Attack - Sonic Advance 3 [OST]"), "timeattacksonicadvance3");
+        assert_eq!(title_key("片翼の天使"), "片翼の天使");
+    }
+
+    #[test]
+    fn device_manifest_alone_decides_ownership() {
+        let m = Some("youtube:a, youtube:b".to_string());
+        assert!(owned(&m, "youtube:b"));
+        assert!(!owned(&m, "youtube:c"));
+        assert!(!owned(&None, "youtube:a"));
+    }
 }

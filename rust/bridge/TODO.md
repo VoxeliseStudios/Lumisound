@@ -2,6 +2,29 @@
 
 Full history and decisions: [`RUST-PORT.md`](../../RUST-PORT.md).
 
+## Done (2026-11-16) — downloads after a reinstall, cloud trash, delisted tracks
+- Single downloads (`/api/download`, `/api/download/relay`) are skipped only when the asking device's
+  own `existing_ids` lists the track. The stored inventory (last install's snapshot) no longer vetoes
+  them: after a reinstall every download came back 204 "already in your library" while the phone had
+  nothing. Playlist resolves still trim with the inventory.
+- `DELETE /user/music/*`: moved to `<root>/.trash/<user>/<YYYYMMDD>/<rel>` with the metadata row
+  (`.meta.json`) and locked art (`.art.jpg`) beside it; day folders older than 30 days purged by the
+  daily janitor (`music::purge_trash`). Previously erased on the spot.
+- Delisted YouTube tracks ("Video unavailable", e.g. unlisted "- Topic" art tracks): one retry with the
+  matching YouTube Music release (same title ignoring asides, length within 3 s / 3 %, else same
+  artist). The file keeps the requested `LUMISOUND_ID`.
+- LMS3 cloud migration skips files deleted since the folder was listed (was "write: No such file").
+
+## Incident 2026-11-16 — cloud library delete-all
+- A fresh install (v2.0.0.56, empty library) ran cloud "Delete All" (confirmed) and "Clear all backups";
+  3,501 files were erased before the trash existed. Metadata survives in the nightly DB dump, the old
+  inventory in a snapshot table, 556 originals in `.lms3-backup/originals/`; the rest re-download by
+  source id. Restore only on the owner's word.
+
+## Open (2026-11-16)
+- Admin restore from the trash (move back + reinsert `.meta.json`), and a trash view in admin.html.
+- Alternate-release fallback for SoundCloud/Bandcamp ids (YouTube only now).
+
 ## Done (2026-11-15) — LMS3 cloud, YouTube Premium, YouTube Music
 - `premium.rs`: is an account's cookie file YouTube Premium? yt-dlp `-J` on YouTube Music tracks per
   client (web_music, web_creator, tv, web+default) until one lists 774/141 or ≥200 kbps; stored in

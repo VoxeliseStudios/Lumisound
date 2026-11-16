@@ -270,6 +270,17 @@ extension LibraryManager {
         let scan = await Task.detached(priority: .utility) {
             scanDocuments(docsDir: docsPath, libraryPaths: existingPaths)
         }.value
+        defer {
+            if !Self.hasCompletedLocalScan {
+                Self.hasCompletedLocalScan = true
+                // The launch sync ran before this scan and skipped the
+                // inventory; send it now that the library is known.
+                Task { [weak self] in
+                    guard let self else { return }
+                    await AccountService.shared?.syncLibraryInventory(library: self)
+                }
+            }
+        }
         let missingPaths = Set(scan.missing)
 
         let countBeforeEviction = importedSongs.count

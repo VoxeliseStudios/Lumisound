@@ -139,6 +139,13 @@ final class LibraryManager: ObservableObject {
     /// once per launch, and saves re-merging the entire library.
     static var snapshotLoadTask: Task<Void, Never>?
 
+    /// True once a Documents scan has run to the end this launch. An empty
+    /// `allSongs` before that means "not loaded yet"; after it, the library
+    /// really is empty (a fresh install) and that is what the server's
+    /// inventory has to say, or it keeps vetoing downloads with the last
+    /// install's tracks.
+    static var hasCompletedLocalScan = false
+
     // MARK: Indexed lookups (rebuilt alongside `allSongs` in `rebuildAllSongs()`)
     //
     // `songs(byArtist:)`/`songs(inAlbum:)`/`songs(inGenre:)`/`songs(for:)` used

@@ -228,7 +228,8 @@ final class AccountService: ObservableObject {
                                    presentFilenames: library.allSongs.compactMap { $0.url?.lastPathComponent })
         Core.prepare(baseURL: bridgeURL, token: token)
         do {
-            switch try await syncInventoryUpload(client: Core.api, ids: ids, libraryLoaded: !library.allSongs.isEmpty) {
+            let loaded = !library.allSongs.isEmpty || LibraryManager.hasCompletedLocalScan
+            switch try await syncInventoryUpload(client: Core.api, ids: ids, libraryLoaded: loaded) {
             case .notLoaded:
                 appLog("syncLibraryInventory skipped — library not loaded yet", category: "account")
             case .unchanged:

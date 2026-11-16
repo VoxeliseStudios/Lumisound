@@ -965,10 +965,34 @@ async fn delete_music(State(st): State<AppState>, u: User, AxPath(filepath): AxP
     let dir = user_dir(&st, &u.id, "User music storage not configured")?;
     let p = safe_join(&dir, &filepath).ok_or_else(|| AppError::forbidden("Access denied"))?;
     let existed = p.exists();
+    // The row goes into the trash beside the file, so a restore can put both back.
+    let row: Option<(String, Value)> = sqlx::query_as(
+        "SELECT id, row_to_json(m)::jsonb FROM ios_user_music_metadata m WHERE user_id = $1 AND filename = $2",
+    )
+    .bind(&u.id)
+    .bind(&filepath)
+    .fetch_optional(&st.db)
+    .await?;
     if existed {
-        if let Err(e) = tokio::fs::remove_file(&p).await {
-            tracing::error!("delete_user_music: failed for user {} path {filepath}: {e}", u.id);
+        // Never erased here: moved to the trash, purged after TRASH_DAYS.
+        let trashed = trash_dir(&dir, &u.id).join(&filepath);
+        let moved = async {
+            if let Some(parent) = trashed.parent() {
+                tokio::fs::create_dir_all(parent).await?;
+            }
+            tokio::fs::rename(&p, &trashed).await
+        }
+        .await;
+        if let Err(e) = moved {
+            tracing::error!("delete_user_music: could not move {filepath} to the trash for user {}: {e}", u.id);
             return Err(AppError::internal("Failed to delete file"));
+        }
+        if let Some((id, meta)) = &row {
+            let _ = tokio::fs::write(sidecar(&trashed, "meta.json"), serde_json::to_vec(meta).unwrap_or_default()).await;
+            let art = locked_artwork_path(&dir, id);
+            if art.exists() {
+                let _ = tokio::fs::rename(&art, sidecar(&trashed, "art.jpg")).await;
+            }
         }
         let mut parent = p.parent().map(Path::to_path_buf);
         while let Some(d) = parent {
@@ -986,10 +1010,47 @@ async fn delete_music(State(st): State<AppState>, u: User, AxPath(filepath): AxP
     if !existed && deleted.is_none() {
         return Err(AppError::not_found("File not found"));
     }
-    if let Some(id) = deleted {
+    if let Some(id) = deleted.filter(|_| !existed) {
         let _ = tokio::fs::remove_file(locked_artwork_path(&dir, &id)).await;
     }
+    tracing::info!("delete_user_music: user {} moved {filepath} to the trash", u.id);
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Days a deleted cloud track stays restorable.
+pub const TRASH_DAYS: u64 = 30;
+
+/// This delete's trash folder: `<root>/.trash/<user>/<UTC stamp>/`, on the
+/// same filesystem as the music so the move is a rename.
+fn trash_dir(user_dir: &Path, uid: &str) -> PathBuf {
+    let root = user_dir.parent().unwrap_or(user_dir);
+    root.join(".trash").join(uid).join(chrono::Utc::now().format("%Y%m%d").to_string())
+}
+
+fn sidecar(p: &Path, suffix: &str) -> PathBuf {
+    let mut s = p.as_os_str().to_os_string();
+    s.push(format!(".{suffix}"));
+    PathBuf::from(s)
+}
+
+/// Remove trash day-folders older than TRASH_DAYS under every music root.
+pub async fn purge_trash(st: &AppState) {
+    let cutoff = (chrono::Utc::now() - chrono::Duration::days(TRASH_DAYS as i64)).format("%Y%m%d").to_string();
+    for root in st.user_music_roots() {
+        let Ok(mut users) = tokio::fs::read_dir(root.join(".trash")).await else { continue };
+        while let Ok(Some(u)) = users.next_entry().await {
+            let Ok(mut days) = tokio::fs::read_dir(u.path()).await else { continue };
+            while let Ok(Some(d)) = days.next_entry().await {
+                let name = d.file_name().to_string_lossy().into_owned();
+                if name.len() == 8 && name.chars().all(|c| c.is_ascii_digit()) && name < cutoff {
+                    match tokio::fs::remove_dir_all(d.path()).await {
+                        Ok(()) => tracing::info!("trash: purged {}", d.path().display()),
+                        Err(e) => tracing::warn!("trash: purge of {} failed: {e}", d.path().display()),
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[derive(Deserialize)]

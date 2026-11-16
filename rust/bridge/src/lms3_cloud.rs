@@ -224,6 +224,10 @@ pub async fn migrate_all(st: &AppState) {
         let files: Vec<PathBuf> = tokio::task::spawn_blocking(move || storage::walk_files(&d).into_iter().filter(|p| is_cloud_track(p)).collect()).await.unwrap_or_default();
         for path in files {
             PROGRESS.lock().unwrap().scanned += 1;
+            // Deleted (moved to the trash) since the folder was listed.
+            if !path.exists() {
+                continue;
+            }
             if lms3::is_lms3(&path) {
                 PROGRESS.lock().unwrap().already += 1;
                 continue;

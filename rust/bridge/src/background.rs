@@ -513,6 +513,7 @@ const RETENTION: &[(&str, &str, i32)] = &[
 async fn log_retention_loop(st: AppState) {
     loop {
         tokio::time::sleep(Duration::from_secs(86400)).await;
+        crate::routes::music::purge_trash(&st).await;
         for (table, col, days) in RETENTION {
             match sqlx::query(&format!("DELETE FROM {table} WHERE {col} < NOW() - make_interval(days => $1)")).bind(days).execute(&st.db).await {
                 Ok(r) if r.rows_affected() > 0 => tracing::info!("logs janitor: pruned {} rows from {table} older than {days} days", r.rows_affected()),

@@ -592,6 +592,13 @@ pub fn needs_age_fallback(stderr: &[u8]) -> bool {
     t.contains("age-restricted") || t.contains("age-verification") || t.contains("confirm your age")
 }
 
+/// YouTube says the video itself is gone or blocked ("Video unavailable",
+/// "This video is not available") — not a sign-in, bot or Premium problem.
+pub fn is_unavailable(stderr: &[u8]) -> bool {
+    let t = String::from_utf8_lossy(stderr).to_lowercase();
+    (t.contains("video unavailable") || t.contains("this video is not available")) && !t.contains("premium") && !t.contains("sign in")
+}
+
 pub fn generic_failure_summary(stderr: &[u8]) -> String {
     let text = String::from_utf8_lossy(stderr);
     let text = text.trim();
@@ -820,6 +827,13 @@ pub fn parse_track(entry: &Value, source: &str) -> Value {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn unavailable_is_not_premium_or_sign_in() {
+        assert!(super::is_unavailable(b"ERROR: [youtube] ifDJ_aDgIXQ: Video unavailable. This video is not available"));
+        assert!(!super::is_unavailable(b"ERROR: This video is only available to YouTube Music Premium members"));
+        assert!(!super::is_unavailable(b"ERROR: Sign in to confirm you're not a bot. Video unavailable"));
+    }
+
     #[test]
     fn age_and_premium_detection() {
         let age = b"WARNING: [youtube] abc: This video is age-restricted and YouTube is requiring account age-verification; some formats may be missing\nERROR: unable to download video data: HTTP Error 403: Forbidden";

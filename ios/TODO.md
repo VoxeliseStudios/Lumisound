@@ -2,6 +2,12 @@
 
 Full history and decisions: [`../RUST-PORT.md`](../RUST-PORT.md). Swift is views + app shell only.
 
+## Done (2026-11-16) — inventory after a reinstall
+- `LibraryManager.hasCompletedLocalScan`: set when a Documents scan runs to the end; the inventory
+  upload treats an empty library as loaded after that (was "library not loaded yet" forever on a fresh
+  install, so the server kept the old install's 5,781 ids and refused every download). The first
+  completed scan also sends the inventory, since the launch sync runs before it.
+
 ## Done (2026-11-16) — Lumi clip systems
 - `Services/LumiClipService.swift`: clips read by the Rust core (LMS3 in place, no unlocked or decoded
   copy): lossless for AAC LMS3, else `LumiRender` PCM → AVAssetWriter AAC (`LumiAudioWriter`).
