@@ -11,6 +11,10 @@ extension SettingsView {
                 Label("Help & Feature Guide", systemImage: "questionmark.circle")
                     .foregroundStyle(AppTheme.textPrimary)
             }
+            NavigationLink(destination: PerformanceMonitorView()) {
+                Label("Performance Monitor", systemImage: "gauge.with.dots.needle.67percent")
+                    .foregroundStyle(AppTheme.textPrimary)
+            }
             NavigationLink(destination: BugReportView()) {
                 Label("Report a Bug", systemImage: "ladybug")
                     .foregroundStyle(AppTheme.textPrimary)

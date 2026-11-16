@@ -12,8 +12,8 @@ import MetricKit
 ///
 /// Two independent sources, since no single public iOS API covers both CPU
 /// and GPU in real time:
-///  1. `CPUSampler` — coarse system-wide CPU load every 60s via Darwin's
-///     `host_cpu_load_info`, the same counters `top`/Activity Monitor read.
+///  1. Live sampling moved to the Rust core (`PerformanceTelemetryService`,
+///     rust/core/src/perf.rs): per-thread CPU, GPU time, power, memory, frames.
 ///  2. `MetricSubscriber` — Apple's own MetricKit daily aggregate, which is
 ///     the ONLY public API surface exposing GPU usage on iOS at all; there
 ///     is no real-time per-frame GPU-utilization query available to apps.
@@ -22,74 +22,10 @@ enum PerformanceMonitorService {
     /// calls — must be set up before/at launch so MetricKit doesn't miss the
     /// registration window and so CPU sampling covers the whole session.
     static func start() {
-        CPUSampler.shared.start()
+        // Live CPU/GPU/memory/frames now come from the Rust sampler
+        // (PerformanceTelemetryService); the 60 s system-load logger it
+        // replaced is gone.
         MXMetricManager.shared.add(MetricSubscriber.shared)
-    }
-}
-
-// MARK: - CPUSampler (periodic system CPU load)
-
-/// Samples system-wide CPU load (not just this process) every 60s via
-/// `host_cpu_load_info` — cumulative tick counts since boot, diffed between
-/// two samples to get a per-interval percentage, same technique `top` uses.
-private final class CPUSampler {
-    static let shared = CPUSampler()
-
-    private var timer: Timer?
-    private var lastTicks: host_cpu_load_info_data_t?
-
-    func start() {
-        guard timer == nil else { return }
-        sample() // seeds `lastTicks` immediately rather than waiting 60s for a first reading
-        let t = Timer(timeInterval: 60, repeats: true) { [weak self] _ in
-            self?.sample()
-        }
-        RunLoop.main.add(t, forMode: .common)
-        timer = t
-    }
-
-    private func sample() {
-        guard let ticks = Self.currentTicks() else { return }
-        defer { lastTicks = ticks }
-        guard let last = lastTicks else { return }
-
-        // Double subtraction (never traps on underflow) rather than raw
-        // UInt32 arithmetic — the tick counters are monotonic in practice,
-        // but this stays safe even across the rare edge case (counter
-        // wraparound after a very long uptime) instead of crashing.
-        let userDelta = Double(ticks.cpu_ticks.0) - Double(last.cpu_ticks.0)
-        let systemDelta = Double(ticks.cpu_ticks.1) - Double(last.cpu_ticks.1)
-        let idleDelta = Double(ticks.cpu_ticks.2) - Double(last.cpu_ticks.2)
-        let niceDelta = Double(ticks.cpu_ticks.3) - Double(last.cpu_ticks.3)
-        let total = userDelta + systemDelta + idleDelta + niceDelta
-        guard total > 0 else { return }
-
-        let userPct = userDelta / total * 100
-        let systemPct = systemDelta / total * 100
-        let idlePct = idleDelta / total * 100
-
-        appLog(
-            String(format: "CPU load — user %.1f%% system %.1f%% idle %.1f%%", userPct, systemPct, idlePct),
-            category: "performance",
-            extra: [
-                "cpuUserPct": String(format: "%.1f", userPct),
-                "cpuSystemPct": String(format: "%.1f", systemPct),
-                "cpuIdlePct": String(format: "%.1f", idlePct),
-                "thermalState": ProcessInfo.processInfo.thermalState.lumisoundDescription,
-            ]
-        )
-    }
-
-    private static func currentTicks() -> host_cpu_load_info_data_t? {
-        var size = mach_msg_type_number_t(MemoryLayout<host_cpu_load_info_data_t>.stride / MemoryLayout<integer_t>.stride)
-        var info = host_cpu_load_info_data_t()
-        let result = withUnsafeMutablePointer(to: &info) { ptr -> kern_return_t in
-            ptr.withMemoryRebound(to: integer_t.self, capacity: Int(size)) {
-                host_statistics(mach_host_self(), HOST_CPU_LOAD_INFO, $0, &size)
-            }
-        }
-        guard result == KERN_SUCCESS else { return nil }
-        return info
     }
 }
 
@@ -133,6 +69,7 @@ private final class MetricSubscriber: NSObject, MXMetricManagerSubscriber {
                 extra["cumulativeGPUTimeSeconds"] = String(format: "%.1f", gpu.converted(to: .seconds).value)
             }
             appLog("MetricKit daily CPU/GPU report", category: "performance", extra: extra)
+            reportDailyMetrics(payload)
 
             // WHY the app stopped running, which nothing here reported before.
             //
@@ -152,6 +89,42 @@ private final class MetricSubscriber: NSObject, MXMetricManagerSubscriber {
             // backgrounded, or an ordinary exit that was never a crash at all.
             reportExitMetrics(payload)
         }
+    }
+
+    /// Apple's own daily view of the same things the live sampler measures —
+    /// the reference to check it against: CPU/GPU time, scroll hitch rate,
+    /// peak memory, launch and resume times, hang time, disk writes, display.
+    private func reportDailyMetrics(_ p: MXMetricPayload) {
+        var d: [String: Any] = ["periodStart": Self.iso(p.timeStampBegin), "periodEnd": Self.iso(p.timeStampEnd), "appVersion": p.latestApplicationVersion]
+        if let v = p.cpuMetrics?.cumulativeCPUTime { d["cpuSeconds"] = v.converted(to: .seconds).value }
+        if let v = p.cpuMetrics?.cumulativeCPUInstructions { d["cpuInstructions"] = v.value }
+        if let v = p.gpuMetrics?.cumulativeGPUTime { d["gpuSeconds"] = v.converted(to: .seconds).value }
+        if let v = p.animationMetrics?.scrollHitchTimeRatio { d["scrollHitchMsPerS"] = v.value }
+        if let v = p.memoryMetrics?.peakMemoryUsage { d["peakMemoryMb"] = v.converted(to: .megabytes).value }
+        if let v = p.memoryMetrics?.averageSuspendedMemory.averageMeasurement { d["suspendedMemoryMb"] = v.converted(to: .megabytes).value }
+        if let v = p.diskIOMetrics?.cumulativeLogicalWrites { d["diskWritesMb"] = v.converted(to: .megabytes).value }
+        if let v = p.displayMetrics?.averagePixelLuminance?.averageMeasurement { d["avgPixelLuminanceApl"] = v.value }
+        if let v = p.cellularConditionMetrics?.histogrammedCellularConditionTime { d["cellularBuckets"] = v.totalBucketCount }
+        if let h = p.applicationResponsivenessMetrics?.histogrammedApplicationHangTime { d["hangBuckets"] = Self.histogram(h) }
+        if let h = p.applicationLaunchMetrics?.histogrammedTimeToFirstDraw { d["launchFirstDraw"] = Self.histogram(h) }
+        if let h = p.applicationLaunchMetrics?.histogrammedApplicationResumeTime { d["resume"] = Self.histogram(h) }
+        if let t = p.applicationTimeMetrics {
+            d["foregroundMin"] = t.cumulativeForegroundTime.converted(to: .minutes).value
+            d["backgroundAudioMin"] = t.cumulativeBackgroundAudioTime.converted(to: .minutes).value
+        }
+        RemoteLogger.log(category: "performance", event: "metrickit_daily", level: "info",
+                         message: "MetricKit daily performance", detail: d)
+    }
+
+    /// "<start>-<end> <unit>: count" for each non-empty bucket.
+    private static func histogram<U: Unit>(_ h: MXHistogram<U>) -> [String] {
+        var out: [String] = []
+        let e = h.bucketEnumerator
+        while let b = e.nextObject() as? MXHistogramBucket<U> {
+            guard b.bucketCount > 0 else { continue }
+            out.append("\(Int(b.bucketStart.value))-\(Int(b.bucketEnd.value)) \(b.bucketStart.unit.symbol): \(b.bucketCount)")
+        }
+        return out
     }
 
     /// Reports the OS's own breakdown of how this app's recent sessions ended.

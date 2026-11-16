@@ -2,6 +2,20 @@
 
 Full history and decisions: [`RUST-PORT.md`](../../RUST-PORT.md).
 
+## Done (2026-11-15) — performance telemetry + LMS3 engine tests
+- `perf.rs`: sampler thread (1 s fg / 5 s bg): per-thread CPU with names (Mach THREAD_EXTENDED_INFO),
+  process + system CPU, phys footprint + `os_proc_available_memory`, process GPU time / energy (mW) /
+  wakeups (TASK_POWER_INFO_V2); frames from the app (0.5 ms histogram: p50/p95/p99, dropped, hitches,
+  ≥100 ms, frozen ≥700 ms, hitch ratio ms/s per screen); thermal time-in-state; battery drain.
+  `perf_take_window` judges (`interesting` + reasons). Linux reads /proc (tests). iOS Mach code
+  type-checked for aarch64-apple-ios in isolation (full core needs the Apple SDK).
+- `tests/engine_lms3.rs`: LMS3 through the engine — identical output from the top (Opus/Ogg, Opus/WebM,
+  AAC, FLAC, MP3), honest seeks (audio = continuous play at the reported position), effects, gapless +
+  crossfade; `LUMI_LMS3_DIR` for real tracks (12 cloud tracks pass, decode 240–280x real time).
+- LMS3 seeks: MP3 backs up over the bit reservoir like symphonia's reader; Opus decodes 80 ms of
+  warm-up packets discarded (opus.rs honours a packet trim larger than the pre-skip) and drops the
+  pre-skip on the target — post-seek residual −46…−66 dB vs ≈−30 dB for a cold decoder.
+
 ## Done (2026-11-15) — LMS3 + Premium upgrades
 - `lock.rs`: `lms_convert` writes LMS3 (falls back to the LMSLOCK1 wrap for video/undecodable sources);
   `lms_relock_in_place` brings plain/LMSLOCK1/2 `.lms` up to LMS3 in place (vault xattr carried);

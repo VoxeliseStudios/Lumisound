@@ -937,6 +937,11 @@ pub struct Lms3Reader {
     header: Header,
     index: Vec<Entry>,
     next: usize,
+    /// Packets before this index are decoder warm-up after a seek (Opus):
+    /// returned fully trimmed.
+    warmup_until: usize,
+    /// Opus pre-skip: the decoded-sample offset of the music timeline.
+    pre_skip: u32,
     /// Absolute stream position the next read starts at.
     pos: u64,
     meta: MetadataLog,
@@ -951,15 +956,33 @@ impl Lms3Reader {
         self.header.time_base.map(|(n, d)| TimeBase::new(n, d)).unwrap_or_else(|| TimeBase::new(1, self.header.sample_rate.max(1)))
     }
 
-    /// Frames of decoder warm-up to back off before a seek target: Opus
-    /// needs 80 ms of pre-roll to converge after a jump.
-    fn preroll(&self) -> u64 {
-        if self.header.codec_type() == symphonia::core::codecs::CODEC_TYPE_OPUS {
-            let tb = self.time_base();
-            tb.calc_timestamp(symphonia::core::units::Time::new(0, 0.08))
-        } else {
-            0
+    /// Bytes of the MP3 bit reservoir packet `i` reads from earlier frames
+    /// (Layer III `main_data_begin`; 0 for anything else).
+    fn mp3_reservoir(&mut self, i: usize) -> u64 {
+        let e = self.index[i];
+        let mut b = [0u8; 8];
+        let n = (e.size as usize).min(b.len());
+        if self.reader.seek(SeekFrom::Start(self.header.payload_offset + e.off)).is_err() || self.reader.read_exact(&mut b[..n]).is_err() {
+            return 0;
         }
+        // Force the next read to re-seek (the stream moved).
+        self.pos = u64::MAX;
+        crate::lock::apply_mask(&mut b[..n], e.off);
+        mp3_main_data_begin(&b[..n])
+    }
+}
+
+/// `main_data_begin` of an MPEG audio Layer III frame (bytes from its start).
+pub fn mp3_main_data_begin(f: &[u8]) -> u64 {
+    if f.len() < 6 || f[0] != 0xff || f[1] & 0xe0 != 0xe0 || (f[1] >> 1) & 3 != 1 {
+        return 0;
+    }
+    let mpeg1 = (f[1] >> 3) & 3 == 3;
+    let side = if f[1] & 1 == 0 { 6 } else { 4 };
+    match (mpeg1, f.get(side), f.get(side + 1)) {
+        (true, Some(a), Some(b)) => ((*a as u64) << 1) | (*b as u64 >> 7),
+        (false, Some(a), _) => *a as u64,
+        _ => 0,
     }
 }
 
@@ -987,10 +1010,14 @@ impl FormatReader for Lms3Reader {
             Some(l) => l,
             None => return decode_error("lms3: bad header or index"),
         };
+        let pre_skip = header.delay.unwrap_or_else(|| match extra.as_deref() {
+            Some(h) if h.len() >= 12 && &h[..8] == b"OpusHead" => u16::from_le_bytes([h[10], h[11]]) as u32,
+            _ => 0,
+        });
         let params = header.codec_params(extra);
         let pos = header.payload_offset;
         source.seek(SeekFrom::Start(pos))?;
-        Ok(Lms3Reader { reader: source, tracks: vec![Track::new(0, params)], header, index, next: 0, pos, meta: MetadataLog::default() })
+        Ok(Lms3Reader { reader: source, tracks: vec![Track::new(0, params)], header, index, next: 0, warmup_until: 0, pre_skip, pos, meta: MetadataLog::default() })
     }
 
     fn cues(&self) -> &[Cue] {
@@ -1009,11 +1036,34 @@ impl FormatReader for Lms3Reader {
         if self.index.is_empty() {
             return seek_error(symphonia::core::errors::SeekErrorKind::Unseekable);
         }
-        let target = required_ts.saturating_sub(self.preroll());
-        // Last packet starting at or before the target.
-        let i = self.index.partition_point(|e| e.ts <= target).saturating_sub(1);
+        // The packet holding the target (last one starting at or before it),
+        // as symphonia's own readers land; the decoder converges from there.
+        let mut i = self.index.partition_point(|e| e.ts <= required_ts).saturating_sub(1);
+        // MP3: start at the oldest frame whose bytes the target frame's bit
+        // reservoir reaches back into (up to 3), exactly like symphonia's
+        // MP3 reader, so the first frame decodes in full.
+        if self.header.codec_type() == symphonia::core::codecs::CODEC_TYPE_MP3 {
+            let reach = self.mp3_reservoir(i);
+            let mut back = 0u64;
+            let mut k = 0;
+            while reach > 0 && k < 3 && i > 0 && back < reach {
+                i -= 1;
+                k += 1;
+                back += self.index[i].size as u64;
+            }
+        }
+        let actual_ts = self.index[i].ts;
+        // Opus: decode ~80 ms before the target with the output discarded
+        // (RFC 6716 pre-roll), so the decoder is warm at the target.
+        self.warmup_until = 0;
+        if self.header.codec_type() == symphonia::core::codecs::CODEC_TYPE_OPUS && i > 0 {
+            let back = self.time_base().calc_timestamp(symphonia::core::units::Time::new(0, 0.08));
+            let from = self.index.partition_point(|e| e.ts + back < actual_ts).min(i);
+            self.warmup_until = i;
+            i = from;
+        }
         self.next = i;
-        Ok(SeekedTo { track_id: 0, required_ts, actual_ts: self.index[i].ts })
+        Ok(SeekedTo { track_id: 0, required_ts, actual_ts })
     }
 
     fn tracks(&self) -> &[Track] {
@@ -1032,8 +1082,19 @@ impl FormatReader for Lms3Reader {
         self.reader.read_exact(&mut data)?;
         crate::lock::apply_mask(&mut data, e.off);
         self.pos = at + e.size as u64;
+        let warmup = self.next < self.warmup_until;
         self.next += 1;
-        Ok(Packet::new_trimmed_from_boxed_slice(0, e.ts, e.dur, e.trim_start, e.trim_end, data.into_boxed_slice()))
+        // Warm-up packets are decoded and discarded whole; the target packet
+        // then drops the stream's pre-skip, as a cold decoder would, so the
+        // music lands exactly on the timestamp the seek reported.
+        let trim_start = if warmup {
+            crate::lms3_export::opus_samples(&data) as u32
+        } else if self.warmup_until > 0 && self.next == self.warmup_until + 1 {
+            e.trim_start.max(self.pre_skip)
+        } else {
+            e.trim_start
+        };
+        Ok(Packet::new_trimmed_from_boxed_slice(0, e.ts, e.dur, trim_start, e.trim_end, data.into_boxed_slice()))
     }
 
     fn into_inner(self: Box<Self>) -> MediaSourceStream {

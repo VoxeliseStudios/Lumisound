@@ -63,6 +63,8 @@ struct LumisoundApp: App {
         BackgroundRefreshService.register()
         LumisoundTrackVaultService.register()
         PerformanceMonitorService.start()
+        // Live CPU/GPU/power/memory/frames/thermal telemetry (Rust sampler).
+        PerformanceTelemetryService.shared.start()
         // Started here, in init, because a launch-time stall is one of the
         // freezes worth catching and a View's .task would begin watching only
         // after the very work it needs to observe has already run.

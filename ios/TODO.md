@@ -2,6 +2,19 @@
 
 Full history and decisions: [`../RUST-PORT.md`](../RUST-PORT.md). Swift is views + app shell only.
 
+## Done (2026-11-15) — performance telemetry
+- `Services/PerformanceTelemetryService.swift`: display-link frame probe (batched 1/s), thermal/battery/
+  Low Power/foreground/screen into the core sampler; minute windows uploaded as `perf_window` when
+  flagged, `perf_heartbeat` every 15 min, `perf_thermal` on serious/critical.
+- `Views/PerformanceMonitorView.swift` (Settings → Help → Performance Monitor): live CPU/GPU/power/
+  memory/fps/thermal, CPU by thread, last minute's window.
+- MetricKit daily payload → `metrickit_daily` event (CPU/GPU time, scroll hitch rate, peak memory,
+  launch/resume/hang histograms, disk writes). The 60 s Swift system-CPU logger was removed.
+
+## Open (telemetry)
+- Per-view screen names beyond the tab bar (sheets like Now Playing full screen report as their tab).
+- Bridge admin page: chart perf_window / metrickit_daily per device and app version.
+
 ## Done (2026-11-15) — Lumisound Audio (LMS3) + Premium
 - Download format "Lumisound Audio (Best)" (`lumi`) is the new default (explicit choices kept).
 - The 5-minute library pass converts every older `.lms` (plain/LMSLOCK1/2) to LMS3 in place

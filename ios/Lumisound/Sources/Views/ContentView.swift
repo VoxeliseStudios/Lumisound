@@ -368,6 +368,7 @@ struct ClassicContentView: View {
                 let names = ["Library", "Playing", "Queue", "Cloud Services", "Friends", "Profile", "Settings"]
                 let name = names.indices.contains(newValue) ? names[newValue] : "tab \(newValue)"
                 appBreadcrumb("Switched to \(name) tab")
+                PerformanceTelemetryService.shared.setScreen(name)
                 // Screen-view telemetry — there was previously no record at
                 // all of what screen a user is actually looking at (only
                 // the crash-context breadcrumb above, which stays on-device

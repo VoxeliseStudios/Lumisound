@@ -86,8 +86,12 @@ impl Decoder for OpusDecoder {
             Ok(n) => n,
             Err(_) => return decode_error("opus: invalid packet"),
         };
-        let drop = self.skip.min(n);
-        self.skip -= drop;
+        // Start trim: the stream's pre-skip (counted down across packets),
+        // or a container's own trim when larger — LMS3 marks decoder
+        // warm-up packets after a seek as fully trimmed, so the decoder
+        // converges on them and the music starts exactly at the target.
+        let drop = self.skip.max(packet.trim_start() as usize).min(n);
+        self.skip -= self.skip.min(n);
         // End trim from the container (Ogg's final granule position): the
         // encoder pads the last frame, which played as a short silence.
         // (Its start trim is the pre-skip, already dropped above.)
