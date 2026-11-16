@@ -12,6 +12,21 @@ type Stream = std::os::unix::net::UnixStream;
 #[cfg(windows)]
 type Stream = std::fs::File;
 
+#[derive(Debug)]
+pub enum SetError {
+    Rejected(String),
+    Io(String),
+}
+
+impl std::fmt::Display for SetError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SetError::Rejected(m) => write!(f, "Discord rejected the activity: {m}"),
+            SetError::Io(m) => f.write_str(m),
+        }
+    }
+}
+
 pub struct Ipc {
     client_id: String,
     stream: Option<Stream>,
@@ -94,10 +109,29 @@ impl Ipc {
         Ok(())
     }
 
-    pub fn set_activity(&mut self, activity: Option<Value>) -> Result<(), String> {
-        let msg = json!({"cmd": "SET_ACTIVITY", "args": {"pid": std::process::id(), "activity": activity}, "nonce": uuid::Uuid::new_v4().to_string()});
-        self.send(OP_FRAME, &msg)?;
-        self.recv().map(|_| ())
+    /// Set (or clear) the activity. `Err(Rejected)` when Discord answered
+    /// with an ERROR (e.g. a field this client doesn't know); any other
+    /// error means the connection is gone.
+    pub fn set_activity(&mut self, activity: Option<Value>) -> Result<(), SetError> {
+        let nonce = uuid::Uuid::new_v4().to_string();
+        let msg = json!({"cmd": "SET_ACTIVITY", "args": {"pid": std::process::id(), "activity": activity}, "nonce": nonce});
+        self.send(OP_FRAME, &msg).map_err(SetError::Io)?;
+        // The reply carries our nonce; skip anything else Discord sends.
+        for _ in 0..8 {
+            let (op, v) = self.recv().map_err(SetError::Io)?;
+            if op == OP_CLOSE {
+                self.stream = None;
+                return Err(SetError::Io(format!("Discord closed the connection: {v}")));
+            }
+            if v["nonce"] != nonce.as_str() {
+                continue;
+            }
+            if v["evt"] == "ERROR" {
+                return Err(SetError::Rejected(v["data"]["message"].as_str().unwrap_or("unknown error").to_string()));
+            }
+            return Ok(());
+        }
+        Err(SetError::Io("no reply to SET_ACTIVITY".into()))
     }
 
     pub fn close(&mut self) {

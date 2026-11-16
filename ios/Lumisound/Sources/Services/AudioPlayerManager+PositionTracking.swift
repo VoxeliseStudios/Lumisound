@@ -461,6 +461,12 @@ extension AudioPlayerManager {
         parts.append(isUsingRustEngine ? "Rust engine" : isUsingOpusPlayer ? "Compatibility player" : "System engine")
         if let tag = song.formatTag {
             parts.append(tag)
+            // LMS3 knows its real bitrate and whether it came as Premium
+            // audio — the same facts the Now Playing badges show.
+            if let badge = song.lms3Badge {
+                if !badge.lossless, badge.bitrateKbps > 0 { parts.append("\(badge.bitrateKbps) kbps") }
+                if badge.premium { parts.append("Premium") }
+            }
         } else if song.sourceTrackID?.hasPrefix("youtube:") == true {
             parts.append("Stream")
         }

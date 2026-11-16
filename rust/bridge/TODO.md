@@ -17,9 +17,7 @@ Full history and decisions: [`RUST-PORT.md`](../../RUST-PORT.md).
 
 ## Incident 2026-11-16 — cloud library delete-all
 - A fresh install (v2.0.0.56, empty library) ran cloud "Delete All" (confirmed) and "Clear all backups";
-  3,501 files were erased before the trash existed. Metadata survives in the nightly DB dump, the old
-  inventory in a snapshot table, 556 originals in `.lms3-backup/originals/`; the rest re-download by
-  source id. Restore only on the owner's word.
+  3,501 files were erased before the trash existed. The owner confirmed it was intended: no restore.
 
 ## Done (2026-11-16) — admin performance
 - `GET /admin/api/perf?hours=` (1..720): hourly CPU / power / hitch / fps / peak memory / underruns from

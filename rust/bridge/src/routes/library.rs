@@ -1077,7 +1077,43 @@ async fn put_playback(State(st): State<AppState>, u: User, J(b): J<PlaybackBody>
     .bind(b.engine.as_deref().map(|e| e.chars().take(120).collect::<String>()))
     .execute(&st.db)
     .await?;
+    push_playback_if_changed(&st, &u.id, &b);
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Last pushed playback per user: (what is shown, track start in epoch s).
+static LAST_PLAYBACK_PUSH: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, (String, f64)>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// Push the new state over `/ws/live` (`playback_state`, same shape as GET
+/// `/user/playback-state`) when it changed in a way a viewer would see:
+/// another track, play/pause, a seek of more than 2 s, new art or engine
+/// text. The app reports every ~5 s while playing; the Rich Presence daemon
+/// listens here instead of polling.
+fn push_playback_if_changed(st: &AppState, user: &str, b: &PlaybackBody) {
+    let now = chrono::Utc::now();
+    let epoch = now.timestamp_millis() as f64 / 1000.0;
+    let shown = serde_json::to_string(&(&b.song_id, &b.title, &b.artist, b.is_playing, &b.artwork_url, &b.engine, &b.track_url)).unwrap_or_default();
+    let start = epoch - b.position_seconds;
+    {
+        let mut m = LAST_PLAYBACK_PUSH.lock().unwrap();
+        if let Some((prev, prev_start)) = m.get(user) {
+            if *prev == shown && (!b.is_playing || (start - prev_start).abs() <= 2.0) {
+                return;
+            }
+        }
+        m.insert(user.to_string(), (shown, start));
+    }
+    st.push_live(
+        user,
+        json!({"type": "playback_state", "state": {
+            "song_id": b.song_id, "title": b.title, "artist": b.artist, "track_url": b.track_url, "source": b.source,
+            "position_seconds": b.position_seconds, "duration_seconds": b.duration_seconds,
+            "updated_at": now.to_rfc3339_opts(chrono::SecondsFormat::Millis, false),
+            "is_playing": b.is_playing, "bpm": b.bpm, "artwork_url": b.artwork_url,
+            "engine": b.engine.as_deref().map(|e| e.chars().take(120).collect::<String>()),
+        }}),
+    );
 }
 
 // ---- appearance (interface style synced across devices) -------------------------------------

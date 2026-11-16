@@ -2092,12 +2092,14 @@ dependencies = [
 
 [[package]]
 name = "lumisound-rpc"
-version = "2.0.0"
+version = "2.2.0"
 dependencies = [
  "chrono",
  "reqwest",
  "rpassword",
+ "rustls",
  "serde_json",
+ "tungstenite 0.29.0",
  "uuid",
 ]
 
@@ -4379,8 +4381,11 @@ dependencies = [
  "httparse",
  "log",
  "rand 0.9.5",
+ "rustls",
+ "rustls-pki-types",
  "sha1",
  "thiserror 2.0.21",
+ "webpki-roots 0.26.11",
 ]
 
 [[package]]

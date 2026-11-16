@@ -4,6 +4,7 @@
 //! one-time sign-in and stores a long-lived Rich Presence token.
 
 mod ipc;
+mod live;
 mod login;
 
 use serde_json::{Value, json};
@@ -13,6 +14,11 @@ use std::time::{Duration, Instant};
 pub const DEFAULT_BRIDGE_URL: &str = "https://lumisound-bridge.xenusanimations.studio";
 const STALE_AFTER_SECS: f64 = 120.0;
 const MIN_SEND_INTERVAL_SECS: f64 = 4.5;
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// While live pushes flow, a slow poll still refreshes `updated_at` (so a
+/// long track isn't judged stale) and catches anything a push missed.
+const LIVE_POLL_SECS: u64 = 30;
+const RELEASES_API: &str = "https://api.github.com/repos/VoxeliseStudios/Lumisound/releases?per_page=50";
 
 pub fn log(msg: &str) {
     println!("{}  {msg}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"));
@@ -59,7 +65,7 @@ struct Bridge {
 
 impl Bridge {
     fn get(&self, path: &str) -> Result<Value, String> {
-        let mut rq = self.http.get(format!("{}{path}", self.base)).header("User-Agent", "lumisound-discord-rpc/2.0");
+        let mut rq = self.http.get(format!("{}{path}", self.base)).header("User-Agent", format!("lumisound-discord-rpc/{VERSION}"));
         if let Some(t) = &self.token {
             rq = rq.bearer_auth(t);
         }
@@ -121,8 +127,51 @@ fn info_line(state: &Value) -> String {
     parts.join(" · ")
 }
 
+/// What the member list shows after "Listening to" (Discord's
+/// `status_display_type`): the app name, the artist, or the song title.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum StatusDisplay {
+    App,
+    Artist,
+    Title,
+}
+
+impl StatusDisplay {
+    pub fn from_config(v: Option<&str>) -> Self {
+        match v.map(str::to_ascii_lowercase).as_deref() {
+            Some("app") | Some("name") | Some("lumisound") => StatusDisplay::App,
+            Some("artist") | Some("state") => StatusDisplay::Artist,
+            _ => StatusDisplay::Title,
+        }
+    }
+}
+
+pub struct CardOpts<'a> {
+    pub large_image: Option<&'a str>,
+    pub small_image: Option<&'a str>,
+    pub show_buttons: bool,
+    pub show_when_paused: bool,
+    pub status_display: StatusDisplay,
+    /// Newer activity fields (`status_display_type`, `details_url`). Turned
+    /// off for the session if this Discord client rejects them.
+    pub rich_fields: bool,
+}
+
+/// Fields older Discord clients reject; dropped when they do.
+const RICH_FIELDS: [&str; 2] = ["status_display_type", "details_url"];
+
+fn without_rich_fields(mut a: Value) -> Value {
+    if let Some(o) = a.as_object_mut() {
+        for k in RICH_FIELDS {
+            o.remove(k);
+        }
+    }
+    a
+}
+
 /// Discord activity for a playback state, or None to clear it.
-pub fn build_activity(state: &Value, bridge_base: &str, large_image: Option<&str>, small_image: Option<&str>, show_buttons: bool, show_when_paused: bool) -> Option<Value> {
+pub fn build_activity(state: &Value, bridge_base: &str, o: &CardOpts) -> Option<Value> {
+    let (large_image, small_image, show_buttons, show_when_paused) = (o.large_image, o.small_image, o.show_buttons, o.show_when_paused);
     let title = state["title"].as_str().map(str::trim).filter(|t| !t.is_empty())?;
     let playing = state["is_playing"].as_bool().unwrap_or(false);
     if !playing && !show_when_paused {
@@ -165,9 +214,20 @@ pub fn build_activity(state: &Value, bridge_base: &str, large_image: Option<&str
     if !assets.is_empty() {
         a["assets"] = Value::Object(assets);
     }
-    if show_buttons {
-        if let Some(url) = state["track_url"].as_str().filter(|s| s.starts_with("https://")) {
+    let track_url = state["track_url"].as_str().filter(|s| s.starts_with("https://") && s.len() <= 256);
+    if show_buttons
+        && let Some(url) = track_url {
             a["buttons"] = json!([{"label": "Listen", "url": url}]);
+        }
+    if o.rich_fields {
+        match o.status_display {
+            StatusDisplay::App => {}
+            StatusDisplay::Artist if a.get("state").is_some() => a["status_display_type"] = json!(1),
+            _ => a["status_display_type"] = json!(2),
+        }
+        // The song title links to the track, like Spotify's card.
+        if let Some(url) = track_url {
+            a["details_url"] = json!(url);
         }
     }
     Some(a)
@@ -198,6 +258,32 @@ fn needs_send(prev: Option<&Value>, next: Option<&Value>) -> bool {
     }
 }
 
+/// Newest `rpc/v*` release on GitHub, if newer than this build.
+fn newer_release() -> Option<String> {
+    let http = reqwest::blocking::Client::builder().timeout(Duration::from_secs(15)).build().ok()?;
+    let v: Value = http.get(RELEASES_API).header("User-Agent", format!("lumisound-discord-rpc/{VERSION}")).send().ok()?.json().ok()?;
+    let tag = v.as_array()?.iter().filter_map(|r| r["tag_name"].as_str()).find(|t| t.starts_with("rpc/v"))?;
+    let parse = |s: &str| -> Vec<u64> { s.split('.').map(|p| p.parse().unwrap_or(0)).collect() };
+    (parse(tag.trim_start_matches("rpc/v")) > parse(VERSION)).then(|| tag.to_string())
+}
+
+fn spawn_update_check() {
+    let _ = std::thread::Builder::new().name("lumisound-update-check".into()).spawn(|| loop {
+        if let Some(tag) = newer_release() {
+            log(&format!("Update available: {} (you have v{VERSION}) — https://github.com/VoxeliseStudios/Lumisound/releases/tag/{tag}", tag.trim_start_matches("rpc/")));
+        }
+        std::thread::sleep(Duration::from_secs(24 * 3600));
+    });
+}
+
+/// Keep the newer of two playback states (by `updated_at`).
+fn newer(current: Option<Value>, incoming: Value) -> Option<Value> {
+    match (current.as_ref().and_then(sampled_at), sampled_at(&incoming)) {
+        (Some(a), Some(b)) if b + 0.001 < a => current,
+        _ => Some(incoming),
+    }
+}
+
 fn run() -> Result<(), String> {
     let path = default_config_path();
     let raw = std::fs::read_to_string(&path).map_err(|_| format!("No config at {} — run `lumisound-discord-rpc login` first.", path.display()))?;
@@ -207,8 +293,11 @@ fn run() -> Result<(), String> {
         token: config["access_token"].as_str().map(str::to_string),
         http: reqwest::blocking::Client::builder().timeout(Duration::from_secs(10)).build().map_err(|e| e.to_string())?,
     };
-    if bridge.token.is_none() {
+    let Some(token) = bridge.token.clone() else {
         return Err("config.json has no access_token — run `lumisound-discord-rpc login`.".into());
+    };
+    if config["check_updates"].as_bool() != Some(false) {
+        spawn_update_check();
     }
     let mut rpc = loop {
         match bridge.get("/user/discord-rpc-config") {
@@ -222,11 +311,30 @@ fn run() -> Result<(), String> {
     let pick = |k: &str, rpc: &Value| config[k].as_str().or(rpc[k].as_str()).map(str::to_string);
     let mut client_id = pick("discord_client_id", &rpc).ok_or("no Discord client id (set discord_client_id)")?;
     let poll = Duration::from_secs_f64(config["poll_interval_seconds"].as_f64().unwrap_or(1.0).max(0.5));
+    let status_display = StatusDisplay::from_config(config["status_display"].as_str());
+    let mut rich_fields = config["discord_new_fields"].as_bool().unwrap_or(true);
     let mut conn = ipc::Ipc::new(&client_id);
     let (mut last_activity, mut last_sent) = (None::<Value>, 0.0f64);
     let mut last_rpc_check = Instant::now();
-    log(&format!("Lumisound Rich Presence running (bridge {})", bridge.base));
+    // Live pushes (instant); polling covers gaps and older bridges.
+    let (tx, rx) = std::sync::mpsc::channel();
+    let live_up = if config["live_updates"].as_bool() != Some(false) { live::spawn(&bridge.base, &token, tx) } else { std::sync::Arc::new(Default::default()) };
+    let mut state: Option<Value> = None;
+    let mut next_poll = Instant::now();
+    // Discord isn't always running: retry its socket with backoff instead of
+    // scanning every candidate path each second.
+    let (mut ipc_backoff, mut next_ipc_try, mut waiting_logged) = (Duration::from_secs(1), Instant::now(), false);
+    log(&format!("Lumisound Rich Presence v{VERSION} running (bridge {})", bridge.base));
     loop {
+        match rx.recv_timeout(poll) {
+            Ok(live::Event::State(s)) => state = newer(state.take(), s),
+            Ok(live::Event::Unauthorized) | Err(_) => {}
+        }
+        while let Ok(ev) = rx.try_recv() {
+            if let live::Event::State(s) = ev {
+                state = newer(state.take(), s);
+            }
+        }
         if last_rpc_check.elapsed() > Duration::from_secs(300) {
             if let Ok(n) = bridge.get("/user/discord-rpc-config") {
                 if let Some(id) = pick("discord_client_id", &n).filter(|id| *id != client_id) {
@@ -244,36 +352,68 @@ fn run() -> Result<(), String> {
                 let _ = conn.set_activity(None);
                 conn.close();
             }
-            std::thread::sleep(poll);
             continue;
         }
-        if !conn.connected() {
-            if let Err(e) = conn.connect() {
-                let _ = e;
-                std::thread::sleep(poll);
-                continue;
+        if Instant::now() >= next_poll {
+            let live = live_up.load(std::sync::atomic::Ordering::Relaxed);
+            match bridge.get("/user/playback-state") {
+                Ok(s) => {
+                    state = newer(state.take(), s);
+                    next_poll = Instant::now() + if live { Duration::from_secs(LIVE_POLL_SECS) } else { poll };
+                }
+                Err(e) => {
+                    log(&format!("bridge request failed ({e}); retrying"));
+                    next_poll = Instant::now() + poll.max(Duration::from_secs(5));
+                }
             }
         }
-        let state = match bridge.get("/user/playback-state") {
-            Ok(s) => s,
-            Err(e) => {
-                log(&format!("bridge request failed ({e}); retrying"));
-                std::thread::sleep(poll.max(Duration::from_secs(5)));
+        if !conn.connected() {
+            if Instant::now() < next_ipc_try {
                 continue;
             }
-        };
+            if conn.connect().is_err() {
+                if !waiting_logged {
+                    log("Waiting for Discord to start");
+                    waiting_logged = true;
+                }
+                next_ipc_try = Instant::now() + ipc_backoff;
+                ipc_backoff = (ipc_backoff * 2).min(Duration::from_secs(30));
+                continue;
+            }
+            (ipc_backoff, waiting_logged) = (Duration::from_secs(1), false);
+            // A fresh connection has no activity yet.
+            last_activity = None;
+        }
+        let Some(st) = state.as_ref() else { continue };
         let (large, small) = (pick("large_image", &rpc), pick("small_image", &rpc));
-        let show_buttons = config["show_buttons"].as_bool().or(rpc["show_buttons"].as_bool()).unwrap_or(true);
-        let show_paused = config["show_when_paused"].as_bool().unwrap_or(false);
-        let activity = build_activity(&state, &bridge.base, large.as_deref(), small.as_deref(), show_buttons, show_paused);
+        let opts = CardOpts {
+            large_image: large.as_deref(),
+            small_image: small.as_deref(),
+            show_buttons: config["show_buttons"].as_bool().or(rpc["show_buttons"].as_bool()).unwrap_or(true),
+            show_when_paused: config["show_when_paused"].as_bool().unwrap_or(false),
+            status_display,
+            rich_fields,
+        };
+        let activity = build_activity(st, &bridge.base, &opts);
         let t = now();
         // Changes go out at once (Discord allows 5 updates per 20 s, and a
         // track change or seek is rare enough); otherwise refresh every few
         // seconds so a restarted Discord client picks the card back up.
         let changed = needs_send(last_activity.as_ref(), activity.as_ref());
         if changed || (activity.is_some() && t - last_sent >= MIN_SEND_INTERVAL_SECS * 3.0) {
-            match conn.set_activity(activity.clone()) {
+            let mut r = conn.set_activity(activity.clone());
+            if let (Err(ipc::SetError::Rejected(m)), true) = (&r, rich_fields) {
+                log(&format!("Discord refused the newer card fields ({m}); sending the classic card"));
+                rich_fields = false;
+                r = conn.set_activity(activity.clone().map(without_rich_fields));
+            }
+            match r {
                 Ok(()) => {
+                    last_sent = t;
+                    last_activity = activity;
+                }
+                Err(ipc::SetError::Rejected(m)) => {
+                    log(&format!("Discord rejected the activity ({m})"));
                     last_sent = t;
                     last_activity = activity;
                 }
@@ -283,16 +423,28 @@ fn run() -> Result<(), String> {
                 }
             }
         }
-        std::thread::sleep(poll);
     }
 }
 
 fn main() {
+    // rustls (live socket) needs a process-wide crypto provider; reqwest
+    // already links ring, so use that one.
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let r = match args.first().map(String::as_str) {
         Some("login") => login::main(&args[1..]),
+        Some("--version") | Some("-V") => {
+            println!("lumisound-discord-rpc {VERSION}");
+            Ok(())
+        }
         Some("--help") | Some("-h") => {
-            println!("lumisound-discord-rpc            run the Rich Presence daemon\nlumisound-discord-rpc login [--bridge-url URL] [--token TOKEN] [--identifier EMAIL_OR_USERNAME]");
+            println!(
+                "lumisound-discord-rpc            run the Rich Presence daemon\n\
+                 lumisound-discord-rpc login [--bridge-url URL] [--token TOKEN] [--identifier EMAIL_OR_USERNAME]\n\
+                 lumisound-discord-rpc --version\n\n\
+                 config.json options: status_display (\"title\" | \"artist\" | \"app\"), show_when_paused, show_buttons,\n\
+                 live_updates (default true), check_updates (default true), discord_new_fields (default true)"
+            );
             Ok(())
         }
         _ => run(),
@@ -306,11 +458,16 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn opts<'a>(large: Option<&'a str>, small: Option<&'a str>, rich: bool) -> CardOpts<'a> {
+        CardOpts { large_image: large, small_image: small, show_buttons: true, show_when_paused: false, status_display: StatusDisplay::Title, rich_fields: rich }
+    }
+
     #[test]
     fn activity_shape() {
         let st = json!({"title": "Song", "artist": "Band", "is_playing": true, "position_seconds": 10.0, "duration_seconds": 200.0,
             "artwork_url": "https://a/b.jpg", "track_url": "https://x", "engine": "Rust engine · LMS OPUS · 48 kHz", "bpm": 123.6});
-        let a = build_activity(&st, "https://br", Some("lumisound"), Some("playpause-small"), true, false).unwrap();
+        let a = build_activity(&st, "https://br", &opts(Some("lumisound"), Some("playpause-small"), false)).unwrap();
         assert_eq!(a["state"], "by Band");
         assert_eq!(a["assets"]["large_image"], "https://a/b.jpg");
         // The third line is engine info, never the title again.
@@ -320,12 +477,12 @@ mod tests {
         assert_eq!(a["buttons"][0]["label"], "Listen");
         let ts = &a["timestamps"];
         assert_eq!(ts["end"].as_i64().unwrap() - ts["start"].as_i64().unwrap(), 200_000);
-        assert!(build_activity(&json!({"title": "S", "is_playing": false}), "", None, None, true, false).is_none());
+        assert!(build_activity(&json!({"title": "S", "is_playing": false}), "", &opts(None, None, false)).is_none());
         let stale = json!({"title": "S", "is_playing": true, "updated_at": "2020-01-01T00:00:00+00:00"});
-        assert!(build_activity(&stale, "", None, None, true, false).is_none());
+        assert!(build_activity(&stale, "", &opts(None, None, false)).is_none());
         // No engine reported (older app): still not the title.
         let old = json!({"title": "Song", "is_playing": true, "artwork_url": "https://a/b.jpg"});
-        assert_eq!(build_activity(&old, "", None, None, true, false).unwrap()["assets"]["large_text"], "Lumisound");
+        assert_eq!(build_activity(&old, "", &opts(None, None, false)).unwrap()["assets"]["large_text"], "Lumisound");
     }
 
     #[test]
@@ -344,5 +501,32 @@ mod tests {
         assert!(needs_send(Some(&a), Some(&seek)));
         assert!(needs_send(Some(&a), None));
         assert!(needs_send(Some(&a), Some(&json!({"details": "T", "timestamps": {"start": 1000, "end": 5000}}))));
+    }
+
+    #[test]
+    fn rich_fields_and_fallback() {
+        let st = json!({"title": "Song", "artist": "Band", "is_playing": true, "track_url": "https://music.youtube.com/watch?v=x"});
+        let a = build_activity(&st, "", &opts(None, None, true)).unwrap();
+        assert_eq!(a["status_display_type"], 2);
+        assert_eq!(a["details_url"], "https://music.youtube.com/watch?v=x");
+        let mut o = opts(None, None, true);
+        o.status_display = StatusDisplay::Artist;
+        assert_eq!(build_activity(&st, "", &o).unwrap()["status_display_type"], 1);
+        o.status_display = StatusDisplay::App;
+        assert!(build_activity(&st, "", &o).unwrap().get("status_display_type").is_none());
+        let classic = without_rich_fields(a);
+        assert!(classic.get("status_display_type").is_none() && classic.get("details_url").is_none());
+        assert_eq!(classic["details"], "Song");
+        assert_eq!(StatusDisplay::from_config(Some("Artist")), StatusDisplay::Artist);
+        assert_eq!(StatusDisplay::from_config(None), StatusDisplay::Title);
+    }
+
+    #[test]
+    fn keeps_the_newest_state() {
+        let old = json!({"title": "A", "updated_at": "2026-11-16T08:00:00.000+00:00"});
+        let new = json!({"title": "B", "updated_at": "2026-11-16T08:00:05.000+00:00"});
+        assert_eq!(newer(Some(new.clone()), old.clone()).unwrap()["title"], "B");
+        assert_eq!(newer(Some(old), new).unwrap()["title"], "B");
+        assert_eq!(newer(None, json!({"title": "C"})).unwrap()["title"], "C");
     }
 }
