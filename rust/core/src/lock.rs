@@ -687,3 +687,189 @@ mod flag_tests {
         let _ = std::fs::remove_dir_all(d);
     }
 }
+
+// MARK: - LMS3 for the UI and AVFoundation
+
+/// What the format badges show for a library file (cached per path + mtime:
+/// rows call this while scrolling).
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq, Default)]
+pub struct LmsBadge {
+    /// 0 plain, 1/2 LMSLOCK wrap, 3 LMS3 (Lumisound Audio).
+    pub version: u8,
+    /// Codec inside an LMS3 file ("opus", "aac", "flac", …), else "".
+    pub codec: String,
+    pub bitrate_kbps: u32,
+    /// Fetched as YouTube Premium audio.
+    pub premium: bool,
+    pub lossless: bool,
+}
+
+type BadgeCache = HashMap<String, (Option<SystemTime>, LmsBadge)>;
+static BADGE_CACHE: LazyLock<Mutex<BadgeCache>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn badge_uncached(p: &Path) -> LmsBadge {
+    if let Some(h) = lms3::read_header(p) {
+        let quality = lms3::read_meta(p).and_then(|m| m.quality);
+        let codec = lms3::codec_name(h.codec_type());
+        let kbps = h.bitrate_kbps();
+        let lossless = matches!(codec.as_str(), "flac" | "alac") || codec.starts_with("pcm");
+        return LmsBadge { version: 3, premium: is_premium(quality.as_deref(), kbps) && !lossless, lossless, codec, bitrate_kbps: kbps };
+    }
+    match fmt::read_header(p) {
+        Some(h) => LmsBadge { version: h.version, ..Default::default() },
+        None => LmsBadge::default(),
+    }
+}
+
+#[uniffi::export]
+pub fn lms_badge(path: String) -> LmsBadge {
+    let p = Path::new(&path);
+    let m = mtime(p);
+    if let Some((_, b)) = BADGE_CACHE.lock().unwrap().get(&path).filter(|(t, _)| *t == m) {
+        return b.clone();
+    }
+    let b = badge_uncached(p);
+    let mut c = BADGE_CACHE.lock().unwrap();
+    if c.len() > 20_000 {
+        c.clear();
+    }
+    c.insert(path, (m, b.clone()));
+    b
+}
+
+/// A copy of `path` AVFoundation can always open (clip maker, lyric video,
+/// AVAsset-based features): the standard export, except Opus / Vorbis /
+/// MPEG layer 1–2 (no AVFoundation demuxer for Ogg/WebM), which are decoded
+/// once to 16-bit WAV. Cached in `cache_dir` while newer than the source;
+/// the original path when nothing is needed or anything fails.
+#[uniffi::export]
+pub fn lms_avfoundation_path(path: String, cache_dir: String) -> String {
+    let p = Path::new(&path);
+    let ext = lms_effective_extension(path.clone());
+    if !matches!(ext.as_str(), "opus" | "ogg" | "webm" | "mka" | "mp2" | "mp1") {
+        return lms_playable_path(path, cache_dir);
+    }
+    let guard = path_lock(&format!("avf:{path}"));
+    let _g = guard.lock().unwrap();
+    let dir = Path::new(&cache_dir);
+    let _ = std::fs::create_dir_all(dir);
+    let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("track");
+    let out = dir.join(format!("{}.avf.wav", fmt::display_stem(name)));
+    if let (Some(src), Some(c)) = (mtime(p), mtime(&out)) {
+        if c >= src {
+            return out.to_string_lossy().into_owned();
+        }
+    }
+    let tmp = dir.join(format!(".{}.avf", uuid::Uuid::new_v4()));
+    let ok = (|| -> std::io::Result<()> {
+        use std::io::{Seek, SeekFrom, Write};
+        let mut f = std::io::BufWriter::with_capacity(1 << 20, std::fs::File::create(&tmp)?);
+        f.write_all(&[0u8; 44])?;
+        let (mut frames, mut spec, mut err) = (0u64, (0u32, 0u16), None);
+        let decoded = lumisound_media::decode::for_each_block(p, |rate, ch, s| {
+            spec = (rate, ch as u16);
+            frames += (s.len() / ch.max(1)) as u64;
+            let mut b = Vec::with_capacity(s.len() * 2);
+            for v in s {
+                b.extend_from_slice(&((v.clamp(-1.0, 1.0) * 32767.0).round() as i16).to_le_bytes());
+            }
+            if let Err(e) = f.write_all(&b) {
+                err = Some(e);
+                return false;
+            }
+            true
+        });
+        if let Some(e) = err {
+            return Err(e);
+        }
+        if !decoded || spec.0 == 0 {
+            return Err(std::io::Error::other("nothing decoded"));
+        }
+        let data = frames * spec.1 as u64 * 2;
+        let mut h = b"RIFF".to_vec();
+        h.extend_from_slice(&((36 + data).min(u32::MAX as u64) as u32).to_le_bytes());
+        h.extend_from_slice(b"WAVEfmt ");
+        h.extend_from_slice(&16u32.to_le_bytes());
+        h.extend_from_slice(&1u16.to_le_bytes());
+        h.extend_from_slice(&spec.1.to_le_bytes());
+        h.extend_from_slice(&spec.0.to_le_bytes());
+        h.extend_from_slice(&(spec.0 * spec.1 as u32 * 2).to_le_bytes());
+        h.extend_from_slice(&(spec.1 * 2).to_le_bytes());
+        h.extend_from_slice(&16u16.to_le_bytes());
+        h.extend_from_slice(b"data");
+        h.extend_from_slice(&(data.min(u32::MAX as u64) as u32).to_le_bytes());
+        let mut f = f.into_inner().map_err(|e| e.into_error())?;
+        f.seek(SeekFrom::Start(0))?;
+        f.write_all(&h)?;
+        f.sync_all()?;
+        std::fs::rename(&tmp, &out)
+    })()
+    .is_ok();
+    if ok {
+        out.to_string_lossy().into_owned()
+    } else {
+        let _ = std::fs::remove_file(&tmp);
+        lms_playable_path(path, cache_dir)
+    }
+}
+
+/// Whether `path` can become LMS3 (audio-only and decodable by the engine).
+/// Probes headers only; refusals are remembered for the session.
+#[uniffi::export]
+pub fn lms_convertible(path: String) -> bool {
+    if NOT_CONVERTIBLE.lock().unwrap().contains(&path) {
+        return false;
+    }
+    let p = Path::new(&path);
+    if lms3::is_lms3(p) {
+        return true;
+    }
+    let ok = (|| {
+        let (mss, hint) = lumisound_media::decode::media_source(p).ok()?;
+        let probed = lumisound_media::decode::format_probe().format(&hint, mss, &Default::default(), &Default::default()).ok()?;
+        let tracks = probed.format.tracks();
+        let audio_only = tracks.len() == 1 && tracks[0].codec_params.sample_rate.is_some() && tracks[0].codec_params.codec != symphonia::core::codecs::CODEC_TYPE_NULL;
+        Some(audio_only && lumisound_media::opus::codecs().make(&tracks[0].codec_params, &Default::default()).is_ok())
+    })()
+    .unwrap_or(false);
+    if !ok {
+        NOT_CONVERTIBLE.lock().unwrap().insert(path);
+    }
+    ok
+}
+
+/// How far the library is in Lumisound Audio.
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq, Default)]
+pub struct LmsLibraryStatus {
+    pub total: u32,
+    pub lms3: u32,
+    /// `.lms` files still in the old wrap (converted in place).
+    pub legacy: u32,
+    /// Plain audio files not converted yet.
+    pub plain: u32,
+    pub premium: u32,
+}
+
+/// Header reads only (8–160 bytes per file); call off the main thread.
+#[uniffi::export]
+pub fn lms_library_status(paths: Vec<String>) -> LmsLibraryStatus {
+    let mut s = LmsLibraryStatus::default();
+    for path in paths {
+        let p = Path::new(&path);
+        if !p.is_file() {
+            continue;
+        }
+        s.total += 1;
+        if lms3::is_lms3(p) {
+            s.lms3 += 1;
+            if lms_badge(path).premium {
+                s.premium += 1;
+            }
+        } else if lms_is_converted(path) {
+            s.legacy += 1;
+        } else {
+            s.plain += 1;
+        }
+    }
+    s
+}

@@ -114,6 +114,7 @@ extension NowPlayingView {
     var trackBadges: some View {
         let bpm = LuaFeatureFlags.showBpmBadges ? player.currentSong?.bpm : nil
         let formatTag = player.currentSong?.formatTag
+        let lms3 = player.currentSong?.lms3Badge
         if let song = player.currentSong {
             HStack(spacing: 6) {
                 engineBadge(for: song)
@@ -124,10 +125,24 @@ extension NowPlayingView {
                                 .font(.system(size: 9))
                                 .foregroundStyle(AppTheme.warning)
                         }
-                        Text(formatTag)
+                        // LMS3: the codec and its real bitrate from the header.
+                        Text(lms3.map { $0.lossless || $0.bitrateKbps == 0 ? formatTag : "\(formatTag) · \($0.bitrateKbps)K" } ?? formatTag)
                             .font(AppTheme.monoFont(size: 10))
                     }
                     .trackBadgeStyle()
+                    .accessibilityLabel(lms3 != nil ? "Lumisound Audio, \(formatTag)" : formatTag)
+                }
+                if lms3?.premium == true {
+                    HStack(spacing: 3) {
+                        Image(systemName: "star.fill").font(.system(size: 8, weight: .bold))
+                        Text("PREMIUM").font(AppTheme.monoFont(size: 10))
+                    }
+                    .foregroundStyle(screenStyle.accentColor)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .overlay(Capsule().strokeBorder(screenStyle.accentColor.opacity(0.55), lineWidth: 1))
+                    .fixedSize()
+                    .accessibilityLabel("YouTube Music Premium quality")
                 }
                 if let bpm {
                     Text("\(Int(bpm.rounded())) BPM")

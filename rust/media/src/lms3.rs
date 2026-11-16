@@ -729,7 +729,7 @@ fn source_flags(src: &Path) -> u32 {
 /// rename). Packets are copied byte for byte. `src` is never modified.
 pub fn write(src: &Path, dst: &Path, opts: &WriteOpts) -> Result<Written, WriteError> {
     let (mss, hint) = crate::decode::media_source(src)?;
-    let probed = crate::decode::format_probe()
+    let mut probed = crate::decode::format_probe()
         .format(&hint, mss, &FormatOptions { enable_gapless: true, ..Default::default() }, &MetadataOptions::default())
         .map_err(|e| WriteError::Unsupported(e.to_string()))?;
     let mut fmt = probed.format;
@@ -748,6 +748,41 @@ pub fn write(src: &Path, dst: &Path, opts: &WriteOpts) -> Result<Written, WriteE
     }
     let gapless = crate::gapless::for_track(src, p.codec);
     let mut meta = meta_of(src);
+    // Tags the container reader saw (Matroska/WebM, ID3 before the audio…)
+    // fill what the tag library couldn't read.
+    {
+        use symphonia::core::meta::StandardTagKey as K;
+        let mut fill = |tags: &[symphonia::core::meta::Tag]| {
+            for t in tags {
+                // RIFF INFO strings carry their C terminator.
+                let v = t.value.to_string().trim_matches(char::from(0)).trim().to_string();
+                if v.is_empty() {
+                    continue;
+                }
+                let key = t.key.to_ascii_uppercase();
+                let slot = match (t.std_key, key.as_str()) {
+                    (Some(K::TrackTitle), _) | (_, "TITLE") => &mut meta.title,
+                    (Some(K::Artist), _) | (_, "ARTIST") => &mut meta.artist,
+                    (Some(K::Album), _) | (_, "ALBUM") => &mut meta.album,
+                    (Some(K::Genre), _) | (_, "GENRE") => &mut meta.genre,
+                    (Some(K::Date), _) | (_, "DATE" | "YEAR") => &mut meta.year,
+                    _ if t.key.eq_ignore_ascii_case(crate::tags::ID_KEY) => &mut meta.source_id,
+                    _ if t.key.eq_ignore_ascii_case(crate::tags::THUMB_KEY) => &mut meta.thumbnail,
+                    _ if t.key.eq_ignore_ascii_case(crate::tags::QUALITY_KEY) => &mut meta.quality,
+                    _ => continue,
+                };
+                if slot.is_none() {
+                    *slot = Some(v);
+                }
+            }
+        };
+        if let Some(rev) = probed.metadata.get().as_ref().and_then(|m| m.current().cloned()) {
+            fill(rev.tags());
+        }
+        if let Some(rev) = fmt.metadata().current() {
+            fill(rev.tags());
+        }
+    }
     if meta.origin.is_none() {
         let ext = crate::lock::inner_ext(&src.file_name().unwrap_or_default().to_string_lossy())
             .or_else(|| src.extension().and_then(|e| e.to_str()).map(|e| e.to_lowercase()))

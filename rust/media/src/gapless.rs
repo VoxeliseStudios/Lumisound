@@ -52,6 +52,15 @@ pub struct Trim {
 }
 
 impl Trim {
+    /// Also drop the next `n` frames of music (a seek that landed early).
+    pub fn skip_more(mut self, n: u64) -> Trim {
+        self.skip += n;
+        if let Some(l) = self.left.as_mut() {
+            *l = l.saturating_sub(n);
+        }
+        self
+    }
+
     /// The frame range of a decoded buffer of `n` frames to keep.
     pub fn keep(&mut self, n: usize) -> std::ops::Range<usize> {
         let s = (self.skip.min(n as u64)) as usize;

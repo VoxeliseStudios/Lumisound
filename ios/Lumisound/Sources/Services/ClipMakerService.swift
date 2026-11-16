@@ -17,7 +17,7 @@ enum ClipMakerService {
         // A `.lms`-locked url's on-disk bytes are XOR-masked and unreadable
         // by AVURLAsset until unlocked -- without this, clip export threw
         // .exportFailed for every locked track.
-        let asset = AVURLAsset(url: LumisoundExclusiveExtensionService.playableURL(for: url))
+        let asset = AVURLAsset(url: LumisoundExclusiveExtensionService.avFoundationURL(for: url))
         guard let session = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetAppleM4A) else {
             throw ClipMakerError.exportFailed
         }

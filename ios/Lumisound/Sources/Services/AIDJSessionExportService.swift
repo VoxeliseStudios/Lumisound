@@ -98,7 +98,7 @@ final class AIDJSessionExportService: ObservableObject {
     private func trimmedClip(for song: Song, streaming: StreamingService, tempDir: URL) async throws -> URL {
         let sourceURL: URL
         if let localURL = song.url, localURL.isFileURL {
-            sourceURL = LumisoundExclusiveExtensionService.playableURL(for: localURL)
+            sourceURL = LumisoundExclusiveExtensionService.avFoundationURL(for: localURL)
         } else if let sourceTrackID = song.sourceTrackID {
             let parts = sourceTrackID.split(separator: ":", maxSplits: 1)
             guard parts.count == 2 else { throw AIDJExportError.noAudio }

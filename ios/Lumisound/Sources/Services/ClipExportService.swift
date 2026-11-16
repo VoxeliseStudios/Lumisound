@@ -38,7 +38,7 @@ enum ClipExportService {
         // A `.lms`-locked url's on-disk bytes are XOR-masked and unreadable
         // by AVURLAsset until unlocked -- without this, the AB-repeat/
         // ringtone clip export in Practice Mode failed for every locked track.
-        let asset = AVURLAsset(url: LumisoundExclusiveExtensionService.playableURL(for: url))
+        let asset = AVURLAsset(url: LumisoundExclusiveExtensionService.avFoundationURL(for: url))
         guard let sourceTrack = try await asset.loadTracks(withMediaType: .audio).first else {
             throw ClipExportError.noAudioTrack
         }

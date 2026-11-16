@@ -2,6 +2,13 @@
 
 Shared media primitives (lock format, artwork, decode). History: [`RUST-PORT.md`](../../RUST-PORT.md).
 
+## Done (2026-11-15) — LMS3 follow-ups
+- MP3 export writes a LAME "Info" frame (encoder delay/padding, CRC-16) so exported MP3s stay gapless.
+- LMS3 takes tags the container reader saw when the tag library has none (Matroska TITLE/ARTIST…, RIFF
+  INFO — NUL-trimmed).
+- Known: WebM timestamps are whole ms, so WebM-derived tracks start mid-track up to ~1 ms off (same as
+  the source file; inaudible).
+
 ## Done (2026-11-15) — LMS3, the Lumisound Audio file (`lms3.rs`, `lms3_export.rs`)
 - New native container (magic `LMSAUDIO`, still `<name>.<ext>.lms`): 160-byte CRC'd header (symphonia
   codec parameters, gapless range, flags, offsets, payload CRC) | codec extra data | masked packets |

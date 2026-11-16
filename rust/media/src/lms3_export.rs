@@ -73,7 +73,7 @@ pub fn export_to<W: Write + Seek>(p: &Path, w: &mut W) -> std::io::Result<()> {
             None => Err(io_err("alac cookie")),
         },
         CODEC_TYPE_FLAC if extra.as_ref().is_some_and(|e| e.len() == 34) => flac(extra.as_deref().unwrap(), packets, &meta, w),
-        CODEC_TYPE_MP3 => mp3(packets, &meta, w),
+        CODEC_TYPE_MP3 => mp3(&h, packets, &meta, w),
         CODEC_TYPE_PCM_S16LE | CODEC_TYPE_PCM_S24LE | CODEC_TYPE_PCM_S32LE | CODEC_TYPE_PCM_F32LE | CODEC_TYPE_PCM_U8 => wav_passthrough(&h, packets, w),
         _ => Err(io_err("no passthrough container")),
     };
@@ -693,12 +693,78 @@ fn id3v24(meta: &Meta) -> Vec<u8> {
     out
 }
 
-fn mp3<W: Write>(packets: PacketIter, meta: &Meta, w: &mut W) -> std::io::Result<()> {
+fn mp3<W: Write>(h: &Header, packets: PacketIter, meta: &Meta, w: &mut W) -> std::io::Result<()> {
     w.write_all(&id3v24(meta))?;
+    let count = packets.entries().len() as u32;
+    let mut first = true;
     for item in packets {
-        w.write_all(&item?.1)?;
+        let (_, frame) = item?;
+        if first {
+            first = false;
+            if let Some(info) = lame_info_frame(&frame, count, h.payload_len, h.delay, h.padding) {
+                w.write_all(&info)?;
+            }
+        }
+        w.write_all(&frame)?;
     }
     Ok(())
+}
+
+/// CRC-16/ARC (the LAME tag's checksum).
+fn crc16_arc(data: &[u8]) -> u16 {
+    let mut crc = 0u16;
+    for &b in data {
+        crc ^= b as u16;
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 { (crc >> 1) ^ 0xa001 } else { crc >> 1 };
+        }
+    }
+    crc
+}
+
+/// A silent "Info" frame with a LAME extension carrying the encoder delay
+/// and padding (what decoders — symphonia, Apple's — trim for gapless MP3),
+/// built from the first audio frame's header. None when it doesn't apply.
+pub fn lame_info_frame(first: &[u8], frames: u32, bytes: u64, delay: Option<u32>, padding: Option<u32>) -> Option<Vec<u8>> {
+    let (delay, padding) = (delay?, padding.unwrap_or(0));
+    if first.len() < 4 || first[0] != 0xff || first[1] & 0xe0 != 0xe0 || (first[1] >> 1) & 3 != 1 || delay < 529 || delay - 529 >= 4096 || padding + 529 >= 4096 {
+        return None;
+    }
+    let mpeg1 = (first[1] >> 3) & 3 == 3;
+    let mono = first[3] >> 6 == 3;
+    let side = match (mpeg1, mono) {
+        (true, true) => 17,
+        (true, false) => 32,
+        (false, true) => 9,
+        (false, false) => 17,
+    };
+    let len = first.len();
+    let tag = 4 + side;
+    if len < tag + 48 {
+        return None;
+    }
+    let mut f = vec![0u8; len];
+    f[..4].copy_from_slice(&first[..4]);
+    f[1] |= 1; // no CRC protection on the tag frame
+    let mut p = tag;
+    let mut put = |b: &[u8]| {
+        f[p..p + b.len()].copy_from_slice(b);
+        p += b.len();
+    };
+    put(b"Info");
+    put(&3u32.to_be_bytes()); // frames + bytes present
+    put(&frames.to_be_bytes());
+    put(&((bytes + len as u64).min(u32::MAX as u64) as u32).to_be_bytes());
+    put(b"LAME3.100");
+    put(&[0, 0]); // revision/VBR method, lowpass
+    put(&[0; 8]); // ReplayGain peak, radio, audiophile
+    put(&[0, 0]); // encoding flags, ABR bitrate
+    let trim = ((delay - 529) << 12) | (padding + 529);
+    put(&trim.to_be_bytes()[1..]);
+    put(&[0; 10]); // misc, MP3 gain, surround, music length, music CRC
+    let crc = crc16_arc(&f[..p]);
+    f[p..p + 2].copy_from_slice(&crc.to_be_bytes());
+    Some(f)
 }
 
 // ---- WAV -------------------------------------------------------------------------------------

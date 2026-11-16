@@ -266,6 +266,25 @@ fn le32(b: &[u8], o: usize) -> Option<usize> {
 #[uniffi::export]
 pub fn vorbis_comments_read(path: String) -> HashMap<String, String> {
     let mut out = HashMap::new();
+    // LMS3 keeps its tags in its own metadata: the same keys an Ogg file
+    // carries, so callers needn't care which they got.
+    if let Some(m) = lumisound_media::lms3::read_meta(std::path::Path::new(&path)) {
+        let mut put = |k: &str, v: Option<String>| {
+            if let Some(v) = v.filter(|v| !v.trim().is_empty()) {
+                out.insert(k.to_string(), v);
+            }
+        };
+        put("TITLE", m.title);
+        put("ARTIST", m.artist);
+        put("ALBUM", m.album);
+        put("GENRE", m.genre);
+        put("DATE", m.year);
+        put("TRACKNUMBER", m.track.map(|t| t.to_string()));
+        put("BPM", m.bpm.map(|b| format!("{}", b.round() as i64)));
+        put(lumisound_media::tags::ID_KEY, m.source_id);
+        put(lumisound_media::tags::THUMB_KEY, m.thumbnail);
+        return out;
+    }
     let Ok(f) = std::fs::File::open(&path) else { return out };
     let mut head = Vec::with_capacity(256 * 1024);
     use std::io::Read;

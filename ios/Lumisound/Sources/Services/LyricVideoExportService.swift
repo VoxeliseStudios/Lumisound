@@ -44,7 +44,7 @@ final class LyricVideoExportService: ObservableObject {
 
     private func render(song: Song, lyrics: [LrcLine], artwork: UIImage?) async throws -> URL {
         guard let songURL = song.url else { throw LyricVideoError.noAudio }
-        let playableURL = LumisoundExclusiveExtensionService.playableURL(for: songURL)
+        let playableURL = LumisoundExclusiveExtensionService.avFoundationURL(for: songURL)
         let sourceAsset = AVURLAsset(url: playableURL)
         let fullDuration = try await sourceAsset.load(.duration).seconds
         guard fullDuration.isFinite, fullDuration > 0 else { throw LyricVideoError.noAudio }

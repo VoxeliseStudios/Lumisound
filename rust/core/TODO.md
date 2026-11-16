@@ -2,6 +2,20 @@
 
 Full history and decisions: [`RUST-PORT.md`](../../RUST-PORT.md).
 
+## Done (2026-11-15) — every system on LMS3
+- `tests/lms3_systems.rs`: probe, decode, BPM, key, waveform, transition/spectral profiles, loudness,
+  beat grid, pitch contour, fingerprint, validation, intro detection, haptics, blend profile, lyric
+  sync, library scan, raw tags, Vorbis comments, artwork — same answer for LMS3 as for its source
+  (Opus, WebM, AAC, FLAC, MP3). Opus mid-track starts: LMS3 −44 dB from a continuous decode vs −28 dB
+  for the plain Ogg file (warm seek).
+- `decode::start_at` trims to the exact requested time after a seek (readers land on a packet/page/
+  reservoir frame): engine seeks and every mid-track analysis are sample-accurate for all formats.
+- `lock.rs`: `lms_badge` (cached codec/kbps/Premium/lossless for the UI), `lms_avfoundation_path`
+  (Opus/Vorbis decoded once to WAV so AVAsset features work), `lms_convertible`, `lms_library_status`.
+  `import::vorbis_comments_read` reads LMS3 metadata.
+- Pre-existing (not LMS3, same numbers on d57ad502): `tests/engine_quality.rs` time-stretch pre-echo at
+  1.25x (−12.0 dB) and 0.8x (−16.0 dB) over the −18 dB limit.
+
 ## Done (2026-11-15) — performance telemetry + LMS3 engine tests
 - `perf.rs`: sampler thread (1 s fg / 5 s bg): per-thread CPU with names (Mach THREAD_EXTENDED_INFO),
   process + system CPU, phys footprint + `os_proc_available_memory`, process GPU time / energy (mW) /

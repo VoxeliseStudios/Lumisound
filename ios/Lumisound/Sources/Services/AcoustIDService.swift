@@ -69,7 +69,7 @@ final class AcoustIDService {
         // A `.lms`-locked url's on-disk bytes are XOR-masked and unreadable
         // by AVURLAsset until unlocked -- without this, AcoustID identification
         // threw .trimFailed for every locked track.
-        let sourceURL = LumisoundExclusiveExtensionService.playableURL(for: rawURL)
+        let sourceURL = LumisoundExclusiveExtensionService.avFoundationURL(for: rawURL)
 
         let clipURL = try await trimmedClip(from: sourceURL)
         defer { try? FileManager.default.removeItem(at: clipURL) }

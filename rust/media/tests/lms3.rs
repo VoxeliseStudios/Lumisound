@@ -101,7 +101,9 @@ fn check(src: &Path, dir: &Path, exact_export: bool) -> Result<String, String> {
     // Tags carried over and readable without a temp copy.
     let info = lumisound_media::tags::read_info(&dst).ok_or("read_info")?;
     let src_title = lumisound_media::tags::read_info(src).and_then(|i| i.title);
-    if info.title != src_title {
+    // LMS3 may know more than the source's tag reader (container tags it
+    // took from the demuxer: RIFF INFO, Matroska); never less.
+    if src_title.is_some() && info.title != src_title {
         return Err(format!("title {:?} vs source {src_title:?}", info.title));
     }
     // Seek: a mid-file start decodes the same audio as the source does.

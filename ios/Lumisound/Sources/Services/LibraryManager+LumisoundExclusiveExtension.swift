@@ -44,8 +44,11 @@ extension LibraryManager {
         guard !LumisoundExclusiveExtensionService.isConverted(oldURL) else {
             return false // already converted — not a failure, just nothing to do
         }
-        guard let existingTag = LumisoundTrackTagger.readTag(fileURL: oldURL) else {
-            appWarn("convertToLumisoundExclusiveExtension: skipped \(songID) at \(oldURL.lastPathComponent) — no readable vault tag at convert time", category: "background")
+        // Downloads carry a vault tag (re-applied below); your own imports
+        // don't and convert without one.
+        let existingTag = LumisoundTrackTagger.readTag(fileURL: oldURL)
+        if existingTag == nil && !LumisoundTrackVaultService.isOwnedImport(oldURL) {
+            appWarn("convertToLumisoundExclusiveExtension: skipped \(songID) at \(oldURL.lastPathComponent) — no vault tag and not an import in Documents", category: "background")
             return false
         }
 
@@ -61,7 +64,9 @@ extension LibraryManager {
         // silently lose the dedup fallback tag (see LibraryManager+
         // DuplicateDetection.swift / DuplicateFinderService.swift), which is
         // the exact class of bug fixed for sourceTrackID mixups elsewhere.
-        LumisoundTrackTagger.tag(fileURL: newURL, trackID: existingTag.trackID, sourceURL: existingTag.sourceURL)
+        if let existingTag {
+            LumisoundTrackTagger.tag(fileURL: newURL, trackID: existingTag.trackID, sourceURL: existingTag.sourceURL)
+        }
 
         let newID = ScanCacheService.documentsRelativePath(for: newURL).map { "local:\($0)" } ?? oldSong.id
         let newSong = Song(

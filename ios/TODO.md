@@ -2,6 +2,16 @@
 
 Full history and decisions: [`../RUST-PORT.md`](../RUST-PORT.md). Swift is views + app shell only.
 
+## Done (2026-11-15) — LMS3 in the UI and every feature
+- Format tags: "LMS3 OPUS/AAC/FLAC…" from the core's cached header badge; Now Playing shows codec +
+  real bitrate and a PREMIUM chip; ALAC in LMS3 counts as lossless.
+- Clip maker, clip export, lyric video, AI DJ export, AcoustID identify, BPM fallback open
+  `avFoundationURL` (Opus decoded to WAV once) — they couldn't read Ogg Opus before at all.
+- Library conversion: ordered (library order, never random), ≤30 tracks / 150 s per 5-minute pass,
+  thermal check before every track, never the playing/queued track; your own imports in Documents
+  (audio-only) convert too; files in linked external folders never. Settings → Streaming & Downloads
+  shows "Lumisound Audio: N of M tracks".
+
 ## Done (2026-11-15) — performance telemetry
 - `Services/PerformanceTelemetryService.swift`: display-link frame probe (batched 1/s), thermal/battery/
   Low Power/foreground/screen into the core sampler; minute windows uploaded as `perf_window` when

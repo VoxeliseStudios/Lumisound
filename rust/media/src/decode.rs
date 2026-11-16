@@ -103,7 +103,16 @@ pub fn start_at(fmt: &mut dyn symphonia::core::formats::FormatReader, id: u32, r
         }
     }
     let at = gapless.map_or(from as f64 / rate.max(1) as f64, |g| g.music_secs(from, rate));
-    (gapless.map(|g| g.trim_from(from)).unwrap_or_default(), at)
+    let trim = gapless.map(|g| g.trim_from(from)).unwrap_or_default();
+    // Readers land on a packet (Ogg: a page; MP3: frames earlier for the bit
+    // reservoir; Opus: its pre-roll): decode from there and drop up to the
+    // exact time asked for, so seeks and every analysis that starts
+    // mid-track are sample-accurate.
+    if let Some(s) = start.filter(|s| *s > at && *s - at < 2.0) {
+        let n = ((s - at) * rate as f64).round() as u64;
+        return (trim.skip_more(n), s);
+    }
+    (trim, at)
 }
 
 /// Duration / rate / channels without decoding.

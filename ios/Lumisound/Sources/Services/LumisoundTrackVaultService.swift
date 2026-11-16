@@ -32,6 +32,13 @@ enum LumisoundTrackVaultService {
     /// (an xattr syscall) is cheap per-file, but batching with a `Task.yield`
     /// between chunks keeps a long backfill from monopolizing the run loop.
     private static let batchSize = 40
+    /// LMS3 conversions per pass (each is a full demux + two verifying
+    /// decodes): the library converts steadily in the background — in
+    /// library order, never at random — instead of one long hot burst after
+    /// an update. ~30 every 5 minutes is a few hundred an hour.
+    private static let conversionsPerPass = 30
+    /// Wall-clock budget per pass for the same reason.
+    private static let passBudget: TimeInterval = 150
 
     /// How often the extension-conversion pass runs while the app is in the
     /// foreground. iOS gives no way to guarantee an exact background
@@ -240,11 +247,18 @@ enum LumisoundTrackVaultService {
         }
         let conversionState = await Task.detached(priority: .utility) {
             conversionSnapshot.map { id, url in
-                (
+                let converted = LumisoundExclusiveExtensionService.isConverted(url)
+                let tagged = LumisoundTrackTagger.isTagged(fileURL: url)
+                return (
                     id: id,
                     ext: LumisoundExclusiveExtensionService.effectiveExtension(for: url),
-                    converted: LumisoundExclusiveExtensionService.isConverted(url),
-                    tagged: LumisoundTrackTagger.isTagged(fileURL: url)
+                    converted: converted,
+                    tagged: tagged,
+                    // Your own imports become Lumisound Audio too, when they
+                    // live in the app's Documents (never files in folders you
+                    // linked from elsewhere) and are audio-only (a video's
+                    // picture would be lost) — the core probes that, once.
+                    importable: !converted && !tagged && Self.isOwnedImport(url) && lmsConvertible(path: url.path)
                 )
             }
         }.value
@@ -265,9 +279,10 @@ enum LumisoundTrackVaultService {
         appLog("LumisoundTrackVaultService: conversion pass — \(library.importedSongs.count) imported [\(breakdownText)], currentlyPlaying=\(currentlyPlayingID ?? "nil")", category: "background")
 
         let candidateIDs = Set(conversionState.compactMap { state in
-            state.converted || !state.tagged ? nil : state.id
+            state.converted || !(state.tagged || state.importable) ? nil : state.id
         })
         let candidates = library.importedSongs.filter { candidateIDs.contains($0.id) }
+        LMS3LibraryProgress.shared.refresh()
         guard !candidates.isEmpty else {
             appLog("LumisoundTrackVaultService: conversion pass complete — no candidates, elapsed=\(String(format: "%.2f", Date().timeIntervalSince(passStartedAt)))s", category: "background")
             return
@@ -275,9 +290,11 @@ enum LumisoundTrackVaultService {
 
         var converted = 0
         var failedSongIDs: [String] = []
-        for (index, song) in candidates.enumerated() {
-            if Task.isCancelled { break }
-            if await library.convertToLumisoundExclusiveExtension(songID: song.id, currentlyPlayingID: currentlyPlayingID) {
+        for (index, song) in candidates.prefix(conversionsPerPass).enumerated() {
+            if Task.isCancelled || Date().timeIntervalSince(passStartedAt) > passBudget { break }
+            // Re-check heat before every track, not just once per pass.
+            guard await HeatGovernor.waitForHeadroom(job: "Lumisound Audio conversion") else { break }
+            if await library.convertToLumisoundExclusiveExtension(songID: song.id, currentlyPlayingID: AudioPlayerManager.shared?.currentSong?.id ?? currentlyPlayingID) {
                 converted += 1
             } else if failedSongIDs.count < 5 {
                 failedSongIDs.append(song.id)
@@ -288,7 +305,8 @@ enum LumisoundTrackVaultService {
         }
         appLog("LumisoundTrackVaultService: converted \(converted)/\(candidates.count) track(s) to the Lumisound-exclusive extension" + (failedSongIDs.isEmpty ? "" : "; sample failures: \(failedSongIDs)") + ", elapsed=\(String(format: "%.2f", Date().timeIntervalSince(passStartedAt)))s", category: "background")
 
-        await runLegacyRelockPass(library: library)
+        await runLegacyRelockPass(library: library, startedAt: passStartedAt)
+        LMS3LibraryProgress.shared.refresh()
         // Premium audio: re-fetch YouTube tracks below Premium quality when
         // the account's cookies are Premium (bounded batch, own interval).
         await QualityUpgradeService.shared.runPassIfNeeded()
@@ -303,7 +321,14 @@ enum LumisoundTrackVaultService {
     /// same reasoning as every other pass in this file, self-healing beats
     /// a permanently-stuck track if a given relock attempt fails once.
     @MainActor
-    private static func runLegacyRelockPass(library: LibraryManager) async {
+    /// Inside the app's own Documents (downloads and Files imports), as
+    /// opposed to a security-scoped folder the user linked from elsewhere.
+    nonisolated static func isOwnedImport(_ url: URL) -> Bool {
+        guard url.isFileURL, let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return false }
+        return url.standardizedFileURL.path.hasPrefix(docs.standardizedFileURL.path + "/")
+    }
+
+    private static func runLegacyRelockPass(library: LibraryManager, startedAt: Date = Date()) async {
         // Finding the candidates opens and reads the header of every
         // converted track: disk I/O across the whole library. Done per song
         // on the main actor it held the main thread 1.5–2.9 s each pass
@@ -332,8 +357,10 @@ enum LumisoundTrackVaultService {
         // off-main execution for the heavy part; only the final tally/log
         // stays on the main actor.
         var relocked = 0
-        for (index, url) in legacyCandidates.enumerated() {
-            if Task.isCancelled { break }
+        let playing = AudioPlayerManager.shared?.currentSong?.url?.path
+        for (index, url) in legacyCandidates.filter({ $0.path != playing }).prefix(conversionsPerPass).enumerated() {
+            if Task.isCancelled || Date().timeIntervalSince(startedAt) > passBudget * 2 { break }
+            guard await HeatGovernor.waitForHeadroom(job: "Lumisound Audio conversion") else { break }
             let didRelock = await Task.detached(priority: .utility) {
                 LumisoundExclusiveExtensionService.relockLegacyFile(at: url)
             }.value

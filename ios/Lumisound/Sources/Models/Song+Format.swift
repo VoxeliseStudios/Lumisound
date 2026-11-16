@@ -9,7 +9,18 @@ extension Song {
     /// lossless check for the one-shot Now Playing format detail sheet.
     var isKnownLosslessContainer: Bool {
         guard let url else { return false }
+        // LMS3 knows its codec (ALAC inside reads as lossless too).
+        if let badge = lms3Badge { return badge.lossless }
         return ["flac", "wav", "aiff", "aif", "alac"].contains(LumisoundExclusiveExtensionService.effectiveExtension(for: url))
+    }
+
+    /// The LMS3 (Lumisound Audio) header summary for a local `.lms` file in
+    /// that format, else nil. Cached in the core per path + mtime, so rows
+    /// and Now Playing can ask on every render.
+    var lms3Badge: LmsBadge? {
+        guard let url, url.isFileURL, LumisoundExclusiveExtensionService.isConverted(url) else { return nil }
+        let b = lmsBadge(path: url.path)
+        return b.version == 3 ? b : nil
     }
 
     /// True when the scanned sample rate exceeds standard CD/streaming
@@ -36,8 +47,16 @@ extension Song {
     /// but silently doing the same here would hide the one place a user can
     /// actually SEE that a track has gone through the vault/conversion
     /// pipeline, which is the entire point of exposing it as "exclusive."
+    ///
+    /// LMS3 (Lumisound Audio) tracks say so and name the codec inside
+    /// ("LMS3 OPUS", "LMS3 AAC", "LMS3 FLAC"); older `.lms` wraps keep
+    /// "LMS <ext>" until the library pass upgrades them.
     var formatTag: String? {
         guard let url else { return nil }
+        if let badge = lms3Badge {
+            let codec = badge.codec == "aac" ? "AAC" : badge.codec.hasPrefix("pcm") ? "PCM" : badge.codec.uppercased()
+            return "LMS3 " + codec
+        }
         let ext = LumisoundExclusiveExtensionService.effectiveExtension(for: url)
         guard !ext.isEmpty else { return nil }
         let prefix = LumisoundExclusiveExtensionService.isConverted(url) ? "LMS " : ""

@@ -62,6 +62,9 @@ extension SettingsView {
             // Audio Format picker
             AudioFormatPickerRow(streaming: streaming, tint: .cyan, hidesLabel: false)
 
+            // How much of the library is Lumisound Audio (LMS3) yet.
+            LMS3ProgressRow()
+
             // Wi-Fi Only Downloads — blocks the single downloadToLibrary
             // chokepoint (see that function's guard) whenever the device is
             // on cellular with no Wi-Fi available, so it covers every
@@ -148,5 +151,32 @@ struct AudioFormatPickerRow: View {
                 Text(fmt.label).lumiOptionLabel(String(describing: fmt.label)).tag(fmt.value)
             }
         }
+    }
+}
+
+/// Settings row: library progress to Lumisound Audio (LMS3). Conversion is
+/// a remux (the audio packets are copied, not re-encoded), proven to decode
+/// identically, a paced batch every few minutes while the app is open.
+struct LMS3ProgressRow: View {
+    @ObservedObject private var progress = LMS3LibraryProgress.shared
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline) {
+            Label("Lumisound Audio", systemImage: "waveform.badge.checkmark")
+                .foregroundStyle(AppTheme.textPrimary)
+            Spacer()
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(progress.summary)
+                    .font(.footnote.monospacedDigit())
+                    .foregroundStyle(AppTheme.textSecondary)
+                if progress.pending > 0 {
+                    Text("\(progress.pending) converting in the background")
+                        .font(.caption2)
+                        .foregroundStyle(AppTheme.textSecondary.opacity(0.8))
+                }
+            }
+        }
+        .onAppear { progress.refresh() }
+        .accessibilityElement(children: .combine)
     }
 }
