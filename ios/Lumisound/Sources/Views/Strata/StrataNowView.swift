@@ -48,7 +48,7 @@ struct StrataNowView: View {
             guard let s = player.currentSong, let img = await ArtworkService.shared.loadThumbnail(for: s, pixelSize: 160) else { artAspect = 1; return }
             artAspect = img.size.height > 0 ? img.size.width / img.size.height : 1
         }
-        .sheet(isPresented: $showTools) {
+        .lumiSheet(isPresented: $showTools) {
             NowPlayingView()
         }
     }

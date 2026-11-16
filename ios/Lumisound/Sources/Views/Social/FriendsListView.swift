@@ -120,10 +120,10 @@ struct FriendsListView: View {
         .onChange(of: presenceService.friendsPresence) { _ in
             Task { await social.fetchListeningTogether() }
         }
-        .sheet(isPresented: $showBlockedUsers) {
+        .lumiSheet(isPresented: $showBlockedUsers) {
             NavigationStack { BlockedUsersView() }
         }
-        .sheet(item: $sendSongTo) { friend in
+        .lumiSheet(item: $sendSongTo) { friend in
             SendSongSheet(friendID: friend.userId, friendName: friend.effectiveName)
         }
     }
@@ -642,7 +642,7 @@ struct FriendsSegmentView: View {
             await social.fetchFriends()
             await social.fetchFriendTagNames()
         }
-        .sheet(item: $manageSheetFriend) { friend in
+        .lumiSheet(item: $manageSheetFriend) { friend in
             FriendManageSheet(friend: friend)
         }
     }

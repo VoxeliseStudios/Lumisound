@@ -25,7 +25,7 @@ struct LibraryStyleManagerView: View {
                     Button("Done") { dismiss() }
                 }
             }
-            .sheet(item: $editingCustomStyle) { style in
+            .lumiSheet(item: $editingCustomStyle) { style in
                 LibraryStyleEditorView(style: style, previewSong: library.allSongs.first) { saved in
                     customStyleStore.update(saved)
                 }

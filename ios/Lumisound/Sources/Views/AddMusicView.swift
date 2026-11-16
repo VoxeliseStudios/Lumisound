@@ -64,7 +64,7 @@ struct AddMusicView: View {
                     .buttonStyle(PressableButtonStyle())
 
                     NavigationLink {
-                        UploadMusicView()
+                        UploadMusicView().lumiScreen("Cloud Backup & Upload")
                     } label: {
                         addCard(icon: "icloud.and.arrow.up", title: "Cloud Backup & Upload",
                                 detail: "Keep tracks in your Lumisound account and restore them on any device.")
@@ -116,7 +116,7 @@ struct AddMusicView: View {
                     Button("Done") { dismiss() }.tint(AppTheme.dynamicAccent)
                 }
             }
-            .sheet(isPresented: $showFilePicker) {
+            .lumiSheet(isPresented: $showFilePicker) {
                 DocumentPicker(mode: .audioFiles) { urls in
                     showFilePicker = false
                     guard !urls.isEmpty else { return }

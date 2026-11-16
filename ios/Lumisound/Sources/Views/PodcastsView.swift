@@ -86,10 +86,10 @@ struct PodcastsView: View {
                 }
             }
         }
-        .sheet(isPresented: $showAddSheet) {
+        .lumiSheet(isPresented: $showAddSheet) {
             AddPodcastSheet { await reload() }
         }
-        .sheet(isPresented: $showShareSheet) {
+        .lumiSheet(isPresented: $showShareSheet) {
             if let exportURL {
                 RewindShareSheet(items: [exportURL])
             }

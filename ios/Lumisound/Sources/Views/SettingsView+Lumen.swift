@@ -54,7 +54,7 @@ extension SettingsView {
         .background(LumenBackdrop())
         .navigationTitle(page.lumenTitle)
         .navigationBarTitleDisplayMode(.large)
-        .sheet(isPresented: $showLogin) {
+        .lumiSheet(isPresented: $showLogin) {
             LoginView()
                 .environmentObject(account)
         }

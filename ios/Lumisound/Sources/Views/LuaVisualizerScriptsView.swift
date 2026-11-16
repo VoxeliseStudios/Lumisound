@@ -87,7 +87,7 @@ struct LuaVisualizerScriptsView: View {
                 }
             }
         }
-        .sheet(isPresented: $showImportSheet) {
+        .lumiSheet(isPresented: $showImportSheet) {
             importSheet
         }
     }

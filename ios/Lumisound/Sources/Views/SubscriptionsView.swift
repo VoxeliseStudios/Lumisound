@@ -92,7 +92,7 @@ struct SubscriptionsView: View {
                 .accessibilityLabel(showAdd ? "Close" : "Add channel or playlist")
             }
         }
-        .sheet(item: $editingSubscription) { sub in
+        .lumiSheet(item: $editingSubscription) { sub in
             SubscriptionSettingsSheet(subscription: sub) {
                 Task { await load() }
             }

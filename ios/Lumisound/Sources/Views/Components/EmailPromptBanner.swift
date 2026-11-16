@@ -72,7 +72,7 @@ struct EmailPromptBanner: View {
             .adaptiveGlass(tint: AppTheme.dynamicAccent, in: RoundedRectangle(cornerRadius: 14))
             .padding(.horizontal, 16)
             .transition(.move(edge: .top).combined(with: .opacity))
-            .sheet(isPresented: $isPresentingEditor) {
+            .lumiSheet(isPresented: $isPresentingEditor) {
                 EmailPromptEditor()
                     .environmentObject(account)
             }

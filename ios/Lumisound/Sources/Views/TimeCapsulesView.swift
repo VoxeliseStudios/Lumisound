@@ -44,7 +44,7 @@ struct TimeCapsulesView: View {
                 }
             }
         }
-        .sheet(isPresented: $showSealSheet) {
+        .lumiSheet(isPresented: $showSealSheet) {
             SealTimeCapsuleView()
         }
     }

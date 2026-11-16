@@ -71,7 +71,7 @@ struct CookiesFileView: View {
             }
         }
         .task { await load() }
-        .sheet(isPresented: $isShowingPicker) {
+        .lumiSheet(isPresented: $isShowingPicker) {
             DocumentPicker(mode: .textFile) { urls in
                 guard let url = urls.first else { return }
                 upload(from: url)

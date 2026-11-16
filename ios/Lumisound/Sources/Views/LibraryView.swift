@@ -209,12 +209,12 @@ struct LibraryView: View {
                     MiniPlayerBar()
                 }
             }
-            .sheet(isPresented: $showAddMusic) {
+            .lumiSheet(isPresented: $showAddMusic) {
                 AddMusicView()
                     .environmentObject(library)
                     .environmentObject(folderService)
             }
-            .sheet(isPresented: $showOpenSharedPlaylist) {
+            .lumiSheet(isPresented: $showOpenSharedPlaylist) {
                 CollaborativePlaylistView(playlist: nil)
                     .environmentObject(player)
                     .environmentObject(account)

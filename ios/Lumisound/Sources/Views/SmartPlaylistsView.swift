@@ -70,10 +70,10 @@ struct SmartPlaylistsView: View {
                 }
             }
         }
-        .sheet(item: $editing) { pl in
+        .lumiSheet(item: $editing) { pl in
             SmartPlaylistEditorView(playlist: pl) { store.update($0) }
         }
-        .sheet(isPresented: $creatingNew) {
+        .lumiSheet(isPresented: $creatingNew) {
             SmartPlaylistEditorView(playlist: SmartPlaylist(rules: [SmartRule()])) { store.add($0) }
         }
     }
@@ -347,7 +347,7 @@ struct SmartPlaylistDetailView: View {
                 .disabled(playlist == nil)
             }
         }
-        .sheet(isPresented: $showEditor) {
+        .lumiSheet(isPresented: $showEditor) {
             if let playlist {
                 SmartPlaylistEditorView(playlist: playlist) { store.update($0) }
             }

@@ -7,7 +7,7 @@ struct ClipMakerModifier: ViewModifier {
     @ObservedObject private var center = ClipMakerCenter.shared
 
     func body(content: Content) -> some View {
-        content.sheet(item: Binding(
+        content.lumiSheet(item: Binding(
             get: { center.pendingSong },
             set: { center.pendingSong = $0 }
         )) { song in
@@ -62,7 +62,7 @@ struct ClipMakerView: View {
                     Button("Cancel") { dismiss() }
                 }
             }
-            .sheet(isPresented: $showShareSheet) {
+            .lumiSheet(isPresented: $showShareSheet) {
                 if let exportedURL {
                     RewindShareSheet(items: [exportedURL])
                 }

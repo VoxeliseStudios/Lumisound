@@ -140,10 +140,10 @@ struct LumenRootView: View {
         .preferredColorScheme(.dark)
         .acoustIDConfirmSheet()
         .clipMakerSheet()
-        .fullScreenCover(isPresented: $showCarMode) {
+        .lumiFullScreenCover(isPresented: $showCarMode) {
             CarModeView().environmentObject(player)
         }
-        .sheet(isPresented: $showWelcome) {
+        .lumiSheet(isPresented: $showWelcome) {
             LumenWelcomeSheet()
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)

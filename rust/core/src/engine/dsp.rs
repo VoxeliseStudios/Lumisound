@@ -162,6 +162,32 @@ mod tests {
 const COMB_TUNING: [usize; 8] = [1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617];
 const ALLPASS_TUNING: [usize; 4] = [556, 441, 341, 225];
 const STEREO_SPREAD: usize = 23;
+/// Input diffusers per channel (samples at 44.1 kHz). The tanks differ by
+/// only STEREO_SPREAD samples, which decorrelates highs but leaves low-mids
+/// nearly mono; feeding each side through its own diffusion makes the two
+/// tails differ at every frequency.
+const DIFFUSE_TUNING: [[usize; 2]; 2] = [[142, 107], [379, 277]];
+
+/// Schroeder allpass (unity gain at every frequency, unlike Freeverb's).
+struct Diffuser {
+    buf: Vec<f32>,
+    idx: usize,
+}
+
+impl Diffuser {
+    const G: f32 = 0.6;
+    fn new(n: usize) -> Self {
+        Self { buf: vec![0.0; n.max(1)], idx: 0 }
+    }
+    #[inline]
+    fn process(&mut self, x: f32) -> f32 {
+        let d = self.buf[self.idx];
+        let v = x + Self::G * d;
+        self.buf[self.idx] = v;
+        self.idx = (self.idx + 1) % self.buf.len();
+        d - Self::G * v
+    }
+}
 
 struct Comb {
     buf: Vec<f32>,
@@ -205,6 +231,10 @@ impl Allpass {
 pub struct Reverb {
     combs: [Vec<Comb>; 2],
     allpasses: [Vec<Allpass>; 2],
+    /// Input diffusion (two short allpasses per side before the tank): a
+    /// drum hit enters the combs already smeared, so a short room's first
+    /// echoes don't stack into a peak, and the sides decorrelate.
+    diffuse: [[Diffuser; 2]; 2],
     /// Mix, gliding to `wet_target` (~40 ms): slider moves don't zipper and
     /// switching off fades the tail instead of cutting it (a click + a jump
     /// in the dry level).
@@ -250,6 +280,7 @@ impl Reverb {
         Self {
             combs: [cl, cr],
             allpasses: [al, ar],
+            diffuse: DIFFUSE_TUNING.map(|t| t.map(|n| Diffuser::new((n as f32 * scale) as usize))),
             wet: 0.0,
             wet_target: 0.0,
             wet_coef: 1.0 - (-1.0 / (0.04 * rate)).exp(),
@@ -286,6 +317,9 @@ impl Reverb {
             }
             for a in self.allpasses[ch].iter_mut() {
                 a.buf.fill(0.0);
+            }
+            for d in self.diffuse[ch].iter_mut() {
+                d.buf.fill(0.0);
             }
         }
         self.pre.fill(0.0);
@@ -353,9 +387,13 @@ impl Reverb {
         let damp = self.damp * 0.4;
         let mut out = [0f32; 2];
         for ch in 0..2 {
+            let mut fed = input;
+            for d in self.diffuse[ch].iter_mut() {
+                fed = d.process(fed);
+            }
             let mut acc = 0.0;
             for c in self.combs[ch].iter_mut() {
-                acc += c.process(input, fb, damp);
+                acc += c.process(fed, fb, damp);
             }
             for a in self.allpasses[ch].iter_mut() {
                 acc = a.process(acc);
@@ -549,5 +587,52 @@ impl Vibrato {
         }
         self.w = (self.w + 1) % n;
         (l, r)
+    }
+}
+
+#[cfg(test)]
+mod reverb_tests {
+    use super::Reverb;
+
+    fn corr(a: &[f32], b: &[f32]) -> f64 {
+        let (mut ab, mut aa, mut bb) = (0f64, 0f64, 0f64);
+        for (x, y) in a.iter().zip(b) {
+            ab += (*x as f64) * (*y as f64);
+            aa += (*x as f64).powi(2);
+            bb += (*y as f64).powi(2);
+        }
+        ab / (aa * bb).sqrt().max(1e-12)
+    }
+
+    /// Every preset's tail is stereo (wet L/R uncorrelated on noise) and
+    /// the diffusers add no level.
+    #[test]
+    fn wet_stereo_per_preset() {
+        let rate = 48_000.0;
+        for preset in ["smallRoom", "mediumRoom", "largeHall", "plate"] {
+            let mut r = Reverb::new(rate);
+            r.set_preset(preset);
+            r.set_wet(1.0);
+            let mut seed = 1u32;
+            let mut noise = || {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (seed >> 8) as f32 / (1u32 << 24) as f32 - 0.5
+            };
+            let (mut l, mut rr) = (Vec::new(), Vec::new());
+            for i in 0..(rate as usize * 6) {
+                let (a, b) = (noise(), noise());
+                let (ol, or) = r.process(a, b);
+                // wet = out - dry*0.5 (dry gain at wet 1.0 is 0.5)
+                if i > rate as usize * 2 {
+                    l.push(ol - a * 0.5);
+                    rr.push(or - b * 0.5);
+                }
+            }
+            let rms = |x: &[f32]| (x.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / x.len() as f64).sqrt();
+            let (c, level) = (corr(&l, &rr), rms(&l));
+            println!("{preset:10} wet corr {c:+.3}  wet rms {level:.4}");
+            assert!(c.abs() < 0.05, "{preset}: wet L/R correlation {c:.3}");
+            assert!(level > 0.2 && level < 0.8, "{preset}: wet level {level:.3}");
+        }
     }
 }

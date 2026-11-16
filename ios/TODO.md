@@ -33,9 +33,17 @@ Full history and decisions: [`../RUST-PORT.md`](../RUST-PORT.md). Swift is views
 - MetricKit daily payload → `metrickit_daily` event (CPU/GPU time, scroll hitch rate, peak memory,
   launch/resume/hang histograms, disk writes). The 60 s Swift system-CPU logger was removed.
 
+## Done (2026-11-16) — screen names, cloud LMS3, Delete All event
+- `Views/ScreenTracking.swift`: every `.sheet`/`.fullScreenCover` is now `lumiSheet`/`lumiFullScreenCover`
+  (102 sites): the presented view's type name ("UploadMusicView") is logged as `screen_entered` and becomes
+  the telemetry screen while it's up; the screen below comes back on dismiss. Pushed screens tagged by
+  hand with `.lumiScreen(_:)`: Cloud Backup & Upload, Backup History.
+- Cloud "Delete All" logs one `cloud_delete_all` event with the count.
+- Locked cloud tracks are fetched with `lms3=true` (raw LMS3; `lmsUnlock` exports it on the phone).
+
 ## Open (telemetry)
-- Per-view screen names beyond the tab bar (sheets like Now Playing full screen report as their tab).
-- Bridge admin page: chart perf_window / metrickit_daily per device and app version.
+- Pushed (NavigationLink) screens other than the two above still report as their tab.
+- metrickit_daily is not charted on the admin page yet (perf_window is).
 
 ## Done (2026-11-15) — Lumisound Audio (LMS3) + Premium
 - Download format "Lumisound Audio (Best)" (`lumi`) is the new default (explicit choices kept).
@@ -49,7 +57,7 @@ Full history and decisions: [`../RUST-PORT.md`](../RUST-PORT.md). Swift is views
 
 ## Open (LMS3)
 - Format Info sheet: show "Lumisound Audio", codec, kbps and Premium from `lmsInfo` (v3 fields exist).
-- Cloud tracks: opt in to `lms3=true` on `/user/music/stream` once the cloud playback path reads LMS3
+- (done 2026-11-16) Cloud tracks opt in to `lms3=true` on `/user/music/stream`
   directly (today the bridge sends the LMSLOCK1 wrap of the export).
 
 ## Done (2026-11-15) — bridge security pass

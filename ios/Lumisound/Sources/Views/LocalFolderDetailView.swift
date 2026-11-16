@@ -397,12 +397,12 @@ struct LocalFolderDetailView: View {
                 selectedIDs.removeAll()
             }
         }
-        .sheet(isPresented: $showDuplicatesSheet) {
+        .lumiSheet(isPresented: $showDuplicatesSheet) {
             FolderDuplicatesSheet(songs: sortedSongs)
                 .environmentObject(library)
                 .environmentObject(player)
         }
-        .sheet(isPresented: $showCreatePlaylistSheet) {
+        .lumiSheet(isPresented: $showCreatePlaylistSheet) {
             FolderExportPlaylistSheet(
                 defaultName: folderName,
                 onCreate: { name in

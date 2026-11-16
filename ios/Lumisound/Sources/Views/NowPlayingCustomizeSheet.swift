@@ -72,14 +72,14 @@ struct NowPlayingCustomizeSheet: View {
             selection = artworkStyleSelection
             haptic.prepare()
         }
-        .sheet(item: $editingCustomStyle) { style in
+        .lumiSheet(item: $editingCustomStyle) { style in
             CustomStyleEditorView(style: style, previewSong: player.currentSong) { saved in
                 customStyleStore.update(saved)
                 select(saved.id)
             }
             .environmentObject(library)
         }
-        .sheet(isPresented: $showStyleManager) {
+        .lumiSheet(isPresented: $showStyleManager) {
             StyleManagerView()
                 .environmentObject(library)
         }

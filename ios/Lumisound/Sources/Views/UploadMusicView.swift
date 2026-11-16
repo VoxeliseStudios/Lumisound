@@ -74,10 +74,10 @@ struct UploadMusicView: View {
             ) { result in
                 handleFilePick(result: result)
             }
-            .sheet(isPresented: $showLoginSheet) {
+            .lumiSheet(isPresented: $showLoginSheet) {
                 LoginView()
             }
-            .sheet(item: $recommendationsFor) { track in
+            .lumiSheet(item: $recommendationsFor) { track in
                 RecommendationsSheet(seed: track, token: token)
                     .environmentObject(streaming)
             }
@@ -618,6 +618,11 @@ struct UploadMusicView: View {
         guard let tok = token else { return }
         isDeletingAll = true
         defer { isDeletingAll = false }
+        // One event for the whole wipe (each file also logs its own delete);
+        // the server keeps every file in its 30-day trash.
+        RemoteLogger.log(category: "cloud", event: "cloud_delete_all",
+                         message: "Delete All confirmed",
+                         detail: ["count": streaming.userMusicMetadata.count])
 
         for track in streaming.userMusicMetadata {
             do {

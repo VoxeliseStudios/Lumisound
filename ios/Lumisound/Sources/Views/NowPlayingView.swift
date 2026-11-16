@@ -314,25 +314,25 @@ struct NowPlayingView: View {
                 .background(nowPlayingScreenBackground.ignoresSafeArea())
                 .overlay(ListenTogetherReactionsOverlay())
         }
-        .sheet(isPresented: $showSleepTimerSheet) {
+        .lumiSheet(isPresented: $showSleepTimerSheet) {
             SleepTimerSheet()
                 .environmentObject(sleepTimer)
                 .environmentObject(sleepTimer.progress)
         }
-        .sheet(isPresented: $showStemSeparationSheet) {
+        .lumiSheet(isPresented: $showStemSeparationSheet) {
             if let song = player.currentSong {
                 StemSeparationView(song: song)
             }
         }
-        .sheet(isPresented: $showLyricVideoSheet) {
+        .lumiSheet(isPresented: $showLyricVideoSheet) {
             if let song = player.currentSong {
                 LyricVideoExportView(song: song, lyrics: lyricsLines)
             }
         }
-        .sheet(isPresented: $showAIDJExportSheet) {
+        .lumiSheet(isPresented: $showAIDJExportSheet) {
             AIDJSessionExportView(log: aiDJ.sessionLog)
         }
-        .sheet(isPresented: $showCustomizeSheet) {
+        .lumiSheet(isPresented: $showCustomizeSheet) {
             NowPlayingCustomizeSheet(
                 artworkStyleSelection: artworkStyleSelection,
                 seekerStyle: $seekerStyle,
@@ -346,44 +346,44 @@ struct NowPlayingView: View {
         // Here rather than on the artwork section, which isn't in the tree
         // while the hero shows lyrics — the overflow menu's "Manage Styles"
         // did nothing in that mode.
-        .sheet(item: $editingCustomStyle) { style in
+        .lumiSheet(item: $editingCustomStyle) { style in
             CustomStyleEditorView(style: style, previewSong: player.currentSong) { saved in
                 customStyleStore.update(saved)
                 selectStyle(saved.id)
             }
             .environmentObject(library)
         }
-        .sheet(isPresented: $showStyleManager) {
+        .lumiSheet(isPresented: $showStyleManager) {
             StyleManagerView()
                 .environmentObject(library)
         }
-        .sheet(isPresented: $showFormatInfoSheet) {
+        .lumiSheet(isPresented: $showFormatInfoSheet) {
             FormatInfoSheet(song: player.currentSong, isUsingFallback: player.isUsingOpusPlayer)
                 .environmentObject(library)
         }
-        .sheet(isPresented: $showPracticeModeSheet) {
+        .lumiSheet(isPresented: $showPracticeModeSheet) {
             PracticeModeView()
                 .environmentObject(player)
                 .environmentObject(library)
         }
-        .sheet(isPresented: $showFocusSessionSheet) {
+        .lumiSheet(isPresented: $showFocusSessionSheet) {
             FocusSessionView()
                 .environmentObject(library)
         }
-        .sheet(item: $voiceMemoBookmark) { bookmark in
+        .lumiSheet(item: $voiceMemoBookmark) { bookmark in
             VoiceMemoRecorderSheet(bookmark: bookmark)
         }
-        .sheet(isPresented: $showListenTogetherSheet) {
+        .lumiSheet(isPresented: $showListenTogetherSheet) {
             ListenTogetherSheet()
                 .environmentObject(ListenRoomService.shared)
                 .environmentObject(player)
         }
-        .sheet(isPresented: $showTransferPlaybackSheet) {
+        .lumiSheet(isPresented: $showTransferPlaybackSheet) {
             TransferPlaybackSheet()
                 .environmentObject(account)
                 .environmentObject(player)
         }
-        .sheet(isPresented: $showLyricsSyncEditor) {
+        .lumiSheet(isPresented: $showLyricsSyncEditor) {
             LyricsSyncEditorView(initialLines: lyricsLines)
                 .environmentObject(player)
                 .environmentObject(player.progress)

@@ -199,29 +199,29 @@ struct PlaylistDetailView: View {
                 .tint(AppTheme.dynamicAccent)
             }
         }
-        .sheet(isPresented: $showingAddSongs) {
+        .lumiSheet(isPresented: $showingAddSongs) {
             AddSongsSheet(playlist: playlist)
                 .environmentObject(library)
                 .environmentObject(player) // SongRow context menu (SongContextMenuContent) needs it
         }
-        .sheet(isPresented: $showOrganizeSheet) {
+        .lumiSheet(isPresented: $showOrganizeSheet) {
             PlaylistOrganizeSheet(playlist: currentPlaylist)
                 .environmentObject(library)
         }
-        .sheet(isPresented: $showMixtapeCard) {
+        .lumiSheet(isPresented: $showMixtapeCard) {
             NavigationStack {
                 MixtapeCardView(playlist: currentPlaylist)
                     .environmentObject(library)
             }
         }
-        .sheet(isPresented: $showShareSheet) {
+        .lumiSheet(isPresented: $showShareSheet) {
             CollaborativePlaylistView(playlist: playlist)
                 .environmentObject(player)
                 .environmentObject(account)
                 .environmentObject(streaming)
                 .environmentObject(library)
         }
-        .sheet(isPresented: $showM3UShareSheet) {
+        .lumiSheet(isPresented: $showM3UShareSheet) {
             if let m3uExportURL {
                 RewindShareSheet(items: [m3uExportURL])
             }

@@ -87,7 +87,7 @@ struct LumenHomeView: View {
             }
         }
         .task(id: snapshotKey) { await reload() }
-        .sheet(isPresented: $showAddMusic) {
+        .lumiSheet(isPresented: $showAddMusic) {
             AddMusicView()
                 .environmentObject(library)
                 .environmentObject(folderService)

@@ -57,14 +57,14 @@ struct LumenSearchView: View {
         .scrollDismissesKeyboard(.immediately)
         .toolbar(.hidden, for: .navigationBar)
         .task(id: "\(trimmedQuery)|\(library.allSongs.count)") { await search() }
-        .sheet(item: $cloudQuery) { item in
+        .lumiSheet(item: $cloudQuery) { item in
             StreamSearchView(initialSearchText: item.text)
                 .environmentObject(streaming)
                 .environmentObject(player)
                 .environmentObject(library)
                 .environmentObject(account)
         }
-        .sheet(isPresented: $showHumToSearch) {
+        .lumiSheet(isPresented: $showHumToSearch) {
             HumToSearchView()
                 .environmentObject(library)
                 .environmentObject(player)

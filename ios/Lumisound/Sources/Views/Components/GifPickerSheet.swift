@@ -57,7 +57,7 @@ struct GifPickerSheet: View {
     @State private var canLoadMore = true
     @State private var isLoadingMore = false
     /// Set once the user picks a result and its full-resolution bytes have
-    /// downloaded — presenting this (as a `.sheet(item:)`) is what hands off
+    /// downloaded — presenting this (as a `.lumiSheet(item:)`) is what hands off
     /// to `GifCropView`.
     @State private var pendingCrop: PendingCrop? = nil
 
@@ -139,7 +139,7 @@ struct GifPickerSheet: View {
                 }
             }
         }
-        .sheet(item: $pendingCrop) { crop in
+        .lumiSheet(item: $pendingCrop) { crop in
             GifCropView(
                 sourceData: crop.data,
                 cropAspect: cropAspect,

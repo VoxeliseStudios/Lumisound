@@ -193,7 +193,7 @@ extension SettingsView {
             .navigationDestination(for: SettingsPage.self) { page in
                 settingsPage(page)
             }
-            .sheet(isPresented: $showLogin) {
+            .lumiSheet(isPresented: $showLogin) {
                 LoginView().environmentObject(account)
             }
             .task {

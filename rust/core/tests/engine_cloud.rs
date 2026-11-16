@@ -394,7 +394,12 @@ fn cloud_tracks_through_engine_and_effects() {
                     if c.spatial_yaw == Some(60.0) {
                         pass &= dlag.abs() >= 8 || dild.abs() > 1.5 || dhf.abs() > 2.0;
                     } else {
-                        pass &= dlag.abs() <= 2 && dild.abs() < 1.5;
+                        // Facing the virtual speakers the renderer is mirror-
+                        // symmetric: it may narrow a lopsided master (each
+                        // ear hears both speakers) but must not create or
+                        // flip an imbalance, nor shift the timing.
+                        let narrowed = ild.abs() <= base_ild.abs() + 1.0 && (ild * base_ild >= 0.0 || ild.abs() < 1.0);
+                        pass &= dlag.abs() <= 2 && narrowed;
                     }
                 }
                 n if n.starts_with("tremolo") => {

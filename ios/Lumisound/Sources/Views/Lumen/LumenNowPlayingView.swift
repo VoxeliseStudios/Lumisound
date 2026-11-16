@@ -56,7 +56,7 @@ struct LumenNowPlayingView: View {
             if newID == nil { close() } else { loadLyrics() }
         }
         .onAppear { loadLyrics() }
-        .sheet(isPresented: $showEffects) {
+        .lumiSheet(isPresented: $showEffects) {
             NavigationStack {
                 EffectsView()
                     .navigationTitle("Effects & EQ")
@@ -68,22 +68,22 @@ struct LumenNowPlayingView: View {
             .environmentObject(player)
             .presentationDetents([.medium, .large])
         }
-        .sheet(isPresented: $showSleepTimer) {
+        .lumiSheet(isPresented: $showSleepTimer) {
             SleepTimerSheet()
                 .environmentObject(sleepTimer)
                 .environmentObject(sleepTimer.progress)
                 .presentationDetents([.medium, .large])
         }
-        .sheet(isPresented: $showFormatInfo) {
+        .lumiSheet(isPresented: $showFormatInfo) {
             FormatInfoSheet(song: player.currentSong, isUsingFallback: player.isUsingOpusPlayer)
                 .environmentObject(library)
         }
-        .sheet(isPresented: $showTransfer) {
+        .lumiSheet(isPresented: $showTransfer) {
             TransferPlaybackSheet()
                 .environmentObject(account)
                 .environmentObject(player)
         }
-        .sheet(item: $route) { route in
+        .lumiSheet(item: $route) { route in
             NavigationStack {
                 LumenRouteDestination(route: route)
                     .lumenDestinations()
@@ -96,7 +96,7 @@ struct LumenNowPlayingView: View {
             }
             .presentationDragIndicator(.visible)
         }
-        .fullScreenCover(isPresented: $showStudio) {
+        .lumiFullScreenCover(isPresented: $showStudio) {
             NowPlayingView()
                 .overlay(alignment: .topTrailing) {
                     Button { showStudio = false } label: {

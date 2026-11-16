@@ -106,7 +106,7 @@ struct PlaylistsView: View {
                 )
             }
         }
-        .sheet(isPresented: $showingCreateSheet) {
+        .lumiSheet(isPresented: $showingCreateSheet) {
             CreatePlaylistSheet(
                 name: $newPlaylistName,
                 onCreate: { name in

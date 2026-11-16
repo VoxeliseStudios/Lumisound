@@ -114,10 +114,10 @@ struct ClassicAccountView: View {
                 photosPickerItem = nil
             }
         }
-        .sheet(isPresented: $showGifPicker) {
+        .lumiSheet(isPresented: $showGifPicker) {
             GifPickerSheet { data in Task { await account.uploadAvatarData(data) } }
         }
-        .sheet(isPresented: $showListenRoom) {
+        .lumiSheet(isPresented: $showListenRoom) {
             if listenRooms.isInRoom { ListenRoomView() } else { ListenRoomEntryView() }
         }
         .confirmationDialog("Log Out", isPresented: $showLogoutConfirm, titleVisibility: .visible) {
@@ -342,7 +342,7 @@ struct ClassicAccountView: View {
                     .foregroundStyle(.white)
             }
             .disabled(account.isSyncing)
-            NavigationLink(destination: BackupHistoryView()) {
+            NavigationLink(destination: BackupHistoryView().lumiScreen("Backup History")) {
                 Image(systemName: "clock.arrow.circlepath")
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(AppTheme.textPrimary)

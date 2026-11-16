@@ -27,6 +27,7 @@ pub fn routes() -> Router<AppState> {
         .route("/admin/api/overview", get(overview))
         .route("/admin/api/lms3", get(lms3_status).post(lms3_run))
         .route("/admin/api/download-jobs", get(download_jobs).delete(clear_download_jobs))
+        .route("/admin/api/perf", get(perf))
         .route("/admin/api/errors", get(errors).delete(clear_errors))
         .route("/admin/api/logs", get(logs))
         .route("/admin/api/events", get(events))
@@ -124,6 +125,49 @@ async fn download_jobs(State(st): State<AppState>, _a: Admin, Q(p): Q<P>) -> Api
         .fetch_one(&st.db)
         .await?,
     ))
+}
+
+#[derive(Deserialize)]
+struct PerfQ {
+    hours: Option<i64>,
+}
+
+/// The app's performance telemetry (`perf_window` / `perf_heartbeat`
+/// events): hourly averages for the charts, the screens with the worst
+/// hitching, and a per-version summary.
+async fn perf(State(st): State<AppState>, _a: Admin, Q(q): Q<PerfQ>) -> ApiResult<Json<Value>> {
+    let hours = q.hours.unwrap_or(48);
+    check_range("hours", hours, 1, 24 * 30)?;
+    let v: Value = sqlx::query_scalar(
+        "WITH w AS (SELECT created_at, detail, detail->>'appVersion' AS ver FROM ios_app_event_log \
+           WHERE event IN ('perf_window', 'perf_heartbeat') AND created_at >= NOW() - make_interval(hours => $1)), \
+         hourly AS (SELECT date_trunc('hour', created_at) AS h, COUNT(*) AS n, \
+             AVG((detail->'cpu'->>'avgPct')::float8) AS cpu, MAX((detail->'cpu'->>'maxPct')::float8) AS cpu_max, \
+             AVG(NULLIF((detail->'power'->>'avgMw')::float8, 0)) AS mw, \
+             AVG((detail->'frames'->>'hitchRatio')::float8) AS hitch, AVG((detail->'frames'->>'fps')::float8) AS fps, \
+             MAX((detail->'memory'->>'maxMb')::float8) AS mem, \
+             SUM(COALESCE((detail->'engine'->>'underruns')::int, 0)) AS underruns \
+           FROM w GROUP BY 1), \
+         screens AS (SELECT s->>'screen' AS screen, COUNT(*) AS n, SUM((s->>'seconds')::float8) AS seconds, \
+             AVG((s->>'hitchRatio')::float8) AS hitch, MAX((s->>'worstMs')::float8) AS worst \
+           FROM w, jsonb_array_elements(COALESCE(w.detail->'screens', '[]'::jsonb)) s GROUP BY 1), \
+         vers AS (SELECT COALESCE(ver, '?') AS ver, COUNT(*) AS n, AVG((detail->'cpu'->>'avgPct')::float8) AS cpu, \
+             AVG((detail->'frames'->>'hitchRatio')::float8) AS hitch, MAX((detail->'memory'->>'maxMb')::float8) AS mem \
+           FROM w GROUP BY 1) \
+         SELECT json_build_object( \
+           'hourly', (SELECT COALESCE(json_agg(json_build_object('hour', lumi_iso(h), 'n', n, 'cpu', round(cpu::numeric, 1), \
+               'cpu_max', round(cpu_max::numeric, 1), 'mw', round(mw::numeric), 'hitch', round(hitch::numeric, 1), \
+               'fps', round(fps::numeric, 1), 'mem', round(mem::numeric), 'underruns', underruns) ORDER BY h), '[]'::json) FROM hourly), \
+           'screens', (SELECT COALESCE(json_agg(json_build_object('screen', screen, 'n', n, 'seconds', round(seconds::numeric), \
+               'hitch', round(hitch::numeric, 1), 'worst_ms', round(worst::numeric)) ORDER BY hitch DESC NULLS LAST), '[]'::json) \
+               FROM (SELECT * FROM screens ORDER BY hitch DESC NULLS LAST LIMIT 15) x), \
+           'versions', (SELECT COALESCE(json_agg(json_build_object('version', ver, 'n', n, 'cpu', round(cpu::numeric, 1), \
+               'hitch', round(hitch::numeric, 1), 'mem', round(mem::numeric)) ORDER BY ver DESC), '[]'::json) FROM vers))",
+    )
+    .bind(hours as i32)
+    .fetch_one(&st.db)
+    .await?;
+    Ok(Json(v))
 }
 
 async fn errors(State(st): State<AppState>, _a: Admin, Q(p): Q<P>) -> ApiResult<Json<Value>> {

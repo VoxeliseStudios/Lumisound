@@ -91,7 +91,7 @@ struct LuaThemePresetsView: View {
                 }
             }
         }
-        .sheet(isPresented: $showImportSheet) {
+        .lumiSheet(isPresented: $showImportSheet) {
             importSheet
         }
     }

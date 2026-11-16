@@ -339,7 +339,7 @@ struct ListenRoomEntryView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } }
             }
-            .sheet(isPresented: $showRoom) {
+            .lumiSheet(isPresented: $showRoom) {
                 ListenRoomView()
                     .environmentObject(rooms)
                     .environmentObject(player)

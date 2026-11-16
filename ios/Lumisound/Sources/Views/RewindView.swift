@@ -62,7 +62,7 @@ struct RewindView: View {
         .onChange(of: mode) { newMode in
             Task { await loadDataIfNeeded(for: newMode) }
         }
-        .sheet(isPresented: $showShare) {
+        .lumiSheet(isPresented: $showShare) {
             if let img = shareImage {
                 RewindShareSheet(items: [img])
             }

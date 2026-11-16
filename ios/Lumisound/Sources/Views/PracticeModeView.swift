@@ -227,7 +227,7 @@ struct PracticeModeView: View {
         }
         .padding()
         .background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 14))
-        .sheet(isPresented: $showExportShareSheet) {
+        .lumiSheet(isPresented: $showExportShareSheet) {
             if let exportedClipURL {
                 RewindShareSheet(items: [exportedClipURL])
             }

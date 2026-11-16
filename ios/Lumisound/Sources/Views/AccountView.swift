@@ -318,7 +318,7 @@ struct AccountView: View {
 
                     // Backup history — automatic snapshots taken before every
                     // push/restore, in case a bad sync overwrites server data.
-                    NavigationLink(destination: BackupHistoryView()) {
+                    NavigationLink(destination: BackupHistoryView().lumiScreen("Backup History")) {
                         Label("Backup History", systemImage: "clock.arrow.circlepath")
                             .foregroundStyle(AppTheme.textPrimary)
                     }
@@ -884,12 +884,12 @@ struct AccountView: View {
         } message: {
             Text("Your Discord Verified badge will be removed. You can link it again later.")
         }
-        .sheet(isPresented: $showAvatarGifPicker) {
+        .lumiSheet(isPresented: $showAvatarGifPicker) {
             GifPickerSheet { data in
                 Task { await account.uploadAvatarData(data) }
             }
         }
-        .sheet(isPresented: $showListenRoom) {
+        .lumiSheet(isPresented: $showListenRoom) {
             // Straight to the room when already in one, rather than making
             // somebody pass back through the create/join form to get to it.
             if listenRooms.isInRoom {

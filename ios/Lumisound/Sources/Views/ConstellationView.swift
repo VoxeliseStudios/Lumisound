@@ -69,7 +69,7 @@ struct ConstellationView: View {
                 .frame(width: 180)
             }
         }
-        .sheet(item: $selected) { star in
+        .lumiSheet(item: $selected) { star in
             starDetailSheet(star)
         }
     }

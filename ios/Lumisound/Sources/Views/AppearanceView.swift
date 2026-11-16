@@ -466,7 +466,7 @@ struct AppearanceView: View {
             .padding(.top, 4)
         }
         .padding(.vertical, 6)
-        .sheet(item: $editingCustomLibraryStyle) { style in
+        .lumiSheet(item: $editingCustomLibraryStyle) { style in
             LibraryStyleEditorView(style: style, previewSong: library.allSongs.first) { saved in
                 customLibraryStyleStore.update(saved)
                 cardStyleRaw = saved.id
@@ -474,7 +474,7 @@ struct AppearanceView: View {
             .environmentObject(library)
             .environmentObject(player)
         }
-        .sheet(isPresented: $showLibraryStyleManager) {
+        .lumiSheet(isPresented: $showLibraryStyleManager) {
             LibraryStyleManagerView()
                 .environmentObject(library)
                 .environmentObject(player)

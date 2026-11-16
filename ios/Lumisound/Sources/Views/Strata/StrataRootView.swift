@@ -64,14 +64,14 @@ struct StrataRootView: View {
         .acoustIDConfirmSheet()
         .clipMakerSheet()
         // Pickers the Rust screens ask for (Add to playlist).
-        .sheet(item: $store.sheetRoute) { route in
+        .lumiSheet(item: $store.sheetRoute) { route in
             NavigationStack { StrataScreenHost(route: route) }
                 .environmentObject(store)
                 .presentationDetents([.medium, .large])
                 .presentationBackground(StrataPalette.ground)
         }
         // Rare advanced screens that aren't part of Strata.
-        .sheet(item: $store.classicPage) { page in
+        .lumiSheet(item: $store.classicPage) { page in
             StrataClassicSheet(page: page.page)
         }
         .alert(store.prompt?.title ?? "", isPresented: Binding(get: { store.prompt != nil }, set: { if !$0 { store.prompt = nil } })) {
@@ -83,7 +83,7 @@ struct StrataRootView: View {
                 store.confirmDelete = nil
             }
         }
-        .fullScreenCover(isPresented: $showCarMode) {
+        .lumiFullScreenCover(isPresented: $showCarMode) {
             CarModeView().environmentObject(player)
         }
         .onAppear {

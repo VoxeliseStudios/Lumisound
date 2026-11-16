@@ -104,7 +104,7 @@ struct LaunchView: View {
         .animation(LumiMotion.settle, value: showPrompt)
         .animation(LumiMotion.glide, value: libraryStepDone)
         .animation(LumiMotion.glide, value: syncStepDone)
-        .sheet(isPresented: $showLoginSheet, onDismiss: {
+        .lumiSheet(isPresented: $showLoginSheet, onDismiss: {
             if account.isLoggedIn {
                 withAnimation(LumiMotion.fade) { isLoading = false }
             }

@@ -8,7 +8,7 @@ struct AcoustIDConfirmModifier: ViewModifier {
     @EnvironmentObject private var library: LibraryManager
 
     func body(content: Content) -> some View {
-        content.sheet(item: Binding(
+        content.lumiSheet(item: Binding(
             get: { center.pending },
             set: { center.pending = $0 }
         )) { pending in

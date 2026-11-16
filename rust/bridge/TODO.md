@@ -21,6 +21,13 @@ Full history and decisions: [`RUST-PORT.md`](../../RUST-PORT.md).
   inventory in a snapshot table, 556 originals in `.lms3-backup/originals/`; the rest re-download by
   source id. Restore only on the owner's word.
 
+## Done (2026-11-16) — admin performance
+- `GET /admin/api/perf?hours=` (1..720): hourly CPU / power / hitch / fps / peak memory / underruns from
+  `perf_window` + `perf_heartbeat`, the 15 screens with the most hitching, per-version summary. The admin
+  page charts it (inline SVG, no libraries) and escapes every table cell.
+- The "Jobs completed (24h)" card counted status `completed`, which downloads never use (`success`), so
+  it always read 0.
+
 ## Open (2026-11-16)
 - Admin restore from the trash (move back + reinsert `.meta.json`), and a trash view in admin.html.
 - Alternate-release fallback for SoundCloud/Bandcamp ids (YouTube only now).

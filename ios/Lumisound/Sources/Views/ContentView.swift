@@ -508,7 +508,7 @@ struct ClassicContentView: View {
         .acoustIDConfirmSheet()
         .clipMakerSheet()
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .fullScreenCover(isPresented: $showCarMode) {
+        .lumiFullScreenCover(isPresented: $showCarMode) {
             CarModeView()
                 .environmentObject(player)
         }

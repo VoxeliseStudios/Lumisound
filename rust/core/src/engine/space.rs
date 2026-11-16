@@ -381,3 +381,49 @@ mod tests {
         assert_eq!(s.process(0.2, 0.1), (0.2, 0.1));
     }
 }
+
+#[cfg(test)]
+mod symmetry_tests {
+    use super::{LumiSpace, SpatialMode};
+
+    fn db(x: &[f32]) -> f64 {
+        10.0 * (x.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / x.len() as f64).max(1e-20).log10()
+    }
+
+    /// Facing forward, every mode treats the sides alike: swapping the input
+    /// channels swaps the output levels (the early reflections differ per
+    /// ear in timing, like a real room, but not in level), and a lopsided
+    /// mix may be narrowed but never leans the other way.
+    #[test]
+    fn yaw_zero_is_mirror_symmetric() {
+        let rate = 48_000.0;
+        for mode in [SpatialMode::Studio, SpatialMode::Wide, SpatialMode::Concert, SpatialMode::Crossfeed] {
+            let (mut a, mut b) = (LumiSpace::new(rate), LumiSpace::new(rate));
+            for s in [&mut a, &mut b] {
+                s.set_mode(mode);
+                s.set_yaw(0.0);
+            }
+            let mut seed = 7u32;
+            let mut noise = || {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (seed >> 8) as f32 / (1u32 << 24) as f32 - 0.5
+            };
+            let (mut al, mut ar, mut bl, mut br) = (vec![], vec![], vec![], vec![]);
+            for i in 0..(rate as usize * 2) {
+                // Lopsided: left 6 dB up and differently coloured.
+                let (l, r) = (noise() * 0.6, noise() * 0.3 + (i as f32 * 0.05).sin() * 0.05);
+                let (x, y) = a.process(l, r);
+                let (u, v) = b.process(r, l);
+                if i > 9_600 {
+                    al.push(x);
+                    ar.push(y);
+                    bl.push(u);
+                    br.push(v);
+                }
+            }
+            let (ild_a, ild_b) = (db(&al) - db(&ar), db(&br) - db(&bl));
+            assert!((ild_a - ild_b).abs() < 0.5, "{mode:?}: ILD {ild_a:+.2} vs mirrored {ild_b:+.2} dB");
+            assert!(ild_a > 0.0, "{mode:?}: a left-heavy mix came out leaning right ({ild_a:+.2} dB)");
+        }
+    }
+}

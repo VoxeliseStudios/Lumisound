@@ -119,7 +119,11 @@ extension StreamingService {
             return outURL
         }
 
-        var request = URLRequest(url: remoteURL)
+        // lms3=true: an LMS3 cloud file comes as is and the core exports it
+        // below (`lmsUnlock`), instead of the bridge exporting and re-locking
+        // it for us; older cloud files are LMSLOCK1 either way.
+        let lms3URL = URL(string: remoteURL.absoluteString + "&lms3=true") ?? remoteURL
+        var request = URLRequest(url: lms3URL)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.timeoutInterval = 120
 

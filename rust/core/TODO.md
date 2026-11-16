@@ -17,9 +17,15 @@ Full history and decisions: [`RUST-PORT.md`](../../RUST-PORT.md).
   bit-identical to a continuous decode (plain M4A reader: −26.5 dB).
 - blend_cloud / pitch_cloud now pass.
 
-## Open (found 2026-11-16, not stretch/LMS3)
-- engine_cloud effect checks: "spatial (yaw 0)" on FFVII REMAKE- 嵐の前 (ILD −3.0 dB vs dry) and
-  "reverb smallRoom 35%" on Titan (crest 11.6 → 14.0 dB) flag FAIL rows (suite still passes).
+## Done (2026-11-16) — reverb stereo, spatial symmetry
+- Reverb: each side's tank input goes through its own pair of unity-gain Schroeder allpasses
+  (`DIFFUSE_TUNING`). Freeverb's 23-sample spread left the low-mids nearly mono: a small room on Titan
+  had wet L/R corr +0.37 and left the mix's correlation at 0.44 → 0.45; now wet −0.25, mix 0.44 → 0.28
+  (large hall 0.44 → −0.03), level unchanged. Test `reverb_tests::wet_stereo_per_preset` (|corr| < 0.05
+  on noise, level in range). engine_quality reverb click score 3.83 (≤ 8).
+- Spatial: `symmetry_tests::yaw_zero_is_mirror_symmetric` — at yaw 0 every mode mirrors levels within
+  0.5 dB and never reverses a lean. FFVII's −3 dB "vs dry" is the track: its bass (which bypasses the
+  virtual speakers) leans the other way. engine_cloud's yaw-0 check now allows narrowing, not flips.
 
 ## Done (2026-11-15) — every system on LMS3
 - `tests/lms3_systems.rs`: probe, decode, BPM, key, waveform, transition/spectral profiles, loudness,

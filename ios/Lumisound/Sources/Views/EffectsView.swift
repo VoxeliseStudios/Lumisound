@@ -69,7 +69,7 @@ struct EffectsView: View {
             selectHaptic.prepare()
             successHaptic.prepare()
         }
-        .sheet(isPresented: $showLuaEffects) {
+        .lumiSheet(isPresented: $showLuaEffects) {
             NavigationStack {
                 LuaEffectScriptsView()
                     .environmentObject(player)

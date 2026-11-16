@@ -206,7 +206,7 @@ struct ProfileView: View {
                 .disabled(isSaving)
             }
         }
-        .sheet(isPresented: $showPublicPreview) {
+        .lumiSheet(isPresented: $showPublicPreview) {
             if let userId = account.currentUser?.id {
                 NavigationStack {
                     PublicProfileView(userId: userId, isSelfPreview: true)
@@ -261,7 +261,7 @@ struct ProfileView: View {
                 }
             }
         }
-        .sheet(item: Binding(
+        .lumiSheet(item: Binding(
             get: { editingSlot.map { PinnedSlot(index: $0) } },
             set: { editingSlot = $0?.index }
         )) { slot in
@@ -276,12 +276,12 @@ struct ProfileView: View {
             )
             .environmentObject(library)
         }
-        .sheet(isPresented: $showAvatarGifPicker) {
+        .lumiSheet(isPresented: $showAvatarGifPicker) {
             GifPickerSheet { data in
                 Task { await account.uploadAvatarData(data) }
             }
         }
-        .sheet(isPresented: $showBannerGifPicker) {
+        .lumiSheet(isPresented: $showBannerGifPicker) {
             // Matches ProfileHeaderCard's banner aspect closely enough for a
             // crop guide — it doesn't need to be pixel-exact to the current
             // device width, since the banner is still `.scaleAspectFill`ed
@@ -301,7 +301,7 @@ struct ProfileView: View {
                 }
             }
         }
-        .sheet(isPresented: $showFeaturedPlaylistPicker) {
+        .lumiSheet(isPresented: $showFeaturedPlaylistPicker) {
             FeaturedPlaylistPickerSheet(currentPlaylistID: featuredPlaylist?.id) { picked in
                 // Optimistic local update from just the summary the picker
                 // already has (id/name/trackCount) — same "don't make the

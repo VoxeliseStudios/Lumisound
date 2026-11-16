@@ -78,7 +78,7 @@ extension NowPlayingView {
         )
         .tint(AppTheme.dynamicAccent)
         .panelStyle()
-        // `.sheet(isPresented: $showLyricsSyncEditor)` lives on
+        // `.lumiSheet(isPresented: $showLyricsSyncEditor)` lives on
         // `NowPlayingView.body` now, not here — the 2026-07 redesign's
         // full-lyrics hero mode (`NowPlayingDisplayMode.lyrics`) also opens
         // this same sync editor, and that hero can be showing while this

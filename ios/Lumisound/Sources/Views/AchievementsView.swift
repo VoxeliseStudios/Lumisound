@@ -96,7 +96,7 @@ struct AchievementsView: View {
             await account.fetchAchievements()
             checkForNewBadges()
         }
-        .sheet(item: $selectedBadge) { badge in
+        .lumiSheet(item: $selectedBadge) { badge in
             badgeDetailSheet(badge, unlocked: account.achievements?.badges.contains(badge.id) ?? false)
         }
     }

@@ -52,7 +52,7 @@ struct LibraryBackupView: View {
                 .padding(.vertical, 4)
             }
         }
-        .sheet(isPresented: $showShareSheet) {
+        .lumiSheet(isPresented: $showShareSheet) {
             if let exportURL {
                 RewindShareSheet(items: [exportURL])
             }

@@ -45,7 +45,7 @@ struct MixtapeCardView: View {
         .navigationBarTitleDisplayMode(.inline)
         .background(GalleryBackgroundView().ignoresSafeArea())
         .task { await loadArtwork() }
-        .sheet(isPresented: $showShare) {
+        .lumiSheet(isPresented: $showShare) {
             if let shareImage {
                 RewindShareSheet(items: [shareImage])
             }

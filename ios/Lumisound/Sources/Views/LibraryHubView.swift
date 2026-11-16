@@ -187,17 +187,17 @@ struct LibraryHubView: View {
                 .accessibilityLabel("Customize Home")
             }
         }
-        .sheet(isPresented: $showCustomizationSheet) {
+        .lumiSheet(isPresented: $showCustomizationSheet) {
             HomeHubCustomizationView()
         }
-        .sheet(isPresented: $showHumToSearch) {
+        .lumiSheet(isPresented: $showHumToSearch) {
             HumToSearchView()
         }
-        .sheet(isPresented: $showNameThatTune) {
+        .lumiSheet(isPresented: $showNameThatTune) {
             NameThatTuneView()
                 .environmentObject(streaming)
         }
-        .sheet(item: Binding(
+        .lumiSheet(item: Binding(
             get: { similarListenerSearchQuery.map { IdentifiableQuery(text: $0) } },
             set: { similarListenerSearchQuery = $0?.text }
         )) { query in

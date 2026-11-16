@@ -23,7 +23,7 @@ struct StyleManagerView: View {
                     Button("Done") { dismiss() }
                 }
             }
-            .sheet(item: $editingCustomStyle) { style in
+            .lumiSheet(item: $editingCustomStyle) { style in
                 CustomStyleEditorView(style: style, previewSong: nil) { saved in
                     customStyleStore.update(saved)
                 }

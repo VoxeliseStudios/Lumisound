@@ -58,7 +58,7 @@ struct NameThatTuneView: View {
             .navigationBarTitleDisplayMode(.inline)
             .onDisappear { cancelRecordingIfNeeded() }
         }
-        .sheet(isPresented: $showSearch) {
+        .lumiSheet(isPresented: $showSearch) {
             StreamSearchView(initialSearchText: searchQuery)
                 .environmentObject(streaming)
         }

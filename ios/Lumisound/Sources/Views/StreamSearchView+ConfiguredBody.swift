@@ -181,7 +181,7 @@ extension StreamSearchView {
         }
         // fileImporter must be at this level (NavigationStack content root), NOT inside
         // a nested List or conditional branch — SwiftUI can't present the picker from deep hierarchy.
-        .sheet(item: $selectedInfoTrack) { track in
+        .lumiSheet(item: $selectedInfoTrack) { track in
             UserMusicInfoSheet(track: track)
         }
         .fileImporter(

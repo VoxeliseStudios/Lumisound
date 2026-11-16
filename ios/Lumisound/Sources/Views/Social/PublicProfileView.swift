@@ -210,10 +210,10 @@ struct PublicProfileView: View {
             }
             Button("Cancel", role: .cancel) {}
         }
-        .sheet(isPresented: $showSendSong) {
+        .lumiSheet(isPresented: $showSendSong) {
             SendSongSheet(friendID: userId, friendName: profile?.displayName ?? profile?.username ?? "your friend")
         }
-        .sheet(isPresented: $showBlendMix) {
+        .lumiSheet(isPresented: $showBlendMix) {
             NavigationStack {
                 BlendMixView(friendUserID: userId, friendName: profile?.displayName ?? profile?.username ?? "your friend")
             }

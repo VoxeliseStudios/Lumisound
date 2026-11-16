@@ -51,7 +51,7 @@ struct PodcastEpisodesView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task { await reload() }
         .refreshable { await reload() }
-        .sheet(item: $chaptersEpisode) { episode in
+        .lumiSheet(item: $chaptersEpisode) { episode in
             PodcastChaptersSheet(episode: episode, subscription: subscription, savedProgress: progress[episode.guid])
         }
     }

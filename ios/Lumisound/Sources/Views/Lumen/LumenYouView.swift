@@ -81,7 +81,7 @@ struct LumenYouView: View {
         }
         .scrollIndicators(.hidden)
         .toolbar(.hidden, for: .navigationBar)
-        .sheet(isPresented: $showLogin) {
+        .lumiSheet(isPresented: $showLogin) {
             LoginView().environmentObject(account)
         }
         .task {
