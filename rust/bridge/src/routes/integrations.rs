@@ -1115,7 +1115,9 @@ async fn announcements(State(st): State<AppState>, u: User) -> ApiResult<Json<Va
         sqlx::query_scalar(
             "SELECT COALESCE(json_agg(json_build_object('id', a.id, 'message', a.message, 'from_aria', COALESCE(a.from_aria, false), 'category', a.category, \
                'ends_at', lumi_iso(a.ends_at)) ORDER BY a.created_at), '[]'::json) FROM ios_announcements a \
-             LEFT JOIN ios_announcement_views v ON v.announcement_id = a.id AND v.user_id = $1 WHERE v.user_id IS NULL AND NOW() >= a.starts_at AND NOW() < a.ends_at \
+             LEFT JOIN ios_announcement_views v ON v.announcement_id = a.id AND v.user_id = $1 \
+             WHERE (v.user_id IS NULL OR (a.repeat_hours IS NOT NULL AND v.seen_at < (NOW() AT TIME ZONE 'UTC') - make_interval(hours => a.repeat_hours))) \
+               AND NOW() >= a.starts_at AND NOW() < a.ends_at \
                AND POSITION($2 IN ',' || COALESCE(a.exclude_user_ids, '') || ',') = 0 \
                AND (a.below_version IS NULL OR (SELECT string_to_array(substring(e.detail->>'appVersion' FROM '^[0-9]+(?:[.][0-9]+)*'), '.')::int[] \
                       FROM ios_app_event_log e WHERE e.user_id = $1 AND e.detail->>'platform' = 'ios' \
@@ -1130,14 +1132,15 @@ async fn announcements(State(st): State<AppState>, u: User) -> ApiResult<Json<Va
 }
 
 async fn announcement_seen(State(st): State<AppState>, u: User, Path(id): Path<String>) -> ApiResult<StatusCode> {
-    sqlx::query("INSERT INTO ios_announcement_views (announcement_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING").bind(&id).bind(&u.id).execute(&st.db).await?;
+    // Upsert seen_at: repeating announcements (repeat_hours) count from the last showing.
+    sqlx::query("INSERT INTO ios_announcement_views (announcement_id, user_id) VALUES ($1, $2) ON CONFLICT (announcement_id, user_id) DO UPDATE SET seen_at = CURRENT_TIMESTAMP").bind(&id).bind(&u.id).execute(&st.db).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 async fn admin_announcements(State(st): State<AppState>, _a: Admin) -> ApiResult<Json<Value>> {
     let v: Value = sqlx::query_scalar(
         "SELECT COALESCE(json_agg(r ORDER BY at DESC), '[]'::json) FROM (SELECT json_build_object('id', a.id, 'message', a.message, 'from_aria', COALESCE(a.from_aria, false), \
-           'category', a.category, 'starts_at', lumi_iso(a.starts_at), 'ends_at', lumi_iso(a.ends_at), 'below_version', a.below_version, \
+           'category', a.category, 'starts_at', lumi_iso(a.starts_at), 'ends_at', lumi_iso(a.ends_at), 'below_version', a.below_version, 'repeat_hours', a.repeat_hours, \
            'excluded', COALESCE((SELECT json_agg(x) FROM unnest(string_to_array(COALESCE(a.exclude_user_ids, ''), ',')) x WHERE x <> ''), '[]'::json), \
            'active', COALESCE(NOW() < a.ends_at AND NOW() >= a.starts_at, false), \
            'seen_by', (SELECT COUNT(*) FROM ios_announcement_views v WHERE v.announcement_id = a.id)) AS r, a.created_at AS at \
@@ -1163,6 +1166,9 @@ struct AnnBody {
     /// left out rather than guessed at.
     #[serde(default)]
     below_version: Option<String>,
+    /// Show again every N hours while still eligible (None = once).
+    #[serde(default)]
+    repeat_hours: Option<i32>,
 }
 
 fn three() -> f64 {
@@ -1194,9 +1200,12 @@ async fn admin_create_announcement(State(st): State<AppState>, _a: Admin, J(b): 
             return Err(AppError::bad_request("below_version must look like 2.0.0.48"));
         }
     }
+    if b.repeat_hours.is_some_and(|h| !(1..=720).contains(&h)) {
+        return Err(AppError::bad_request("repeat_hours must be 1..720"));
+    }
     let id = uuid::Uuid::new_v4().simple().to_string();
     let ends = Utc::now().naive_utc() + CDuration::microseconds((b.days * 86400e6) as i64);
-    sqlx::query("INSERT INTO ios_announcements (id, message, from_aria, category, ends_at, exclude_user_ids, below_version) VALUES ($1, $2, $3, $4, $5, $6, $7)")
+    sqlx::query("INSERT INTO ios_announcements (id, message, from_aria, category, ends_at, exclude_user_ids, below_version, repeat_hours) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)")
         .bind(&id)
         .bind(&msg)
         .bind(b.from_aria)
@@ -1204,6 +1213,7 @@ async fn admin_create_announcement(State(st): State<AppState>, _a: Admin, J(b): 
         .bind(ends)
         .bind(excluded.join(","))
         .bind(&below)
+        .bind(b.repeat_hours)
         .execute(&st.db)
         .await?;
     tracing::info!("announcement created id={id} days={:.1} excluded={} below_version={:?}", b.days, excluded.len(), below);

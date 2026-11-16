@@ -1945,3 +1945,7 @@ CREATE INDEX IF NOT EXISTS ios_social_drops_idx_from ON ios_social_drops (from_u
 -- Announcements aimed at outdated apps: shown only to users whose latest iOS
 -- telemetry reports a version below this one (NULL = everyone).
 ALTER TABLE ios_announcements ADD COLUMN IF NOT EXISTS below_version VARCHAR(32);
+-- Re-show interval: NULL = once per user (default). Set (e.g. 1) to show it
+-- again every N hours to users who are still eligible — with below_version,
+-- a "please update" notice that persists until they update.
+ALTER TABLE ios_announcements ADD COLUMN IF NOT EXISTS repeat_hours INTEGER;

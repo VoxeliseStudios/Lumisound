@@ -2,6 +2,12 @@
 
 Full history and decisions: [`RUST-PORT.md`](../../RUST-PORT.md).
 
+## Done (2026-11-15) — repeating announcements
+- `ios_announcements.repeat_hours` (NULL = once): shown again every N hours while the user is still
+  eligible; `/seen` upserts `seen_at`. Admin create accepts `repeat_hours` (1..720).
+- Live: the Aria "please update" notice (c071fa78…) targets below 2.0.0.52, repeats hourly, ends
+  2026-12-15 23:59 local (2026-12-16 05:59 UTC).
+
 ## Done (2026-11-15) — security pass (see ~/Projects/SECURITY-AUDIT.md)
 - Shared-key routes (`ApiKey`: search, stream, download*, track, resolve, playlist, radio, lyrics,
   trending/suggestions) now need a live signed-in session (`X-Account-Token`, or a user JWT as the
