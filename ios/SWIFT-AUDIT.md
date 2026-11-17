@@ -18,7 +18,10 @@ system APIs that can only be reached from Swift. Everything functional runs in
 | Local-file playback in `AudioPlayerManager` (`+RustEngine.swift`) | `engine/` |
 | `LibraryManager+Snapshot`, `ScanCacheService` | `library.rs` |
 | `PlayHistoryStore`, `BookmarkStore`, `LongTrackResumeStore`, `TimeCapsuleStore`, `DeletedPlaylistsStore`, `RecentlyDeletedService`, `ListeningGoalService`, `IntelligenceSuggestionCache`, `TrackedPlaylistStore` (store part) | `stores.rs` |
-| `LuaJSONBridge`, `LuaThemeEngine` (+ effect/visualizer/smart-playlist/vault engines that call the bridge) | `lua.rs` |
+| `ThemePresetEngine`, `EffectPresets`, `VisualizerPresetStore` (Lua engines removed 2026-11-16) | `presets/` (JSON presets, no scripting runtime) |
+| `HubContentBuilder` (Library Hub shelves, collages, listened fraction, played today) | `hub.rs` |
+| `SpectralEQMatcher` (Auto EQ by measurement) | `engine/eq.rs` (`eq_spectral_match`) |
+| Dead-link relink match, vault tagging rule (now JSON smart rules) | `duplicates.rs` (`dup_best_match`), `smart.rs` |
 | `Appearance` (interface styles) | `appearance.rs` |
 
 ## 2. Swift by necessity (Apple-only APIs)
@@ -102,5 +105,5 @@ Still Apple, could move later:
 - `AVSpeechSynthesizer` (AI DJ voice): needs an on-device TTS model in Rust.
 - `AVAssetExportSession` / `AVAssetWriter` exports (clips, lyric videos, M4A
   re-encodes): needs an AAC/video encoder in Rust (syom can encode AAC; video stays Apple).
-- `CryptoKit.SHA256` in two places (avatar / folder cover hashing): trivial, low value.
+- ~~`CryptoKit.SHA256` in two places~~ → core `sha256_hex` (2026-11-16).
 - `GroupActivities` (SharePlay): task 12 replaces it with Lumisound's own Listen Together.

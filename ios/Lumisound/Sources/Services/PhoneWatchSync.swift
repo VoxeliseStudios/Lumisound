@@ -34,12 +34,12 @@ final class PhoneWatchSync: NSObject, ObservableObject {
             "artist": song?.artistName ?? "",
             "isPlaying": isPlaying,
         ]
-        // Mirrors whichever Lua theme preset is active (see LuaThemeEngine)
+        // Mirrors whichever theme preset is active (see ThemePresetEngine)
         // so the watch's transport buttons/progress match the phone's
         // accent instead of always using the system default tint. Omitted
         // entirely when no preset is active — the watch just keeps its
         // existing default in that case.
-        if let accentHex = LuaThemeEngine.shared.activeAccentHex {
+        if let accentHex = ThemePresetEngine.shared.activeAccentHex {
             ctx["accentColorHex"] = accentHex
         }
         if let artwork, let data = Self.thumbnailJPEG(artwork) {

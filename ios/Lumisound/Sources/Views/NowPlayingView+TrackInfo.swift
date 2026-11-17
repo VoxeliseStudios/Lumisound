@@ -112,7 +112,7 @@ extension NowPlayingView {
     /// applies, so the row doesn't reserve empty space.
     @ViewBuilder
     var trackBadges: some View {
-        let bpm = LuaFeatureFlags.showBpmBadges ? player.currentSong?.bpm : nil
+        let bpm = PresetFeatureFlags.showBpmBadges ? player.currentSong?.bpm : nil
         let formatTag = player.currentSong?.formatTag
         let lms3 = player.currentSong?.lms3Badge
         if let song = player.currentSong {

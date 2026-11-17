@@ -13,6 +13,7 @@ COPY bridge bridge
 COPY core core
 COPY media media
 COPY rpc rpc
+COPY tools tools
 COPY vendor vendor
 RUN --mount=type=cache,target=/usr/local/cargo/registry --mount=type=cache,target=/src/target \
     CARGO_BUILD_JOBS=2 CMAKE_BUILD_PARALLEL_LEVEL=2 cargo build --release -p lumisound-bridge && cp target/release/lumisound-bridge /lumisound-bridge

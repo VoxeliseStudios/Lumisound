@@ -1,0 +1,12 @@
+[package]
+name = "lumisound-cookies"
+version = "1.0.0"
+edition.workspace = true
+description = "Host-side YouTube cookie refresh for the Lumisound bridge (replaces ios-bridge/refresh_youtube_cookies.sh)"
+
+[[bin]]
+name = "lumisound-refresh-cookies"
+path = "src/main.rs"
+
+[dependencies]
+libc = "0.2"

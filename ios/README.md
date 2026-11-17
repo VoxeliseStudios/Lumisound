@@ -26,7 +26,7 @@ See the [top-level README](../README.md) for the full feature list. Short versio
 | **Listen Together** | SharePlay sync plus a shared suggest-and-vote Up Next queue |
 | **Extras** | Needle Drop (a music-guessing mini-game) and Time Capsules (songs + a note, locked until a future date) |
 | **Visuals** | Gallery background (slideshow with transitions), 25 Now Playing artwork styles plus a custom style editor, synced lyrics |
-| **Lua Theme Presets** | 10 complete, swappable Lua-scripted presets (Settings → Appearance → Lua Theme Presets) — each one script sets colors, fonts, panel/glass style, feature flags, and Library sort/display defaults in one tap |
+| **Theme Presets** | 14 swappable presets (Settings → Appearance → Theme Presets), shareable as JSON — each sets colors, fonts, panel/glass style, feature flags, and Library sort/display defaults in one tap |
 | **Now Playing** | Full transport controls, Up Next queue, lock-screen & headphone controls, CarPlay, Siri Shortcuts, Focus Filter |
 | **Companion apps** | A full Apple Watch app and Apple TV app, both signed into the same account as the phone |
 
@@ -119,11 +119,18 @@ open Lumisound.xcodeproj   # build from Xcode
 
 Set your Apple development team in **Xcode → Signing & Capabilities** before archiving.
 
-### Lua Theme Presets
+### Presets (themes, effects, visualizers)
 
-Lua scripts (theme presets, effects, visualizers, smart-playlist and vault rules) run on the Rust core's sandboxed Lua 5.4 runtime (`rust/core/src/lua.rs`: math/string/table/utf8 only, a `json` module, a 3-second budget per script). No Swift package is involved.
-
-The 10 bundled presets live in `Lumisound/Resources/LuaPresets/*.lua` and are bundled as a folder reference (declared under the `Lumisound` target's `resources:` in `project.yml`) so `LuaThemeEngine` can look each one up by name at runtime. Each preset script assigns a single global `theme` table covering colors, font/panel/artwork/seeker/card styles, Liquid Glass tuning, feature flags, and a couple of Library tab display-logic hooks — see any of the 10 files for the exact shape, or `LuaThemeConfig` in `LuaThemeEngine.swift` for the Swift-side schema they decode into. Users pick a preset from **Settings → Appearance → Lua Theme Presets**.
+Presets are JSON definitions resolved by the Rust core (`rust/core/src/presets/`): 14 bundled
+themes, 8 effects and 4 visualizer styles live in `themes.json` / `effects.json` /
+`visualizers.json` there, and imported ones in `Documents/Presets/{Themes,Effects,Visualizers}`.
+A definition can compute values: theme colours as `{"shade_of": "background", "amount": 0.18}`,
+effect `eq_curve` shapes (smiley, notch, bass, tape, blend), `genre_curves` (EQ picked from the
+playing track's genre), a tremolo that follows the track's BPM (`pulses_per_beat`), and visualizer
+`hsl_ramp` / `gradient` / `alternate` colour generators. Long-press any preset → **Share as JSON**
+to get an editable template. Smart playlists use condition groups (AND of ANY/ALL groups, plus
+starts/ends with, regex, is empty). Lua was removed on 2026-11-16; imported `.lua` files and Lua
+smart-playlist rules no longer run.
 
 ### CI / GitHub Actions
 

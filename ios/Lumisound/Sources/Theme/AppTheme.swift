@@ -55,7 +55,7 @@ enum AppTheme {
     }
 
     // Lumen ignores the classic `AppBackgroundTheme` presets (they were
-    // tuned for the classic slate look) but still honors an explicit Lua
+    // tuned for the classic slate look) but still honors an explicit theme
     // preset override, which is a deliberate per-user choice.
     static var background: Color {
         customBackgroundOverride?.background
@@ -70,9 +70,9 @@ enum AppTheme {
             ?? (InterfaceEdition.isStrata ? StrataPalette.raised : InterfaceEdition.isLumen ? LumenPalette.elevated : (Appearance.classicColor(\.elevated) ?? backgroundTheme.elevatedSurface))
     }
 
-    // MARK: Lua-Driven Custom Background Override
+    // MARK: Preset Custom Background Override
     //
-    // A Lua theme preset (see `Theme/LuaThemeEngine.swift`) can supply its own
+    // A theme preset (see `Services/PresetEngine.swift`) can supply its own
     // arbitrary background/surface/elevated-surface hex colors instead of
     // reusing one of the fixed `AppBackgroundTheme` cases above — this is
     // where those land. `background`/`surface`/`elevatedSurface` above check
@@ -80,7 +80,7 @@ enum AppTheme {
     // every existing install (no override ever saved) is completely
     // unaffected.
 
-    private enum LuaBackgroundKeys {
+    private enum PresetBackgroundKeys {
         static let background = "lua_bg_override_background"
         static let surface = "lua_bg_override_surface"
         static let elevatedSurface = "lua_bg_override_elevated"
@@ -89,30 +89,30 @@ enum AppTheme {
     static var customBackgroundOverride: (background: Color, surface: Color, elevatedSurface: Color)? {
         let d = UserDefaults.standard
         guard
-            let bg = d.string(forKey: LuaBackgroundKeys.background),
-            let sf = d.string(forKey: LuaBackgroundKeys.surface),
-            let el = d.string(forKey: LuaBackgroundKeys.elevatedSurface)
+            let bg = d.string(forKey: PresetBackgroundKeys.background),
+            let sf = d.string(forKey: PresetBackgroundKeys.surface),
+            let el = d.string(forKey: PresetBackgroundKeys.elevatedSurface)
         else { return nil }
         return (Color(hex: bg), Color(hex: sf), Color(hex: el))
     }
 
     static func saveCustomBackgroundOverride(background: String, surface: String, elevatedSurface: String) {
         let d = UserDefaults.standard
-        d.set(background, forKey: LuaBackgroundKeys.background)
-        d.set(surface, forKey: LuaBackgroundKeys.surface)
-        d.set(elevatedSurface, forKey: LuaBackgroundKeys.elevatedSurface)
+        d.set(background, forKey: PresetBackgroundKeys.background)
+        d.set(surface, forKey: PresetBackgroundKeys.surface)
+        d.set(elevatedSurface, forKey: PresetBackgroundKeys.elevatedSurface)
     }
 
     static func resetCustomBackgroundOverride() {
         let d = UserDefaults.standard
-        d.removeObject(forKey: LuaBackgroundKeys.background)
-        d.removeObject(forKey: LuaBackgroundKeys.surface)
-        d.removeObject(forKey: LuaBackgroundKeys.elevatedSurface)
+        d.removeObject(forKey: PresetBackgroundKeys.background)
+        d.removeObject(forKey: PresetBackgroundKeys.surface)
+        d.removeObject(forKey: PresetBackgroundKeys.elevatedSurface)
     }
 
-    // MARK: Lua-Driven Layout Scale
+    // MARK: Preset Layout Scale
     //
-    // Corner-radius / spacing multipliers a Lua preset can set (e.g. a
+    // Corner-radius / spacing multipliers a theme preset can set (e.g. a
     // "high contrast" preset using sharper corners and more breathing room,
     // or a "retro" preset using tighter spacing). Consumed by
     // `PanelStyleModifier` below — the same shared modifier every
@@ -121,7 +121,7 @@ enum AppTheme {
     // for a missing Double key) is treated as "unset" so the multiplier is
     // always a real, positive scale.
 
-    private enum LuaLayoutKeys {
+    private enum PresetLayoutKeys {
         static let cornerRadiusScale = "lua_layout_corner_radius_scale"
         static let spacingScale = "lua_layout_spacing_scale"
     }
@@ -129,25 +129,34 @@ enum AppTheme {
     // Classic also takes the interface style's corner shape and density
     // here (Lumen applies them in its own design system).
     static var layoutCornerRadiusScale: Double {
-        let v = UserDefaults.standard.double(forKey: LuaLayoutKeys.cornerRadiusScale)
+        let v = UserDefaults.standard.double(forKey: PresetLayoutKeys.cornerRadiusScale)
         return (v > 0 ? v : 1.0) * (InterfaceEdition.isLumen ? 1.0 : Appearance.current.cornerScale)
     }
 
     static var layoutSpacingScale: Double {
-        let v = UserDefaults.standard.double(forKey: LuaLayoutKeys.spacingScale)
+        let v = UserDefaults.standard.double(forKey: PresetLayoutKeys.spacingScale)
         return (v > 0 ? v : 1.0) * (InterfaceEdition.isLumen ? 1.0 : Appearance.current.spacingScale)
+    }
+
+    /// The preset's own multipliers (1 when unset), without the interface
+    /// style's scale applied.
+    static var presetLayoutScales: (cornerRadius: Double, spacing: Double) {
+        let d = UserDefaults.standard
+        let c = d.double(forKey: PresetLayoutKeys.cornerRadiusScale)
+        let s = d.double(forKey: PresetLayoutKeys.spacingScale)
+        return (c > 0 ? c : 1.0, s > 0 ? s : 1.0)
     }
 
     static func saveLayoutScales(cornerRadius: Double, spacing: Double) {
         let d = UserDefaults.standard
-        d.set(cornerRadius, forKey: LuaLayoutKeys.cornerRadiusScale)
-        d.set(spacing, forKey: LuaLayoutKeys.spacingScale)
+        d.set(cornerRadius, forKey: PresetLayoutKeys.cornerRadiusScale)
+        d.set(spacing, forKey: PresetLayoutKeys.spacingScale)
     }
 
     static func resetLayoutScales() {
         let d = UserDefaults.standard
-        d.removeObject(forKey: LuaLayoutKeys.cornerRadiusScale)
-        d.removeObject(forKey: LuaLayoutKeys.spacingScale)
+        d.removeObject(forKey: PresetLayoutKeys.cornerRadiusScale)
+        d.removeObject(forKey: PresetLayoutKeys.spacingScale)
     }
 
     // MARK: Dynamic Accent
@@ -406,7 +415,7 @@ private struct PanelStyleModifier: ViewModifier {
     func body(content: Content) -> some View {
         // Scaled by AppTheme.layoutCornerRadiusScale/layoutSpacingScale — both
         // default to 1.0 (reproducing the original 8pt/14pt literals exactly)
-        // until a Lua theme preset sets them to something else.
+        // until a theme preset sets them to something else.
         let isLumen = InterfaceEdition.isLumen
         let radius = CGFloat((isLumen ? 20 : 8) * AppTheme.layoutCornerRadiusScale)
         let pad = CGFloat((isLumen ? 16 : 14) * AppTheme.layoutSpacingScale)

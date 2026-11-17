@@ -1,4 +1,3 @@
-import CryptoKit
 import Foundation
 import SwiftUI
 import UIKit
@@ -279,7 +278,7 @@ extension AccountService {
         // way by the bridge.
         let youtubeArt = song?.youtubeThumbnailURL?.absoluteString
         let localArtKey: String? = (youtubeArt == nil && song != nil && currentUser?.id != nil)
-            ? Self.sha256Hex("\(currentUser!.id):\(song!.id)") : nil
+            ? sha256Hex(text: "\(currentUser!.id):\(song!.id)") : nil
         let localArtURL = localArtKey.map { key in
             "\(bridgeURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")))/api/rp-artwork/\(key).jpg"
         }
@@ -310,9 +309,6 @@ extension AccountService {
         }
     }
 
-    private static func sha256Hex(_ string: String) -> String {
-        SHA256.hash(data: Data(string.utf8)).map { String(format: "%02x", $0) }.joined()
-    }
 
     /// Best-effort, at most once per `key` per app session (see
     /// `rpArtworkUploadedKeys`) — called after every `pushPlaybackState` for

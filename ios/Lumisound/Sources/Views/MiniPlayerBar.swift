@@ -150,7 +150,7 @@ struct MiniPlayerBar: View {
             // Heart / Favorite button
             if let song = player.currentSong {
                 Button {
-                    if LuaFeatureFlags.hapticFeedback { heartHaptic.impactOccurred() }
+                    if PresetFeatureFlags.hapticFeedback { heartHaptic.impactOccurred() }
                     library.toggleFavorite(songID: song.id)
                 } label: {
                     ZStack {
@@ -179,7 +179,7 @@ struct MiniPlayerBar: View {
 
             // Play / Pause
             Button {
-                if LuaFeatureFlags.hapticFeedback { playHaptic.impactOccurred() }
+                if PresetFeatureFlags.hapticFeedback { playHaptic.impactOccurred() }
                 player.togglePlayPause()
             } label: {
                 ZStack {
@@ -203,7 +203,7 @@ struct MiniPlayerBar: View {
 
             // Skip Next
             Button {
-                if LuaFeatureFlags.hapticFeedback { skipHaptic.impactOccurred() }
+                if PresetFeatureFlags.hapticFeedback { skipHaptic.impactOccurred() }
                 player.userSkipToNext()
             } label: {
                 Image(systemName: "forward.fill")

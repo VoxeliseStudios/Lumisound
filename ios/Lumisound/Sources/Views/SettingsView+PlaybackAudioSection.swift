@@ -295,9 +295,9 @@ extension SettingsView {
             }
 
             NavigationLink {
-                LuaVisualizerScriptsView()
+                VisualizerPresetsView()
             } label: {
-                Label("Scripted Visualizer (Lua)", systemImage: "waveform.path.ecg.rectangle")
+                Label("Visualizer Styles", systemImage: "waveform.path.ecg.rectangle")
                     .foregroundStyle(AppTheme.textPrimary)
             }
 

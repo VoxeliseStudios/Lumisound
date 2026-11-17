@@ -71,17 +71,6 @@ targets:
     # Info.plist and .entitlements are handled via build settings, not here.
     resources:
       - path: Lumisound/Resources/Assets.xcassets
-      # Bundled as a folder reference (XcodeGen's default for a plain
-      # directory path with no special extension) so the 10 preset scripts
-      # stay under a "LuaPresets" subdirectory inside the app bundle —
-      # LuaThemeEngine looks them up via
-      # `Bundle.main.url(forResource:withExtension:subdirectory: "LuaPresets")`.
-      - path: Lumisound/Resources/LuaPresets
-      # Same folder-reference treatment for the two newer Lua-scripted
-      # feature families (see LuaEffectEngine/LuaVisualizerEngine, which look
-      # these up the same way via `LuaUserScriptLibrary.bundledScripts`).
-      - path: Lumisound/Resources/LuaEffects
-      - path: Lumisound/Resources/LuaVisualizers
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.lumisound.ios

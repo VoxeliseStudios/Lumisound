@@ -46,7 +46,7 @@ struct AudioEffect: Identifiable, Equatable, Codable {
     var speed: Float           // 1.0 = normal playback speed
     var pitchSemitones: Float  // 0.0 = no pitch shift
     var specialMode: AudioEffectSpecialMode = .none
-    /// LumiFX catalogue grouping and one-line description (nil for Lua effects).
+    /// LumiFX catalogue grouping and one-line description (nil for preset effects).
     var category: String? = nil
     var story: String? = nil
 }
@@ -122,7 +122,7 @@ enum AudioEffectsService {
         default:
             // Effects retired with LumiFX (the genre EQ curves now live in
             // LumiEQ presets) fall back to Clean.
-            if !s.activeEffectID.hasPrefix("lua:"), fx(s.activeEffectID) == nil {
+            if !EffectPresets.isPresetEffectID(s.activeEffectID), fx(s.activeEffectID) == nil {
                 s.activeEffectID = "none"
             }
         }

@@ -2,6 +2,21 @@
 
 Full history and decisions: [`../RUST-PORT.md`](../RUST-PORT.md). Swift is views + app shell only.
 
+## Done (2026-11-16) — last non-Rust pieces (see ../RUST-PORT.md)
+- Lua gone: `Services/PresetEngine.swift` (ThemePresetEngine, EffectPresets, VisualizerPresetStore,
+  PresetFeatureFlags) over core `presets_*`; one picker screen for all three kinds
+  (`Views/PresetLibraryView.swift`: built-in + imported, Share as JSON, import with the core's error).
+  Smart playlists: condition groups + more text conditions; a saved Lua rule shows a "remove" notice.
+  Vault rule: `Documents/LumisoundTrackVaultRule.json` (smart rule format).
+- Library Hub shelves (`LibraryManager+HubContent.swift`) → core `hub.rs`; Auto EQ matching →
+  core `eq_spectral_match` (SpectralEQMatcher.swift deleted); dead-link match → `dup_best_match`;
+  CryptoKit SHA-256 → core `sha256_hex`.
+
+## Open (2026-11-16 port)
+- Verify on device: preset pickers (14 themes now: Crimson Noir, Deep Ocean, Frosted Glass Pro and
+  Solar Daylight were bundled but never listed), JSON share/import round trip, condition groups,
+  Library Hub shelves and collages, Auto EQ picks.
+
 ## Done (2026-11-16) — Live Activity one track behind
 - Report (2.0.0.61): widgets follow, the Lock Screen card stays a track behind. Logs: a seek moved the real
   switch 80 s earlier; that update (new `advanceAt`) never reached the activity, so it redrew at the old

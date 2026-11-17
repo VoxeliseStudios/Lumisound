@@ -248,27 +248,32 @@ pub struct Admin;
 impl FromRequestParts<AppState> for Admin {
     type Rejection = AppError;
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
-        let token = bearer(parts);
-        if let Some(c) = token.and_then(|t| state.keys.decode(t)) {
-            if c.sub.as_deref() == Some(OPERATOR_USER_ID) && c.purpose.is_none() {
-                let jti = c.jti.ok_or_else(|| AppError::unauthorized("Malformed session token"))?;
-                let alive: Option<i32> = sqlx::query_scalar(
-                    "SELECT 1 FROM ios_user_sessions WHERE token_id = $1 AND expires_at > NOW()",
-                )
-                .bind(&jti)
-                .fetch_optional(&state.db)
-                .await?;
-                return if alive.is_some() { Ok(Admin) } else { Err(AppError::unauthorized("Session has been revoked")) };
-            }
+        admin_check(state, bearer(parts)).await
+    }
+}
+
+/// Admin credentials: the operator's live session token, or ADMIN_TOKEN.
+/// Shared by the `Admin` extractor (Bearer) and the dashboard page (cookie).
+pub async fn admin_check(state: &AppState, token: Option<&str>) -> Result<Admin, AppError> {
+    if let Some(c) = token.and_then(|t| state.keys.decode(t)) {
+        if c.sub.as_deref() == Some(OPERATOR_USER_ID) && c.purpose.is_none() {
+            let jti = c.jti.ok_or_else(|| AppError::unauthorized("Malformed session token"))?;
+            let alive: Option<i32> = sqlx::query_scalar(
+                "SELECT 1 FROM ios_user_sessions WHERE token_id = $1 AND expires_at > NOW()",
+            )
+            .bind(&jti)
+            .fetch_optional(&state.db)
+            .await?;
+            return if alive.is_some() { Ok(Admin) } else { Err(AppError::unauthorized("Session has been revoked")) };
         }
-        if state.cfg.admin_token.is_empty() {
-            return Err(AppError::new(503, "Admin dashboard not configured (set ADMIN_TOKEN)"));
-        }
-        if token.is_some_and(|t| ct_eq(t, &state.cfg.admin_token)) {
-            Ok(Admin)
-        } else {
-            Err(AppError::unauthorized("Invalid admin credentials"))
-        }
+    }
+    if state.cfg.admin_token.is_empty() {
+        return Err(AppError::new(503, "Admin dashboard not configured (set ADMIN_TOKEN)"));
+    }
+    if token.is_some_and(|t| ct_eq(t, &state.cfg.admin_token)) {
+        Ok(Admin)
+    } else {
+        Err(AppError::unauthorized("Invalid admin credentials"))
     }
 }
 

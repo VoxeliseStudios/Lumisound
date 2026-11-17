@@ -78,7 +78,7 @@ struct UserMusicTrack: Identifiable, Codable, Hashable {
     var outroColdStop: Bool? = nil
     var introLeadInS: Double? = nil
     var introOnsetHardness: Double? = nil
-    /// Ten-band tonal fingerprint driving Auto EQ — see SpectralEQMatcher.
+    /// Ten-band tonal fingerprint driving Auto EQ — see `eq_spectral_match` in rust/core/src/engine/eq.rs.
     var spectralProfile: [Double]? = nil
 
     var durationText: String {

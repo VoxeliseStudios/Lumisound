@@ -64,7 +64,7 @@ struct PlaybackSnapshot: Codable, Equatable {
 
 struct AudioSettings: Codable, Equatable, Hashable {
     /// Median tonal shape of the user's library, supplied by the server — what
-    /// Auto EQ corrects toward. See SpectralEQMatcher.
+    /// Auto EQ corrects toward. See `eq_spectral_match` in rust/core/src/engine/eq.rs.
     ///
     /// Static rather than an instance field: it describes the LIBRARY, not this
     /// playback session's settings, and storing it per-settings-object would

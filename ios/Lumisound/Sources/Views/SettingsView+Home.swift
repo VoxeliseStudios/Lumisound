@@ -101,7 +101,7 @@ extension SettingsView {
             e("Default Pitch", "key semitone", .sound),
             e("Music Haptics", "vibration feel", .sound),
             e("Skip Silent Intros", "silence trim", .sound),
-            e("Scripted Visualizer (Lua)", "lua visualizer", .sound),
+            e("Visualizer Styles", "visualizer spectrum preset", .sound),
             e("Library Health", "metadata bitrate", .library),
             e("Duplicate Finder", "duplicates copies clean", .library),
             e("Corrupt File Finder", "broken damaged", .library),
@@ -126,7 +126,7 @@ extension SettingsView {
             e("Appearance", "accent colour theme font", .look),
             e("Gallery Background", "wallpaper background", .look),
             e("Liquid Glass", "glass blur translucency", .look),
-            e("Lua Theme Presets", "lua theme", .look),
+            e("Theme Presets", "theme preset share import", .look),
             e("Navbar Mode", "tab bar mini player", .look),
             e("Hidden Tabs", "hide tabs navbar", .look),
             e("Notifications", "alerts push", .notifications),
@@ -545,8 +545,8 @@ extension SettingsView {
                     MusicHapticsStrengthRow().padding(.leading, 42).padding(.bottom, 6)
                 }
                 LKDivider()
-                LKLink(icon: "waveform.path.ecg.rectangle", tint: .pink, title: "Scripted Visualizer", subtitle: "Lua scripts that draw to the music") {
-                    LuaVisualizerScriptsView()
+                LKLink(icon: "waveform.path.ecg.rectangle", tint: .pink, title: "Visualizer Styles", subtitle: "Colours and motion for Live Spectrum") {
+                    VisualizerPresetsView()
                 }
             }
             .animation(LumiMotion.fade(0.2), value: s)
@@ -707,8 +707,8 @@ extension SettingsView {
                 LKTileLink(icon: "circle.hexagongrid.fill", tint: .cyan, title: "Liquid Glass", detail: "Tint and translucency") { GlassSettingsView() }
             }
             LKCard {
-                LKLink(icon: "scroll.fill", tint: .orange, title: "Lua Theme Presets",
-                       value: LuaThemeEngine.shared.activePresetID.flatMap { LuaPreset(rawValue: $0)?.displayName }) { LuaThemePresetsView() }
+                LKLink(icon: "paintpalette.fill", tint: .orange, title: "Theme Presets",
+                       value: ThemePresetEngine.shared.activePresetName) { ThemePresetsView() }
             }
             LKCard(title: "Navbar", footer: "Mini Player swaps the tab bar for artwork, a seeker and controls whenever a song is loaded.") {
                 VStack(alignment: .leading, spacing: 10) {

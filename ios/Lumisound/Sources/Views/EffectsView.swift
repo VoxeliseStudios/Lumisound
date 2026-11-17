@@ -5,7 +5,7 @@ import UIKit
 
 struct EffectsView: View {
     @EnvironmentObject private var player: AudioPlayerManager
-    @State private var showLuaEffects = false
+    @State private var showPresetEffects = false
 
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 8), count: 5)
     private let selectHaptic = UISelectionFeedbackGenerator()
@@ -51,11 +51,11 @@ struct EffectsView: View {
             }
 
             Button {
-                showLuaEffects = true
+                showPresetEffects = true
             } label: {
                 HStack(spacing: 6) {
-                    Image(systemName: "scroll")
-                    Text("Scripted Effects (Lua)")
+                    Image(systemName: "slider.horizontal.3")
+                    Text("Effect Presets")
                     Spacer()
                     Image(systemName: "chevron.right")
                         .font(.caption)
@@ -69,9 +69,9 @@ struct EffectsView: View {
             selectHaptic.prepare()
             successHaptic.prepare()
         }
-        .lumiSheet(isPresented: $showLuaEffects) {
+        .lumiSheet(isPresented: $showPresetEffects) {
             NavigationStack {
-                LuaEffectScriptsView()
+                EffectPresetsView()
                     .environmentObject(player)
             }
         }

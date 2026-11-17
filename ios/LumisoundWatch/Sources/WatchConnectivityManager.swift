@@ -17,7 +17,7 @@ final class WatchConnectivityManager: NSObject, ObservableObject {
     @Published var isPlaying: Bool = false
     @Published var artworkData: Data?
     @Published var reachable: Bool = false
-    /// Mirrors the phone's active Lua theme preset accent, if any (see
+    /// Mirrors the phone's active theme preset accent, if any (see
     /// `PhoneWatchSync.update(song:isPlaying:artwork:)`) — `nil` when no
     /// preset is active, in which case the UI just uses its normal default
     /// tint.

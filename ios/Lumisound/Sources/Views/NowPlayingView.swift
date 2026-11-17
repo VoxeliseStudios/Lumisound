@@ -115,8 +115,8 @@ struct NowPlayingView: View {
     @State var showPlaybackControls = true
     @State var showABRepeat = false
     @State var showEffects = false
-    // A Lua theme preset's `layout.eq_expanded_by_default` (see
-    // `LuaThemeEngine`) can override this initial value; absent that, this
+    // A theme preset's `layout.eq_expanded_by_default` (see
+    // `ThemePresetEngine`) can override this initial value; absent that, this
     // matches the pre-existing hardcoded `true`.
     @State var showEQ = UserDefaults.standard.object(forKey: "lua_layout_eq_expanded") as? Bool ?? true
     @State var showLyrics = false
@@ -154,7 +154,7 @@ struct NowPlayingView: View {
     // live artwork-derived palette (only sampled when the selected custom
     // style opts into `dynamicColorExtraction`), and overflow-menu sheets.
     // Falls back to `.artwork` (the pre-existing hardcoded default) unless a
-    // Lua theme preset's `layout.default_display_mode` says otherwise.
+    // theme preset's `layout.default_display_mode` says otherwise.
     @State var displayMode: NowPlayingDisplayMode = {
         if let raw = UserDefaults.standard.string(forKey: "lua_layout_default_display_mode"),
            let mode = NowPlayingDisplayMode(rawValue: raw) {
@@ -233,7 +233,7 @@ struct NowPlayingView: View {
 
     // Seeker + playtime counter styles — @AppStorage (they used to be
     // @State seeded once from UserDefaults) so a change made in Appearance
-    // settings, by a Lua theme preset, or by a sync pull shows up here
+    // settings, by a theme preset, or by a sync pull shows up here
     // without relaunching.
     @AppStorage("nowPlaying_seekerStyle") var seekerStyle: SeekerStyle = .waveform
     // Defaults to `.hidden`: every seeker style draws its own time labels,
@@ -297,7 +297,7 @@ struct NowPlayingView: View {
     let selectHaptic = UISelectionFeedbackGenerator()
 
     // Falls back to `.controls` (the pre-existing hardcoded default) unless
-    // a Lua theme preset's `layout.default_panel` says otherwise.
+    // a theme preset's `layout.default_panel` says otherwise.
     @State var selectedPanel: NowPlayingPanel = {
         if let raw = UserDefaults.standard.string(forKey: "lua_layout_default_panel"),
            let panel = NowPlayingPanel(rawValue: raw) {

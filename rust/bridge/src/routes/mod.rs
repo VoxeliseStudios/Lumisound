@@ -7,6 +7,7 @@ use tower_http::cors::{Any, CorsLayer};
 
 mod account;
 pub mod admin;
+pub mod admin_page;
 pub mod stems;
 pub mod ai;
 pub mod discovery;

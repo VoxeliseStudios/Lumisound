@@ -1,5 +1,5 @@
 {
-  "//": "You normally do NOT write this file by hand -- run install.sh (Linux), install-macos.sh, or install-windows.ps1 and sign in with your Lumisound email/username + password. The installer exchanges those for the token below and never stores your password.",
+  "//": "You normally do NOT write this file by hand -- run `lumisound-discord-rpc install` and sign in with your Lumisound email/username + password. The installer exchanges those for the token below and never stores your password.",
 
   "access_token": "written for you by the installer; or paste one from Lumisound -> Account -> Discord Rich Presence -> Generate Rich Presence Token",
   "poll_interval_seconds": 1,

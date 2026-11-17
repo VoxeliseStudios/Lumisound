@@ -5,6 +5,7 @@
 
 mod ipc;
 mod live;
+mod install;
 mod login;
 
 use serde_json::{Value, json};
@@ -433,6 +434,8 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let r = match args.first().map(String::as_str) {
         Some("login") => login::main(&args[1..]),
+        Some("install") => install::install(&args[1..]),
+        Some("uninstall") => install::uninstall(&args[1..]),
         Some("--version") | Some("-V") => {
             println!("lumisound-discord-rpc {VERSION}");
             Ok(())
@@ -441,9 +444,11 @@ fn main() {
             println!(
                 "lumisound-discord-rpc            run the Rich Presence daemon\n\
                  lumisound-discord-rpc login [--bridge-url URL] [--token TOKEN] [--identifier EMAIL_OR_USERNAME]\n\
+                 {}\n\
                  lumisound-discord-rpc --version\n\n\
                  config.json options: status_display (\"title\" | \"artist\" | \"app\"), show_when_paused, show_buttons,\n\
-                 live_updates (default true), check_updates (default true), discord_new_fields (default true)"
+                 live_updates (default true), check_updates (default true), discord_new_fields (default true)",
+                install::HELP
             );
             Ok(())
         }

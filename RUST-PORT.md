@@ -342,3 +342,40 @@ Open:
 - [x] bridge `split_artist_title` (search/stream results): spaced separator outside brackets only.
 - [ ] Cloud metadata repair: `docker exec ios_bridge lumisound-bridge repair-titles apply`
       (dry run found 2,563 cut titles; restores each file's own title tag). Needs to be run by the owner.
+
+## 2026-11-16 — everything left that wasn't Rust
+
+Audit of every non-Rust file in the repo (user: "find all things not remade in rust and remake them").
+
+Done:
+- [x] Lua removed (user chose "pure Rust + JSON"): `rust/core/src/presets/` resolves 14 themes,
+      8 effects, 4 visualizers (bundled JSON + user imports in Documents/Presets/). Golden tests
+      compare every bundled preset with the old Lua output (tests/fixtures/presets/). Smart
+      playlists: condition groups + startsWith/endsWith/notEquals/matchesRegex/isEmpty in
+      `smart.rs`; vault rule = `Documents/LumisoundTrackVaultRule.json` (smart rule format).
+      mlua dependency, lua.rs, the 26 .lua files and 9 Swift Lua files deleted. Old saved ids
+      (`lua:<id>`, camelCase theme names) still resolve; imported .lua files don't run.
+- [x] Bridge /admin: was a page of hand-written JS; now server-rendered in Rust
+      (`routes/admin_page.rs`), no script at all, HttpOnly cookie sign-in, CSP `default-src 'none'`,
+      the four data sets fetched concurrently, meta refresh 15 s.
+- [x] `ios-bridge/refresh_youtube_cookies.sh` → `rust/tools/cookies` (`lumisound-refresh-cookies`),
+      units point at `~/.local/bin` and the real cache path (`~/lumisound/cache/yt-dlp`).
+- [x] Discord RPC `install.sh` / `install-macos.sh` (still called a deleted Python script) /
+      `install-windows.ps1` / unit template → `lumisound-discord-rpc install|uninstall` (`rpc/src/install.rs`).
+- [x] `ios/Branding/make_icon.py` + `render.sh` (Python + rsvg + ImageMagick) → `rust/tools/branding`
+      (resvg); SVGs byte-identical to the Python output (Python's Mersenne Twister ported for the stars).
+- [x] Swift logic → core: Library Hub shelves (`hub.rs`), Auto EQ spectral matching
+      (`eq_spectral_match`), dead-link relink match (`dup_best_match`), SHA-256 keys (`sha256_hex`).
+
+Still not Rust, on purpose:
+- `ios/scripts/*.sh` (CI/build glue: xcframework packaging, ad-hoc signing — `adhoc-sign.sh` is the
+  shared script CLAUDE.md requires across repos), GitHub workflow YAML, Info.plists/xcconfigs.
+- Swift that Apple requires (see ios/SWIFT-AUDIT.md §2/§4) and SwiftUI views.
+
+Open:
+- [ ] Verify on device: theme/effect/visualizer pickers, Share as JSON → import round trip,
+      smart playlist condition groups, Auto EQ pick unchanged.
+- [ ] LumiMusic (Android) `core-rs/` snapshot still carries lua.rs + mlua: run `scripts/sync-core.sh`
+      at its next release (its Kotlin never called Lua).
+- [ ] Further Swift audit: big services (ArtworkService, AudioPlayerManager+Scheduling,
+      StreamingService+DownloadToLibrary, TVBridge) still mix glue with some logic.

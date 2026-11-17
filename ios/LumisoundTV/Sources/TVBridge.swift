@@ -261,7 +261,7 @@ struct TVAchievements: Decodable, Hashable {
 
 // MARK: - Smart playlists (GET /user/music/smart-playlists — server-computed
 // BPM buckets over the Personal Cloud Library; distinct from iOS's on-device
-// Lua smart-playlist engine, which needs a local library scan tvOS doesn't
+// smart-playlist engine, which needs a local library scan tvOS doesn't
 // have — see TVOS round-3 research notes)
 
 struct TVSmartPlaylistTrack: Decodable, Hashable {

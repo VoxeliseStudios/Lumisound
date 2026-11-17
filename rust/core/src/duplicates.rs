@@ -52,6 +52,31 @@ pub fn dup_normalize_artist(text: String) -> String {
     parts.join(" ")
 }
 
+/// A track to compare in `dup_best_match`.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct DupTrack {
+    pub title: String,
+    pub artist: String,
+    pub duration: f64,
+}
+
+/// Index of the first candidate that is confidently the same recording as
+/// `target`: same normalised title and artist, duration within 2 s (the bar
+/// duplicate merging uses). None when nothing is that certain — a wrong
+/// relink is worse than a stale one. Used to heal dead source links.
+#[uniffi::export]
+pub fn dup_best_match(target: DupTrack, candidates: Vec<DupTrack>) -> Option<u32> {
+    let title = dup_normalize(target.title);
+    if title.is_empty() {
+        return None;
+    }
+    let artist = dup_normalize_artist(target.artist);
+    candidates
+        .into_iter()
+        .position(|c| (c.duration - target.duration).abs() <= 2.0 && dup_normalize(c.title) == title && dup_normalize_artist(c.artist) == artist)
+        .map(|i| i as u32)
+}
+
 #[uniffi::export]
 pub fn dup_feature_name(text: String) -> Option<String> {
     let c = FEAT.captures(&text)?;
@@ -105,6 +130,16 @@ pub fn near_match(a: &str, b: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn best_match_needs_title_artist_and_duration() {
+        let t = |title: &str, artist: &str, d: f64| DupTrack { title: title.into(), artist: artist.into(), duration: d };
+        let target = t("Song (Official Video)", "Band - Topic", 200.0);
+        let cands = vec![t("Song", "Other", 200.0), t("Song", "Band", 205.0), t("SONG", "Band", 201.5)];
+        assert_eq!(dup_best_match(target.clone(), cands), Some(2));
+        assert_eq!(dup_best_match(target, vec![t("Song", "Band", 210.0)]), None);
+        assert_eq!(dup_best_match(t("", "Band", 1.0), vec![t("", "Band", 1.0)]), None);
+    }
+
     use super::*;
     #[test]
     fn normalises_like_the_app() {

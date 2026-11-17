@@ -68,8 +68,8 @@ struct SongsTab: View {
     @AppStorage("library_songs_sort") private var sortOrderRaw: String = SongSortOrder.title.rawValue
     private var sortOrder: SongSortOrder { SongSortOrder(rawValue: sortOrderRaw) ?? .title }
 
-    /// Logic hook the active Lua theme preset can set (`hooks.pin_favorites_first`
-    /// in the preset script — see `Theme/LuaThemeEngine.swift`): when on,
+    /// Logic hook the active theme preset can set (`hooks.pin_favorites_first`
+    /// in the preset — see `Services/PresetEngine.swift`): when on,
     /// favorited songs float to the top of whatever `sortOrder` is chosen,
     /// keeping that order stable within each of the two groups.
     @AppStorage("lua_pin_favorites_first") private var pinFavoritesFirst: Bool = false
@@ -418,13 +418,13 @@ struct SongsTab: View {
         // anything already cached) while keeping artwork ready a
         // little ahead of and behind wherever the user is scrolling.
         .onAppear {
-            // Widened ahead/behind window when the active Lua
+            // Widened ahead/behind window when the active
             // theme preset's `flags.aggressive_prefetch` is on
-            // (see LuaFeatureFlags) — trades some extra network/
+            // (see PresetFeatureFlags) — trades some extra network/
             // decode work for artwork being ready further in
             // advance of fast scrolling.
-            let behind = LuaFeatureFlags.aggressivePrefetch ? 16 : 8
-            let ahead = LuaFeatureFlags.aggressivePrefetch ? 48 : 24
+            let behind = PresetFeatureFlags.aggressivePrefetch ? 16 : 8
+            let ahead = PresetFeatureFlags.aggressivePrefetch ? 48 : 24
             let lower = max(0, flatIndex - behind)
             let upper = min(sortedSongs.count, flatIndex + ahead)
             guard lower < upper else { return }

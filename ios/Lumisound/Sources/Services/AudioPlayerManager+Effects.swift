@@ -23,7 +23,7 @@ extension AudioPlayerManager {
         audioSettings = s   // triggers didSet → applyAudioSettings()
 
         // Start the special mode for this effect. `.rotation` is only
-        // reachable here via a custom Lua-scripted effect now — 8D Audio
+        // reachable here via a preset effect now — 8D Audio
         // itself was removed from `AudioEffectsService.allEffects` — and
         // even then, only if the independent toggle isn't already running
         // it (avoids stopping and immediately restarting the same
@@ -60,8 +60,9 @@ extension AudioPlayerManager {
         let effectID = audioSettings.activeEffectID
         guard !effectID.isEmpty, effectID != "none" else { return }
         let effect: AudioEffect?
-        if let ref = LuaEffectEngine.scriptRef(forEffectID: effectID) {
-            effect = try? LuaEffectEngine.resolve(ref, track: currentSong)
+        if EffectPresets.isPresetEffectID(effectID) {
+            // Re-resolved per track: genre curves and tempo sync follow the music.
+            effect = EffectPresets.effect(forEffectID: effectID, track: currentSong)
         } else {
             effect = AudioEffectsService.allEffects.first(where: { $0.id == effectID })
         }

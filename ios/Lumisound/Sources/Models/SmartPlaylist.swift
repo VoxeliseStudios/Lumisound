@@ -46,6 +46,7 @@ enum SmartFieldKind { case text, number, boolean, source }
 
 enum SmartOp: String, Codable, CaseIterable, Identifiable {
     case contains, notContains, equals, greaterThan, lessThan, between, isTrue, isFalse
+    case notEquals, startsWith, endsWith, matchesRegex, isEmpty
 
     var id: String { rawValue }
 
@@ -59,16 +60,21 @@ enum SmartOp: String, Codable, CaseIterable, Identifiable {
         case .between: return "between"
         case .isTrue: return "is yes"
         case .isFalse: return "is no"
+        case .notEquals: return "is not"
+        case .startsWith: return "starts with"
+        case .endsWith: return "ends with"
+        case .matchesRegex: return "matches pattern"
+        case .isEmpty: return "is empty"
         }
     }
 
     /// The operators that make sense for a given field kind.
     static func available(for kind: SmartFieldKind) -> [SmartOp] {
         switch kind {
-        case .text:    return [.contains, .notContains, .equals]
+        case .text:    return [.contains, .notContains, .equals, .notEquals, .startsWith, .endsWith, .matchesRegex, .isEmpty]
         case .number:  return [.equals, .greaterThan, .lessThan, .between]
         case .boolean: return [.isTrue, .isFalse]
-        case .source:  return [.equals]
+        case .source:  return [.equals, .notEquals]
         }
     }
 }
@@ -121,6 +127,14 @@ enum SmartSort: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+/// Extra conditions on top of a playlist's rules: every group must pass,
+/// and each group matches all / any of its own rules. (Replaced Lua rules.)
+struct SmartRuleGroup: Codable, Identifiable, Equatable {
+    var id: String = UUID().uuidString
+    var match: SmartMatch = .any
+    var rules: [SmartRule] = [SmartRule()]
+}
+
 struct SmartPlaylist: Codable, Identifiable, Equatable {
     var id: String = UUID().uuidString
     var name: String = "New Smart Playlist"
@@ -129,45 +143,43 @@ struct SmartPlaylist: Codable, Identifiable, Equatable {
     var rules: [SmartRule] = []
     var limit: Int = 0        // 0 = unlimited
     var sort: SmartSort = .titleAsc
-    /// Optional Lua predicate applied ON TOP OF `rules` (an additional AND
-    /// condition), for logic the fixed field/operator grid above can't
-    /// express — arbitrary boolean/string/math logic across every field at
-    /// once. `nil`/empty for the overwhelming majority of playlists that
-    /// don't need it; optional (rather than a non-optional default) so
-    /// playlists persisted before this field existed still decode fine (see
-    /// `queueSource` on `Song` for the identical reasoning). The script must
-    /// define `function matches(song) ... end` — see
-    /// `LuaSmartPlaylistEngine` for the exact fields `song` carries.
+    /// Condition groups ANDed with `rules` (optional so older saved
+    /// playlists still decode).
+    var groups: [SmartRuleGroup]? = nil
+    /// A Lua rule saved by an older version. Lua no longer runs; it's kept
+    /// only so the editor can say so and offer to remove it.
     var luaScript: String? = nil
 
     // MARK: Evaluation
 
-    /// Returns the songs from `songs` that satisfy this playlist's rules
-    /// (and, if set, its Lua predicate), sorted and limited. `favorites` is
-    /// `LibraryManager.favoriteSongIDs`.
-    /// Rules, sort and limit are evaluated by the Rust core
-    /// (rust/core/src/smart.rs); an optional Lua filter runs between them.
+    /// Returns the songs from `songs` that satisfy this playlist's rules and
+    /// condition groups, sorted and limited. `favorites` is
+    /// `LibraryManager.favoriteSongIDs`. Evaluated by the Rust core
+    /// (rust/core/src/smart.rs).
     @MainActor
     func evaluate(over songs: [Song], favorites: Set<String>) -> [Song] {
         guard let json = try? JSONEncoder().encode(self) else { return songs }
         let byID = Dictionary(songs.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         let keep = Set(smartFilter(playlistJson: json, songs: songs.map(Self.facts), favorites: Array(favorites)))
-        var filtered = songs.filter { keep.contains($0.id) }
-        if let luaScript, !luaScript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            if let allowedIDs = LuaSmartPlaylistEngine.filterSongIDs(script: luaScript, songs: filtered, favorites: favorites) {
-                filtered = filtered.filter { allowedIDs.contains($0.id) }
-            }
-        }
+        let filtered = songs.filter { keep.contains($0.id) }
         return smartOrder(playlistJson: json, songs: filtered.map(Self.facts)).compactMap { byID[$0] }
     }
 
     @MainActor
     func matches(_ song: Song, favorites: Set<String>) -> Bool {
-        guard !rules.isEmpty, let json = try? JSONEncoder().encode(self) else { return true }
+        guard hasConditions, let json = try? JSONEncoder().encode(self) else { return true }
         return !smartFilter(playlistJson: json, songs: [Self.facts(song)], favorites: Array(favorites)).isEmpty
     }
 
-    private static func facts(_ s: Song) -> SmartSong {
+    var hasConditions: Bool {
+        !rules.isEmpty || (groups ?? []).contains { !$0.rules.isEmpty }
+    }
+
+    var hasLegacyLuaRule: Bool {
+        !(luaScript ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    static func facts(_ s: Song) -> SmartSong {
         SmartSong(id: s.id, displayName: s.displayName, title: s.title, artist: s.artist, album: s.album, genre: s.genre,
                   year: s.year, duration: s.duration, bpm: s.bpm, sourceTrackId: s.sourceTrackID,
                   dateAdded: s.dateAdded?.timeIntervalSince1970)

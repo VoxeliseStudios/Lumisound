@@ -34,7 +34,7 @@ struct Song: Identifiable, Hashable, Codable {
     /// not profiled (or one that only exists on this device), in which case
     /// Smart Crossfade falls back to its live level reading.
     var transitionProfile: TransitionProfile?
-    /// Ten-band tonal fingerprint, measured server-side — see SpectralEQMatcher.
+    /// Ten-band tonal fingerprint, measured server-side — see `eq_spectral_match` in rust/core/src/engine/eq.rs.
     /// Nil for a track the server has not analysed, in which case Auto EQ falls
     /// back to the old genre/tempo guess.
     var spectralProfile: [Double]?

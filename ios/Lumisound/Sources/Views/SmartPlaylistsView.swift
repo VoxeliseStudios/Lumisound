@@ -79,9 +79,14 @@ struct SmartPlaylistsView: View {
     }
 
     private func ruleSummary(_ pl: SmartPlaylist) -> String {
-        if pl.rules.isEmpty { return "All songs" }
+        if !pl.hasConditions { return "All songs" }
         let connector = pl.match == .all ? " AND " : " OR "
-        return pl.rules.map { "\($0.field.label) \($0.op.label)" }.joined(separator: connector)
+        var text = pl.rules.map { "\($0.field.label) \($0.op.label)" }.joined(separator: connector)
+        let groups = (pl.groups ?? []).filter { !$0.rules.isEmpty }.count
+        if groups > 0 {
+            text += (text.isEmpty ? "" : " + ") + (groups == 1 ? "1 condition group" : "\(groups) condition groups")
+        }
+        return text
     }
 }
 
@@ -121,7 +126,7 @@ struct SmartPlaylistEditorView: View {
 
                 Section("Rules") {
                     ForEach(draft.rules.indices, id: \.self) { i in
-                        ruleEditor(i)
+                        ruleEditor($draft.rules[i])
                     }
                     .onDelete { draft.rules.remove(atOffsets: $0) }
 
@@ -140,23 +145,54 @@ struct SmartPlaylistEditorView: View {
                             value: $draft.limit, in: 0...1000, step: 10)
                 }
 
-                Section {
-                    TextEditor(text: Binding(
-                        get: { draft.luaScript ?? "" },
-                        set: { draft.luaScript = $0.isEmpty ? nil : $0 }
-                    ))
-                    .font(.system(.footnote, design: .monospaced))
-                    .frame(minHeight: 140)
-
-                    Button {
-                        draft.luaScript = Self.exampleLuaScript
-                    } label: {
-                        Label("Insert Example", systemImage: "wand.and.stars")
+                ForEach((draft.groups ?? []).indices, id: \.self) { gi in
+                    Section {
+                        Picker("Match", selection: groupsBinding[gi].match) {
+                            ForEach(SmartMatch.allCases) { Text($0.label).tag($0) }
+                        }
+                        .pickerStyle(.segmented)
+                        ForEach((draft.groups ?? [])[gi].rules.indices, id: \.self) { ri in
+                            ruleEditor(groupsBinding[gi].rules[ri])
+                        }
+                        .onDelete { groupsBinding[gi].rules.wrappedValue.remove(atOffsets: $0) }
+                        Button {
+                            groupsBinding[gi].rules.wrappedValue.append(SmartRule())
+                        } label: {
+                            Label("Add Rule", systemImage: "plus.circle")
+                        }
+                        Button(role: .destructive) {
+                            groupsBinding.wrappedValue.remove(at: gi)
+                        } label: {
+                            Label("Remove Group", systemImage: "minus.circle")
+                        }
+                    } header: {
+                        Text("And also (group \(gi + 1))")
                     }
-                } header: {
-                    Text("Advanced: Lua Rule (optional)")
+                }
+
+                Section {
+                    Button {
+                        groupsBinding.wrappedValue.append(SmartRuleGroup())
+                    } label: {
+                        Label("Add Condition Group", systemImage: "plus.rectangle.on.rectangle")
+                    }
                 } footer: {
-                    Text("Applied ON TOP OF the rules above. Define `function matches(song) ... end` — `song` carries title, artist, album, genre, year, duration, bpm, favorite, source, play_count, days_since_played, days_since_added.")
+                    Text("A song must pass the rules above AND every group. Use a group for an OR inside an AND, e.g. all of: BPM over 120 — and any of: genre contains house, genre contains techno.")
+                }
+
+                if draft.hasLegacyLuaRule {
+                    Section {
+                        Text("This playlist has a Lua rule from an older version. Lua rules don't run any more, so it's ignored; rebuild it with a condition group above.")
+                            .font(.footnote)
+                            .foregroundStyle(AppTheme.textSecondary)
+                        Button(role: .destructive) {
+                            draft.luaScript = nil
+                        } label: {
+                            Label("Remove Old Lua Rule", systemImage: "trash")
+                        }
+                    } header: {
+                        Text("Old Lua Rule")
+                    }
                 }
             }
             .navigationTitle("Smart Playlist")
@@ -178,58 +214,62 @@ struct SmartPlaylistEditorView: View {
         }
     }
 
-    private static let exampleLuaScript = """
-    function matches(song)
-        -- Workout mix: upbeat and not something already on heavy rotation.
-        return song.bpm ~= nil and song.bpm >= 120
-            and song.play_count < 20
-    end
-    """
+    /// `groups` as a non-optional list for the editor.
+    private var groupsBinding: Binding<[SmartRuleGroup]> {
+        Binding(get: { draft.groups ?? [] }, set: { draft.groups = $0.isEmpty ? nil : $0 })
+    }
 
     @ViewBuilder
-    private func ruleEditor(_ i: Int) -> some View {
+    private func ruleEditor(_ rule: Binding<SmartRule>) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            LumiPicker("Field", selection: $draft.rules[i].field) {
+            LumiPicker("Field", selection: rule.field) {
                 ForEach(SmartField.allCases) { Text($0.label).lumiOptionLabel(String(describing: $0.label)).tag($0) }
             }
-            .onChange(of: draft.rules[i].field) { newField in
+            .onChange(of: rule.wrappedValue.field) { newField in
                 // Reset the operator to one valid for the new field kind.
                 let valid = SmartOp.available(for: newField.kind)
-                if !valid.contains(draft.rules[i].op) {
-                    draft.rules[i].op = valid.first ?? .contains
+                if !valid.contains(rule.wrappedValue.op) {
+                    rule.wrappedValue.op = valid.first ?? .contains
                 }
             }
 
-            LumiPicker("Condition", selection: $draft.rules[i].op) {
-                ForEach(SmartOp.available(for: draft.rules[i].field.kind)) { Text($0.label).lumiOptionLabel(String(describing: $0.label)).tag($0) }
+            LumiPicker("Condition", selection: rule.op) {
+                ForEach(SmartOp.available(for: rule.wrappedValue.field.kind)) { Text($0.label).lumiOptionLabel(String(describing: $0.label)).tag($0) }
             }
 
-            valueEditor(i)
+            valueEditor(rule)
         }
         .padding(.vertical, 2)
     }
 
     @ViewBuilder
-    private func valueEditor(_ i: Int) -> some View {
-        switch draft.rules[i].field.kind {
+    private func valueEditor(_ rule: Binding<SmartRule>) -> some View {
+        switch rule.wrappedValue.field.kind {
         case .text:
-            TextField("Value", text: $draft.rules[i].text)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
+            if rule.wrappedValue.op != .isEmpty {
+                TextField(rule.wrappedValue.op == .matchesRegex ? "Pattern, e.g. ^(the|a) " : "Value", text: rule.text)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                if rule.wrappedValue.op == .matchesRegex, let error = smartRegexError(pattern: rule.wrappedValue.text) {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.error)
+                }
+            }
         case .number:
             HStack {
-                TextField("Value", value: $draft.rules[i].number, format: .number)
+                TextField("Value", value: rule.number, format: .number)
                     .keyboardType(.decimalPad)
-                if draft.rules[i].op == .between {
+                if rule.wrappedValue.op == .between {
                     Text("to").foregroundStyle(AppTheme.textSecondary)
-                    TextField("Upper", value: $draft.rules[i].number2, format: .number)
+                    TextField("Upper", value: rule.number2, format: .number)
                         .keyboardType(.decimalPad)
                 }
             }
         case .boolean:
             EmptyView()
         case .source:
-            LumiPicker("Source", selection: $draft.rules[i].source) {
+            LumiPicker("Source", selection: rule.source) {
                 ForEach(SmartSource.allCases) { Text($0.label).lumiOptionLabel(String(describing: $0.label)).tag($0) }
             }
         }

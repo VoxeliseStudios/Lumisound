@@ -4,7 +4,7 @@ import SwiftUI
 //
 // Round 3: Discover Mix, On This Day, and server-computed Smart Playlists —
 // all bridge-backed (GET /user/discover-mix, /user/on-this-day, /user/music/
-// smart-playlists), unlike iOS's on-device Lua smart-playlist engine / mood
+// smart-playlists), unlike iOS's on-device smart-playlist engine / mood
 // playlist service, which read the local library scan tvOS doesn't have.
 // Discover Mix and On This Day both need real play history to have anything
 // to show — TVPlayerModel now reports plays via POST /user/history as it

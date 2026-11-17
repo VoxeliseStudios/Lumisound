@@ -21,11 +21,9 @@ Type=oneshot
 # still wins.
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 EnvironmentFile=-%h/.config/lumisound-youtube-cookies.env
-# Runs the script straight out of the checkout rather than a copy in
-# ~/.local/bin. The previous ExecStart pointed at
-# %h/.local/bin/lumisound-refresh-youtube-cookies and left copying it there as
-# a manual step, which was never done — so even once these units were
-# installed the service would have failed on a missing executable. Pointing at
-# the checkout also means a `git pull` updates the refresh logic, with no
-# second copy to drift out of sync.
-ExecStart=%h/Documents/Projects/Lumisound/ios-bridge/refresh_youtube_cookies.sh
+# The Rust refresher (rust/tools/cookies). Install it once with
+#   cargo install --path ~/Projects/Lumisound/rust/tools/cookies --root ~/.local
+# (it lands in ~/.local/bin). Defaults: jar ~/Projects/Lumisound/ios-bridge/cookies.txt,
+# cache ~/lumisound/cache/yt-dlp, inbox ~/Downloads; override with the YTDLP_* variables
+# in the EnvironmentFile above.
+ExecStart=%h/.local/bin/lumisound-refresh-cookies

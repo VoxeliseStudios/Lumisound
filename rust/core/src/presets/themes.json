@@ -1,0 +1,738 @@
+[
+ {
+  "meta": {
+   "description": "Maximum-contrast black/yellow theme with motion disabled — built for low-vision and glare-heavy conditions.",
+   "id": "high_contrast",
+   "name": "High Contrast",
+   "subtitle": "Accessibility-first — max contrast, no motion",
+   "icon": "circle.lefthalf.filled"
+  },
+  "colors": {
+   "background": "#000000",
+   "surface": {
+    "shade_of": "background",
+    "amount": 0.05
+   },
+   "elevated_surface": {
+    "shade_of": "surface",
+    "amount": 0.06
+   },
+   "accent": "#FFD400",
+   "accent_secondary": "#FFFFFF",
+   "text_primary": "#FFFFFF",
+   "text_secondary": "#E0E0E0"
+  },
+  "style": {
+   "artwork_style": "equalizerCutout",
+   "card_style": "comfortable",
+   "corner_radius_scale": 0.6,
+   "font_style": "system",
+   "launch_screen_style": "minimalist",
+   "panel_material": "solid",
+   "panel_opacity": 1,
+   "seeker_style": "bars",
+   "spacing_scale": 1.15,
+   "tab_transition_style": "fadeOnly"
+  },
+  "glass": {
+   "tint_hue": 0,
+   "tint_strength": 0,
+   "translucency": 1,
+   "use_accent_tint": false
+  },
+  "flags": {
+   "aggressive_prefetch": false,
+   "haptic_feedback": true,
+   "reduce_motion": true,
+   "show_bpm_badges": true
+  },
+  "hooks": {
+   "library_default_columns": 1,
+   "library_default_sort": "title",
+   "pin_favorites_first": false
+  }
+ },
+ {
+  "meta": {
+   "description": "Warm paper-white background, ink-black accent, generous rounding — a quiet, distraction-free look.",
+   "id": "minimalist",
+   "name": "Minimalist",
+   "subtitle": "Clean, quiet, paper-light",
+   "icon": "square"
+  },
+  "colors": {
+   "background": "#F2F1EC",
+   "surface": {
+    "shade_of": "background",
+    "amount": 0.35
+   },
+   "elevated_surface": {
+    "shade_of": "background",
+    "amount": -0.05
+   },
+   "accent": "#2B2B2B",
+   "accent_secondary": "#8A8A8E",
+   "text_primary": "#1C1C1E",
+   "text_secondary": "#6E6E73"
+  },
+  "style": {
+   "artwork_style": "equalizerCutout",
+   "card_style": "minimal",
+   "corner_radius_scale": 1.4,
+   "font_style": "system",
+   "launch_screen_style": "minimalist",
+   "panel_material": "solid",
+   "panel_opacity": 0.85,
+   "seeker_style": "classic",
+   "spacing_scale": 1.2,
+   "tab_transition_style": "fadeOnly"
+  },
+  "glass": {
+   "tint_hue": 0,
+   "tint_strength": 0.05,
+   "translucency": 0.6,
+   "use_accent_tint": false
+  },
+  "flags": {
+   "aggressive_prefetch": false,
+   "haptic_feedback": false,
+   "reduce_motion": true,
+   "show_bpm_badges": false
+  },
+  "hooks": {
+   "library_default_columns": 1,
+   "library_default_sort": "title",
+   "pin_favorites_first": false
+  }
+ },
+ {
+  "meta": {
+   "description": "Hot pink & amber over deep violet, rounded type, heavy glass glow — built for energetic, hands-on listening sessions.",
+   "id": "vibrant_energetic",
+   "name": "Vibrant Pulse",
+   "subtitle": "Bright, bold, high-energy",
+   "icon": "bolt.fill"
+  },
+  "colors": {
+   "background": "#1A0B2E",
+   "surface": {
+    "shade_of": "background",
+    "amount": 0.25
+   },
+   "elevated_surface": {
+    "shade_of": "surface",
+    "amount": 0.2
+   },
+   "accent": "#FF3D7A",
+   "accent_secondary": "#FFB800",
+   "text_primary": "#FFFFFF",
+   "text_secondary": "#FFD9E8"
+  },
+  "style": {
+   "artwork_style": "discoMirrorBall",
+   "card_style": "card",
+   "corner_radius_scale": 1.3,
+   "font_style": "rounded",
+   "launch_screen_style": "aurora",
+   "panel_material": "frostedGlass",
+   "panel_opacity": 0.9,
+   "seeker_style": "ring",
+   "spacing_scale": 1,
+   "tab_transition_style": "scalePop"
+  },
+  "glass": {
+   "tint_hue": 0.9,
+   "tint_strength": 0.35,
+   "translucency": 1,
+   "use_accent_tint": true
+  },
+  "flags": {
+   "aggressive_prefetch": true,
+   "haptic_feedback": true,
+   "reduce_motion": false,
+   "show_bpm_badges": true
+  },
+  "hooks": {
+   "library_default_columns": 2,
+   "library_default_sort": "playCount",
+   "pin_favorites_first": true
+  },
+  "layout": {
+   "default_display_mode": "lyrics",
+   "default_panel": "Controls",
+   "eq_expanded_by_default": false,
+   "show_queue_preview": true
+  }
+ },
+ {
+  "meta": {
+   "description": "Near-pure-black at every layer with a cool cyan/violet accent — saves battery on OLED screens, easy on the eyes at night.",
+   "id": "amoled_dark",
+   "name": "AMOLED Midnight",
+   "subtitle": "True black, battery-friendly",
+   "icon": "moon.stars.fill"
+  },
+  "colors": {
+   "background": "#000000",
+   "surface": {
+    "shade_of": "background",
+    "amount": 0.02
+   },
+   "elevated_surface": {
+    "shade_of": "background",
+    "amount": 0.05
+   },
+   "accent": "#00E5FF",
+   "accent_secondary": "#7C4DFF",
+   "text_primary": "#F5F5F5",
+   "text_secondary": "#9E9E9E"
+  },
+  "style": {
+   "artwork_style": "circuitPulse",
+   "card_style": "compact",
+   "corner_radius_scale": 0.8,
+   "font_style": "system",
+   "launch_screen_style": "minimalist",
+   "panel_material": "solid",
+   "panel_opacity": 1,
+   "seeker_style": "digital",
+   "spacing_scale": 0.95,
+   "tab_transition_style": "fadeOnly"
+  },
+  "glass": {
+   "tint_hue": 0.55,
+   "tint_strength": 0.1,
+   "translucency": 0.9,
+   "use_accent_tint": true
+  },
+  "flags": {
+   "aggressive_prefetch": false,
+   "haptic_feedback": true,
+   "reduce_motion": false,
+   "show_bpm_badges": true
+  },
+  "hooks": {
+   "library_default_columns": 1,
+   "library_default_sort": "dateAdded",
+   "pin_favorites_first": false
+  }
+ },
+ {
+  "meta": {
+   "description": "Warm wood-and-brass tones, serif type, unhurried transitions — a cassette-deck-era look.",
+   "id": "retro_skeuomorphic",
+   "name": "Retro Cassette",
+   "subtitle": "Warm, analog, cassette-era",
+   "icon": "cassettetape"
+  },
+  "colors": {
+   "background": "#2A1D14",
+   "surface": {
+    "shade_of": "background",
+    "amount": 0.1
+   },
+   "elevated_surface": {
+    "shade_of": "background",
+    "amount": 0.2
+   },
+   "accent": "#D97B3F",
+   "accent_secondary": "#C4A15A",
+   "text_primary": "#F4E9D8",
+   "text_secondary": "#C9B79A"
+  },
+  "style": {
+   "artwork_style": "radarSweep",
+   "card_style": "card",
+   "corner_radius_scale": 0.9,
+   "font_style": "serif",
+   "launch_screen_style": "aurora",
+   "panel_material": "solid",
+   "panel_opacity": 1,
+   "seeker_style": "classic",
+   "spacing_scale": 1.05,
+   "tab_transition_style": "slide"
+  },
+  "glass": {
+   "tint_hue": 0.08,
+   "tint_strength": 0.15,
+   "translucency": 0.85,
+   "use_accent_tint": true
+  },
+  "flags": {
+   "aggressive_prefetch": false,
+   "haptic_feedback": true,
+   "reduce_motion": true,
+   "show_bpm_badges": true
+  },
+  "hooks": {
+   "library_default_columns": 1,
+   "library_default_sort": "artist",
+   "pin_favorites_first": false
+  }
+ },
+ {
+  "meta": {
+   "description": "Soft lavender over white, pink accent, heavy frosted glass — gentle motion throughout.",
+   "id": "pastel_dream",
+   "name": "Pastel Dream",
+   "subtitle": "Soft lavender, gentle motion",
+   "icon": "cloud.fill"
+  },
+  "colors": {
+   "background": "#F5EEFB",
+   "surface": "#FFFFFF",
+   "elevated_surface": {
+    "shade_of": "background",
+    "amount": -0.03
+   },
+   "accent": "#B497D6",
+   "accent_secondary": "#F7B7C5",
+   "text_primary": "#4A4458",
+   "text_secondary": "#8A8299"
+  },
+  "style": {
+   "artwork_style": "kaleidoscopeBloom",
+   "card_style": "comfortable",
+   "corner_radius_scale": 1.6,
+   "font_style": "rounded",
+   "launch_screen_style": "aurora",
+   "panel_material": "frostedGlass",
+   "panel_opacity": 0.8,
+   "seeker_style": "pill",
+   "spacing_scale": 1.1,
+   "tab_transition_style": "scalePop"
+  },
+  "glass": {
+   "tint_hue": 0.78,
+   "tint_strength": 0.25,
+   "translucency": 0.7,
+   "use_accent_tint": true
+  },
+  "flags": {
+   "aggressive_prefetch": false,
+   "haptic_feedback": true,
+   "reduce_motion": false,
+   "show_bpm_badges": false
+  },
+  "hooks": {
+   "library_default_columns": 2,
+   "library_default_sort": "title",
+   "pin_favorites_first": true
+  }
+ },
+ {
+  "meta": {
+   "description": "Deep, warm greens with a serif face and waveform seeker — an unhurried, natural look.",
+   "id": "forest_calm",
+   "name": "Forest Calm",
+   "subtitle": "Calm greens, natural tones",
+   "icon": "leaf.fill"
+  },
+  "colors": {
+   "background": "#12211B",
+   "surface": {
+    "shade_of": "background",
+    "amount": 0.18
+   },
+   "elevated_surface": {
+    "shade_of": "background",
+    "amount": 0.35
+   },
+   "accent": "#5FA777",
+   "accent_secondary": "#A9C686",
+   "text_primary": "#E8F0E3",
+   "text_secondary": "#AABF9F"
+  },
+  "style": {
+   "artwork_style": "bioluminescentTide",
+   "card_style": "comfortable",
+   "corner_radius_scale": 1.1,
+   "font_style": "serif",
+   "launch_screen_style": "minimalist",
+   "panel_material": "solid",
+   "panel_opacity": 0.9,
+   "seeker_style": "waveform",
+   "spacing_scale": 1.05,
+   "tab_transition_style": "fadeOnly"
+  },
+  "glass": {
+   "tint_hue": 0.33,
+   "tint_strength": 0.1,
+   "translucency": 0.8,
+   "use_accent_tint": true
+  },
+  "flags": {
+   "aggressive_prefetch": false,
+   "haptic_feedback": false,
+   "reduce_motion": true,
+   "show_bpm_badges": false
+  },
+  "hooks": {
+   "library_default_columns": 1,
+   "library_default_sort": "dateAdded",
+   "pin_favorites_first": false
+  }
+ },
+ {
+  "meta": {
+   "description": "Near-black indigo with magenta/cyan neon and monospaced type — a fast, alert, terminal-HUD look.",
+   "id": "cyberpunk_neon",
+   "name": "Neon Cyberdeck",
+   "subtitle": "Dark, neon, monospaced",
+   "icon": "cpu"
+  },
+  "colors": {
+   "background": "#060014",
+   "surface": {
+    "shade_of": "background",
+    "amount": 0.1
+   },
+   "elevated_surface": {
+    "shade_of": "background",
+    "amount": 0.22
+   },
+   "accent": "#FF2AF0",
+   "accent_secondary": "#2AFCFF",
+   "text_primary": "#E8FFFB",
+   "text_secondary": "#7FD8D6"
+  },
+  "style": {
+   "artwork_style": "circuitPulse",
+   "card_style": "card",
+   "corner_radius_scale": 0.7,
+   "font_style": "monospacedDisplay",
+   "launch_screen_style": "aurora",
+   "panel_material": "frostedGlass",
+   "panel_opacity": 0.85,
+   "seeker_style": "neonLine",
+   "spacing_scale": 1,
+   "tab_transition_style": "scalePop"
+  },
+  "glass": {
+   "tint_hue": 0.85,
+   "tint_strength": 0.4,
+   "translucency": 1,
+   "use_accent_tint": true
+  },
+  "flags": {
+   "aggressive_prefetch": true,
+   "haptic_feedback": true,
+   "reduce_motion": false,
+   "show_bpm_badges": true
+  },
+  "hooks": {
+   "library_default_columns": 2,
+   "library_default_sort": "playCount",
+   "pin_favorites_first": true
+  },
+  "layout": {
+   "default_display_mode": "artwork",
+   "default_panel": "Sound",
+   "eq_expanded_by_default": true,
+   "show_queue_preview": true
+  }
+ },
+ {
+  "meta": {
+   "description": "Strict grayscale, serif type, sharp corners — a print-magazine, content-first look.",
+   "id": "monochrome_editorial",
+   "name": "Monochrome Editorial",
+   "subtitle": "Grayscale, editorial, serif",
+   "icon": "textformat"
+  },
+  "colors": {
+   "background": "#121212",
+   "surface": {
+    "shade_of": "background",
+    "amount": 0.2
+   },
+   "elevated_surface": {
+    "shade_of": "background",
+    "amount": 0.35
+   },
+   "accent": "#FFFFFF",
+   "accent_secondary": {
+    "shade_of": "background",
+    "amount": 0.55
+   },
+   "text_primary": "#F2F2F2",
+   "text_secondary": "#9A9A9A"
+  },
+  "style": {
+   "artwork_style": "mosaicShatter",
+   "card_style": "minimal",
+   "corner_radius_scale": 0.5,
+   "font_style": "serif",
+   "launch_screen_style": "minimalist",
+   "panel_material": "solid",
+   "panel_opacity": 1,
+   "seeker_style": "classic",
+   "spacing_scale": 1.15,
+   "tab_transition_style": "fadeOnly"
+  },
+  "glass": {
+   "tint_hue": 0,
+   "tint_strength": 0,
+   "translucency": 1,
+   "use_accent_tint": false
+  },
+  "flags": {
+   "aggressive_prefetch": false,
+   "haptic_feedback": false,
+   "reduce_motion": true,
+   "show_bpm_badges": false
+  },
+  "hooks": {
+   "library_default_columns": 1,
+   "library_default_sort": "artist",
+   "pin_favorites_first": false
+  }
+ },
+ {
+  "meta": {
+   "description": "Pink-to-orange sunset gradient over a deep purple night sky — retrowave, 80s-inspired.",
+   "id": "synthwave_sunset",
+   "name": "Synthwave Sunset",
+   "subtitle": "Retrowave pink & orange gradient",
+   "icon": "sun.horizon.fill"
+  },
+  "colors": {
+   "background": "#1B0A2E",
+   "surface": {
+    "shade_of": "background",
+    "amount": 0.22
+   },
+   "elevated_surface": {
+    "shade_of": "background",
+    "amount": 0.35
+   },
+   "accent": "#FF6AD5",
+   "accent_secondary": "#FFB86B",
+   "text_primary": "#FFF0F7",
+   "text_secondary": "#E5A8C9"
+  },
+  "style": {
+   "artwork_style": "synthwaveHorizon",
+   "card_style": "card",
+   "corner_radius_scale": 1.2,
+   "font_style": "rounded",
+   "launch_screen_style": "aurora",
+   "panel_material": "frostedGlass",
+   "panel_opacity": 0.85,
+   "seeker_style": "digital",
+   "spacing_scale": 1,
+   "tab_transition_style": "slide"
+  },
+  "glass": {
+   "tint_hue": 0.95,
+   "tint_strength": 0.3,
+   "translucency": 0.9,
+   "use_accent_tint": true
+  },
+  "flags": {
+   "aggressive_prefetch": true,
+   "haptic_feedback": true,
+   "reduce_motion": false,
+   "show_bpm_badges": true
+  },
+  "hooks": {
+   "library_default_columns": 2,
+   "library_default_sort": "dateAdded",
+   "pin_favorites_first": true
+  }
+ },
+ {
+  "meta": {
+   "description": "Blood-red accent on near-pure black — a harsh, high-contrast phonk/Memphis-rap look distinct from every warmer or cooler preset here.",
+   "id": "crimson_noir",
+   "name": "Crimson Noir",
+   "subtitle": "Blood red on black, phonk energy",
+   "icon": "flame.fill"
+  },
+  "colors": {
+   "background": "#050000",
+   "surface": "#140404",
+   "elevated_surface": "#220707",
+   "accent": "#C4102B",
+   "accent_secondary": "#7A0E1E",
+   "text_primary": "#F5E6E6",
+   "text_secondary": "#9E6E6E"
+  },
+  "style": {
+   "artwork_style": "vhsScanGlitch",
+   "card_style": "compact",
+   "corner_radius_scale": 0.6,
+   "font_style": "monospacedDisplay",
+   "launch_screen_style": "minimalist",
+   "panel_material": "solid",
+   "panel_opacity": 1,
+   "seeker_style": "neonLine",
+   "spacing_scale": 0.95,
+   "tab_transition_style": "fadeOnly"
+  },
+  "glass": {
+   "tint_hue": 0,
+   "tint_strength": 0.15,
+   "translucency": 0.95,
+   "use_accent_tint": true
+  },
+  "flags": {
+   "aggressive_prefetch": false,
+   "haptic_feedback": true,
+   "reduce_motion": false,
+   "show_bpm_badges": true
+  },
+  "hooks": {
+   "library_default_columns": 1,
+   "library_default_sort": "dateAdded",
+   "pin_favorites_first": false
+  }
+ },
+ {
+  "meta": {
+   "description": "Bright oceanic blue and teal over a near-black navy depth — calm, cool, and deliberately different from every warm/neutral preset here.",
+   "id": "deep_ocean",
+   "name": "Deep Ocean",
+   "subtitle": "Ocean blue & teal over navy",
+   "icon": "water.waves"
+  },
+  "colors": {
+   "background": "#020C18",
+   "surface": {
+    "shade_of": "background",
+    "amount": 0.25
+   },
+   "elevated_surface": {
+    "shade_of": "background",
+    "amount": 0.4
+   },
+   "accent": "#2E9EFF",
+   "accent_secondary": "#00E0C6",
+   "text_primary": "#EAF6FF",
+   "text_secondary": "#7FA8C9"
+  },
+  "style": {
+   "artwork_style": "bioluminescentTide",
+   "card_style": "comfortable",
+   "corner_radius_scale": 1.05,
+   "font_style": "system",
+   "launch_screen_style": "aurora",
+   "panel_material": "frostedGlass",
+   "panel_opacity": 0.88,
+   "seeker_style": "waveform",
+   "spacing_scale": 1,
+   "tab_transition_style": "fadeOnly"
+  },
+  "glass": {
+   "tint_hue": 0.58,
+   "tint_strength": 0.25,
+   "translucency": 0.85,
+   "use_accent_tint": true
+  },
+  "flags": {
+   "aggressive_prefetch": false,
+   "haptic_feedback": true,
+   "reduce_motion": false,
+   "show_bpm_badges": true
+  },
+  "hooks": {
+   "library_default_columns": 2,
+   "library_default_sort": "dateAdded",
+   "pin_favorites_first": false
+  }
+ },
+ {
+  "meta": {
+   "description": "Near-transparent frosted panels over graphite, with a neutral silver accent — the most glass-forward preset here, pushing translucency further than any of the other 10.",
+   "id": "frosted_glass_pro",
+   "name": "Frosted Glass Pro",
+   "subtitle": "Graphite under clear frosted glass",
+   "icon": "snowflake"
+  },
+  "colors": {
+   "background": "#101214",
+   "surface": "#1B1E21",
+   "elevated_surface": "#26292D",
+   "accent": "#C7CCD1",
+   "accent_secondary": "#8A9099",
+   "text_primary": "#F2F3F5",
+   "text_secondary": "#9AA0A6"
+  },
+  "style": {
+   "artwork_style": "frostedIceCrystal",
+   "card_style": "card",
+   "corner_radius_scale": 1.1,
+   "font_style": "system",
+   "launch_screen_style": "aurora",
+   "panel_material": "frostedGlass",
+   "panel_opacity": 0.55,
+   "seeker_style": "ring",
+   "spacing_scale": 1,
+   "tab_transition_style": "slide"
+  },
+  "glass": {
+   "tint_hue": 0.6,
+   "tint_strength": 0.08,
+   "translucency": 1,
+   "use_accent_tint": false
+  },
+  "flags": {
+   "aggressive_prefetch": false,
+   "haptic_feedback": true,
+   "reduce_motion": false,
+   "show_bpm_badges": true
+  },
+  "hooks": {
+   "library_default_columns": 2,
+   "library_default_sort": "dateAdded",
+   "pin_favorites_first": false
+  }
+ },
+ {
+  "meta": {
+   "description": "Near-white and gold, built for bright outdoor/daylight readability — brighter and higher-contrast than the muted minimalist or pastel presets.",
+   "id": "solar_daylight",
+   "name": "Solar Daylight",
+   "subtitle": "Near-white & gold, readable outdoors",
+   "icon": "sun.max.fill"
+  },
+  "colors": {
+   "background": "#FFFDF7",
+   "surface": "#FFF6E0",
+   "elevated_surface": "#FFEFC7",
+   "accent": "#D89A00",
+   "accent_secondary": "#1B2A4A",
+   "text_primary": "#1B2A4A",
+   "text_secondary": "#6B6250"
+  },
+  "style": {
+   "artwork_style": "paperLayersParallax",
+   "card_style": "comfortable",
+   "corner_radius_scale": 1.15,
+   "font_style": "rounded",
+   "launch_screen_style": "minimalist",
+   "panel_material": "solid",
+   "panel_opacity": 1,
+   "seeker_style": "pill",
+   "spacing_scale": 1.05,
+   "tab_transition_style": "scalePop"
+  },
+  "glass": {
+   "tint_hue": 0.12,
+   "tint_strength": 0.05,
+   "translucency": 1,
+   "use_accent_tint": false
+  },
+  "flags": {
+   "aggressive_prefetch": false,
+   "haptic_feedback": true,
+   "reduce_motion": false,
+   "show_bpm_badges": false
+  },
+  "hooks": {
+   "library_default_columns": 2,
+   "library_default_sort": "title",
+   "pin_favorites_first": true
+  }
+ }
+]

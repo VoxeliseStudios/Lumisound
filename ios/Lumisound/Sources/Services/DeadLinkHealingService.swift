@@ -74,22 +74,11 @@ enum DeadLinkHealingService {
         UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: lastRunKey)
     }
 
-    /// A candidate counts as confidently "the same recording" only if its
-    /// normalized title AND artist match exactly (same normalization
-    /// `DuplicateFinderService` already uses for real duplicate-merging)
-    /// and its duration is within `DuplicateFinderService.durationTolerance`
-    /// — the identical bar already trusted elsewhere in this codebase for
-    /// treating two tracks as the same, not a new/looser threshold invented
-    /// just for this.
+    /// Same normalised title and artist, duration within 2 s — the bar
+    /// duplicate merging already trusts (core `dup_best_match`).
     private static func bestMatch(for song: Song, among candidates: [StreamTrack]) -> StreamTrack? {
-        let targetTitle = DuplicateFinderService.normalize(song.title)
-        let targetArtist = DuplicateFinderService.normalizeArtist(song.artist)
-        guard !targetTitle.isEmpty else { return nil }
-
-        return candidates.first { candidate in
-            DuplicateFinderService.normalize(candidate.title) == targetTitle
-                && DuplicateFinderService.normalizeArtist(candidate.artist) == targetArtist
-                && abs(candidate.duration - song.duration) <= DuplicateFinderService.durationTolerance
-        }
+        let target = DupTrack(title: song.title, artist: song.artist, duration: song.duration)
+        let pool = candidates.map { DupTrack(title: $0.title, artist: $0.artist, duration: $0.duration) }
+        return dupBestMatch(target: target, candidates: pool).map { candidates[Int($0)] }
     }
 }

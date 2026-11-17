@@ -413,11 +413,12 @@ extension AudioPlayerManager {
         // routinely mastered nothing alike, and tempo is a rate rather than a
         // tonal balance. So the curve had no relationship to whether the track
         // was already bass-heavy — where a bass boost only makes it muddy — or
-        // genuinely thin. See SpectralEQMatcher.
+        // genuinely thin. Matching runs in the core (`eq_spectral_match`).
         if let spectrum = currentSong?.spectralProfile,
            let target = AudioSettings.libraryEQTarget {
-            let matched = SpectralEQMatcher.preset(for: spectrum, target: target)
-            let gain = SpectralEQMatcher.improvement(for: spectrum, preset: matched, target: target)
+            let match = eqSpectralMatch(spectrum: spectrum, target: target)
+            let matched = EQPreset(rawValue: match.presetId) ?? .flat
+            let gain = match.improvement
             appLog(String(format: "applyAutoEQIfNeeded: measured -> %@ (%.0f%% closer to library target) for \"%@\"",
                           matched.displayName, gain * 100, currentSong?.title ?? "?"),
                    category: "audio")

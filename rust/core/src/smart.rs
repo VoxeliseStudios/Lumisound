@@ -33,14 +33,60 @@ struct Rule {
     source: String,
 }
 
+/// Extra conditions on top of `rules`: every group must pass (each group
+/// matches all/any of its own rules). Replaced the old Lua predicates.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct Group {
+    #[serde(rename = "match")]
+    matching: String,
+    rules: Vec<Rule>,
+}
+
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct Playlist {
     #[serde(rename = "match")]
     matching: String,
     rules: Vec<Rule>,
+    groups: Vec<Group>,
     limit: i64,
     sort: String,
+}
+
+/// A rule with its text lowered and its pattern compiled once per call,
+/// not once per song.
+struct Prepared<'a> {
+    rule: &'a Rule,
+    text: String,
+    re: Option<regex_lite::Regex>,
+}
+
+fn prepare(rules: &[Rule]) -> Vec<Prepared<'_>> {
+    rules
+        .iter()
+        .map(|r| Prepared {
+            rule: r,
+            text: r.text.to_lowercase(),
+            // An invalid pattern matches nothing (the editor shows the error).
+            re: (r.op == "matchesRegex").then(|| regex_lite::Regex::new(&format!("(?i){}", r.text)).ok()).flatten(),
+        })
+        .collect()
+}
+
+fn set_ok(matching: &str, rules: &[Prepared], s: &SmartSong, favs: &HashSet<String>, h: &Hist, t: f64) -> bool {
+    if rules.is_empty() {
+        return true;
+    }
+    let mut it = rules.iter().map(|r| rule_ok(r, s, favs, h, t));
+    if matching == "any" { it.any(|x| x) } else { it.all(|x| x) }
+}
+
+/// Checks a regular expression the way rules use it (case-insensitive);
+/// `None` when it's valid, else the error to show.
+#[uniffi::export]
+pub fn smart_regex_error(pattern: String) -> Option<String> {
+    regex_lite::Regex::new(&format!("(?i){pattern}")).err().map(|e| e.to_string())
 }
 
 fn source_of(s: &SmartSong) -> &'static str {
@@ -77,20 +123,29 @@ fn number(field: &str, s: &SmartSong, h: &Hist, t: f64) -> Option<f64> {
     }
 }
 
-fn rule_ok(r: &Rule, s: &SmartSong, favs: &HashSet<String>, h: &Hist, t: f64) -> bool {
+fn rule_ok(p: &Prepared, s: &SmartSong, favs: &HashSet<String>, h: &Hist, t: f64) -> bool {
+    let r = p.rule;
     match r.field.as_str() {
         "title" | "artist" | "album" | "genre" => {
-            let v = match r.field.as_str() { "title" => &s.title, "artist" => &s.artist, "album" => &s.album, _ => &s.genre }.to_lowercase();
-            let q = r.text.to_lowercase();
+            let raw = match r.field.as_str() { "title" => &s.title, "artist" => &s.artist, "album" => &s.album, _ => &s.genre };
+            if r.op == "matchesRegex" {
+                return p.re.as_ref().is_some_and(|re| re.is_match(raw));
+            }
+            let v = raw.to_lowercase();
+            let q = &p.text;
             match r.op.as_str() {
-                "contains" => v.contains(&q),
-                "notContains" => !v.contains(&q),
-                "equals" => v == q,
+                "contains" => v.contains(q.as_str()),
+                "notContains" => !v.contains(q.as_str()),
+                "equals" => v == *q,
+                "notEquals" => v != *q,
+                "startsWith" => v.starts_with(q.as_str()),
+                "endsWith" => v.ends_with(q.as_str()),
+                "isEmpty" => v.trim().is_empty(),
                 _ => false,
             }
         }
         "favorite" => favs.contains(&s.id) == (r.op == "isTrue"),
-        "source" => source_of(s) == r.source,
+        "source" => (source_of(s) == r.source) != (r.op == "notEquals"),
         f => {
             let Some(v) = number(f, s, h, t) else { return false };
             match r.op.as_str() {
@@ -111,14 +166,13 @@ pub fn smart_filter(playlist_json: Vec<u8>, songs: Vec<SmartSong>, favorites: Ve
     let favs: HashSet<String> = favorites.into_iter().collect();
     let h = Hist::load();
     let t = now();
+    let rules = prepare(&p.rules);
+    let groups: Vec<(&str, Vec<Prepared>)> = p.groups.iter().map(|g| (g.matching.as_str(), prepare(&g.rules))).collect();
     songs
         .into_iter()
         .filter(|s| {
-            if p.rules.is_empty() {
-                return true;
-            }
-            let mut it = p.rules.iter().map(|r| rule_ok(r, s, &favs, &h, t));
-            if p.matching == "any" { it.any(|x| x) } else { it.all(|x| x) }
+            set_ok(&p.matching, &rules, s, &favs, &h, t)
+                && groups.iter().all(|(m, g)| set_ok(m, g, s, &favs, &h, t))
         })
         .map(|s| s.id)
         .collect()
@@ -172,5 +226,22 @@ mod tests {
         assert_eq!(ids, vec!["1", "3"]);
         let kept: Vec<SmartSong> = songs.into_iter().filter(|s| ids.contains(&s.id)).collect();
         assert_eq!(smart_order(pl, kept), vec!["3", "1"]);
+    }
+
+    #[test]
+    fn groups_and_text_ops() {
+        // (genre contains ro) AND (title starts with "b" OR title matches ^c$)
+        let pl = br#"{"match":"all","rules":[{"field":"genre","op":"contains","text":"RO"}],
+            "groups":[{"match":"any","rules":[{"field":"title","op":"startsWith","text":"B"},
+                                              {"field":"title","op":"matchesRegex","text":"^c$"}]}]}"#.to_vec();
+        let songs = vec![song("1", "bee", 1.0), song("2", "a", 1.0), song("3", "C", 1.0)];
+        assert_eq!(smart_filter(pl, songs.clone(), vec![]), vec!["1", "3"]);
+        let ends = br#"{"rules":[{"field":"title","op":"endsWith","text":"ee"}]}"#.to_vec();
+        assert_eq!(smart_filter(ends, songs.clone(), vec![]), vec!["1"]);
+        // A broken pattern matches nothing and is reported.
+        let bad = br#"{"rules":[{"field":"title","op":"matchesRegex","text":"(("}]}"#.to_vec();
+        assert!(smart_filter(bad, songs, vec![]).is_empty());
+        assert!(smart_regex_error("((".into()).is_some());
+        assert!(smart_regex_error("^a.*".into()).is_none());
     }
 }

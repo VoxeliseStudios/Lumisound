@@ -1,0 +1,14 @@
+[
+ {"id": "aurora_wave", "name": "Aurora Wave", "icon": "sparkles",
+  "hsl_ramp": {"hue_from": 160, "hue_to": 300, "saturation": 0.75, "lightness_from": 0.55, "lightness_to": 0.55, "stops": 5},
+  "sensitivity": 1.15, "bar_corner_radius": 3, "bar_spacing": 3, "mirrored": false},
+ {"id": "monochrome_pulse", "name": "Monochrome Pulse", "icon": "circle.lefthalf.filled",
+  "hsl_ramp": {"hue_from": 0, "hue_to": 0, "saturation": 0.0, "lightness_from": 0.18, "lightness_to": 0.75, "stops": 5},
+  "sensitivity": 0.9, "bar_corner_radius": 1, "bar_spacing": 2, "mirrored": false},
+ {"id": "phonk_strobe", "name": "Phonk Strobe", "icon": "bolt.fill",
+  "alternate": {"colors": ["#B4001E", "#0A0A0A"], "stops": 6},
+  "sensitivity": 1.5, "bar_corner_radius": 0, "bar_spacing": 1, "mirrored": true},
+ {"id": "sunset_bars", "name": "Sunset Bars", "icon": "sun.horizon.fill",
+  "gradient": {"from": "#FF6A00", "to": "#FF2AA6", "stops": 4},
+  "sensitivity": 1.35, "bar_corner_radius": 4, "bar_spacing": 5, "mirrored": true}
+]

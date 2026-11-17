@@ -234,6 +234,61 @@ pub fn eq_presets() -> Vec<EqPresetInfo> {
         .collect()
 }
 
+/// Auto EQ by measurement: the Signature/Genre preset that brings a track's
+/// ten-band tonal fingerprint (`spectrum`, relative to its own level) closest
+/// to the library's median shape (`target`), or "flat" when nothing helps by
+/// at least 10% (a track already where it should be is left alone).
+/// The extreme bands are discounted: they carry the least perceptual
+/// information and are where masters (and the measurement) vary most.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct EqSpectralMatch {
+    pub preset_id: String,
+    /// How much closer to the target (0-1) the chosen preset gets the track.
+    pub improvement: f64,
+}
+
+const SPECTRAL_WEIGHTS: [f64; 10] = [0.4, 0.7, 1.0, 1.0, 1.0, 1.0, 1.0, 0.9, 0.7, 0.4];
+const SPECTRAL_MIN_IMPROVEMENT: f64 = 0.10;
+
+fn spectral_deviation(spectrum: &[f64], gains: &[f32], target: &[f64]) -> f64 {
+    (0..10)
+        .map(|i| {
+            let e = spectrum[i] + gains.get(i).copied().unwrap_or(0.0) as f64 - target[i];
+            SPECTRAL_WEIGHTS[i] * e * e
+        })
+        .sum()
+}
+
+#[uniffi::export]
+pub fn eq_spectral_match(spectrum: Vec<f64>, target: Vec<f64>) -> EqSpectralMatch {
+    let flat = EqSpectralMatch { preset_id: "flat".into(), improvement: 0.0 };
+    if spectrum.len() != 10 || target.len() != 10 || spectrum.iter().chain(&target).any(|x| !x.is_finite()) {
+        return flat;
+    }
+    let flat_score = spectral_deviation(&spectrum, &[0.0; 10], &target);
+    if flat_score <= 0.0 {
+        return flat;
+    }
+    let mut best: Option<(&str, f64)> = None;
+    for (id, _, _, cat, gains) in PRESETS.iter() {
+        // Device presets describe the listener's gear and Utility ones a
+        // situation; Auto EQ only chooses between sound presets.
+        if *cat != "Signature" && *cat != "Genre" {
+            continue;
+        }
+        let score = spectral_deviation(&spectrum, gains, &target);
+        if score < best.map_or(flat_score, |b| b.1) {
+            best = Some((id, score));
+        }
+    }
+    match best {
+        Some((id, score)) if (flat_score - score) / flat_score >= SPECTRAL_MIN_IMPROVEMENT => {
+            EqSpectralMatch { preset_id: id.to_string(), improvement: ((flat_score - score) / flat_score).max(0.0) }
+        }
+        _ => flat,
+    }
+}
+
 /// Gains for a preset id (zeros for "custom" or unknown ids).
 #[uniffi::export]
 pub fn eq_preset_gains(id: String) -> Vec<f32> {
@@ -313,6 +368,23 @@ pub fn eq_response_curve(gains: Vec<f32>, points: u32, loudness_match: bool) -> 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn spectral_match_picks_the_closest_sound_preset() {
+        let target = vec![0.0; 10];
+        // A track that is exactly Deep Current's curve too thin.
+        let gains = PRESETS.iter().find(|p| p.0 == "deep_current").unwrap().4;
+        let thin: Vec<f64> = gains.iter().map(|g| -(*g as f64)).collect();
+        let m = super::eq_spectral_match(thin, target.clone());
+        assert_eq!(m.preset_id, "deep_current");
+        assert!((m.improvement - 1.0).abs() < 1e-9);
+        // Already on target, or a tiny deviation: leave it alone.
+        assert_eq!(super::eq_spectral_match(target.clone(), target.clone()).preset_id, "flat");
+        let mut near = vec![0.0; 10];
+        near[5] = 0.05;
+        assert_eq!(super::eq_spectral_match(near, target.clone()).preset_id, "flat");
+        assert_eq!(super::eq_spectral_match(vec![1.0; 3], target).preset_id, "flat");
+    }
+
     use super::*;
 
     fn rms(eq: &mut LumiEq, freq: f32) -> f32 {

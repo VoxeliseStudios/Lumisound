@@ -2,10 +2,10 @@
 
 A small daemon that mirrors your Lumisound "now playing" state to your
 Discord profile via Rich Presence. It is one self-contained Rust binary,
-`lumisound-discord-rpc` (source: [`rust/rpc`](../rust/rpc)) — no Python or
-other runtime needed. The installers below use a release binary placed next
-to them, one on your `PATH`, or build it once with `cargo` if Rust is
-installed.
+`lumisound-discord-rpc` (source: [`rust/rpc`](../rust/rpc)) — no Python,
+shell or PowerShell scripts needed: the binary installs itself
+(`lumisound-discord-rpc install`). Get it from the Lumisound GitHub releases
+(`rpc/v*` tags) or build it with `cargo build --release -p lumisound-rpc`.
 
 ## Why this can't be fully server-side
 
@@ -43,81 +43,44 @@ config file.
 That's all you need here. You do **not** have to generate a token by hand
 anymore — the installer signs in for you.
 
-## 2. Run the daemon
+## 2. Install and run the daemon
 
-Pick your platform and sign in with your **Lumisound email (or username) and
-password** when prompted. Everything else has a sensible default (the hosted
-Lumisound bridge) or comes from your server-side registration.
-
-Your password is **never saved**. The installer exchanges it for a 365-day
-Rich Presence token which is all that gets written to disk (mode `0600`). That
-token only allows reading your own playback state, and you can revoke it any
-time from **Account → Active Sessions** ("Discord RPC Bridge") without
-changing your password.
-
-If your account has **two-factor authentication**, the installer will prompt
-for your 6-digit code and complete the login normally.
-
-### Linux (systemd --user service)
+Put the binary somewhere permanent (the service runs it from that path), for
+example `~/.local/bin/lumisound-discord-rpc` (or `%LOCALAPPDATA%\Programs\`
+on Windows), then:
 
 ```sh
-./install.sh
+lumisound-discord-rpc install
 ```
 
-Manage it with:
+Sign in with your **Lumisound email (or username) and password** when
+prompted. Everything else has a sensible default (the hosted Lumisound
+bridge) or comes from your server-side registration. `install` then registers
+the daemon to start with your session:
 
-```sh
-systemctl --user status lumisound-discord-rpc.service
-journalctl --user -u lumisound-discord-rpc.service -f
-```
+| Platform | Registered as | Check it |
+|---|---|---|
+| Linux | systemd user unit `~/.config/systemd/user/lumisound-discord-rpc.service` | `systemctl --user status lumisound-discord-rpc.service` · `journalctl --user -u lumisound-discord-rpc.service -f` |
+| macOS | LaunchAgent `~/Library/LaunchAgents/com.lumisound.discord-rpc.plist` | `launchctl list \| grep lumisound` · `tail -f ~/.config/lumisound-discord-rpc/daemon.log` |
+| Windows | Scheduled Task `LumisoundDiscordRPC` (at log-on, restarts on failure) | `schtasks /Query /TN LumisoundDiscordRPC` |
 
-**After updating the binary** (a new release or a rebuild), the running
-process keeps executing the old one until you restart it:
+Remove it with `lumisound-discord-rpc uninstall` (your sign-in is kept).
 
-```sh
-systemctl --user restart lumisound-discord-rpc.service
-```
+Your password is **never saved**. It is exchanged for a 365-day Rich Presence
+token, which is all that gets written to disk (mode `0600`). That token only
+allows reading your own playback state, and you can revoke it any time from
+**Account → Active Sessions** ("Discord RPC Bridge") without changing your
+password. With **two-factor authentication** on, you're asked for your
+6-digit code.
 
-A missed restart here looks exactly like the fix didn't work.
+Options: `--bridge-url URL` (self-hosted bridge), `--identifier EMAIL_OR_USERNAME`,
+`--token TOKEN` (skip the password; see below), `--config-only` (sign in and write
+`config.json`, register nothing), `--force` (Linux: shadow a unit that NixOS,
+home-manager, Guix or a package already provides; without it `install` refuses
+and suggests `--config-only`).
 
-**On NixOS, home-manager, or Guix**, the unit is generated declaratively and a
-copy in `~/.config/systemd/user` would override it — so `install.sh` refuses
-and points you at:
-
-```sh
-./install.sh --config-only      # sign in, write config.json, touch no units
-systemctl --user restart lumisound-discord-rpc.service
-```
-
-Pass `--force` to shadow the managed unit anyway (rarely what you want).
-
-### macOS (LaunchAgent, starts at login)
-
-```sh
-./install-macos.sh
-```
-
-Manage it with:
-
-```sh
-launchctl list | grep lumisound
-tail -f ~/.config/lumisound-discord-rpc/daemon.log
-```
-
-### Windows (Scheduled Task, starts at login)
-
-Put `lumisound-discord-rpc.exe` next to the script (or install Rust so it can
-be built). In PowerShell:
-
-```powershell
-.\install-windows.ps1
-```
-
-Manage it with:
-
-```powershell
-Get-ScheduledTask -TaskName LumisoundDiscordRPC
-```
+**After updating the binary**, run `install` again (or restart the service): the
+running process keeps executing the old one until it restarts.
 
 ### Manual / any platform
 
@@ -130,16 +93,9 @@ lumisound-discord-rpc
 
 ### Still prefer a token?
 
-The old flow works unchanged. Generate one from **Account → Discord Rich
-Presence → Generate Rich Presence Token**, then:
-
-```sh
-./install.sh <rpc_token>                       # Linux
-./install-macos.sh <rpc_token>                 # macOS
-.\install-windows.ps1 -Token "<rpc_token>"     # Windows
-```
-
-Or write it yourself — note the config path differs on Windows:
+Generate one from **Account → Discord Rich Presence → Generate Rich Presence
+Token**, then `lumisound-discord-rpc install --token <rpc_token>`, or write
+it yourself — note the config path differs on Windows:
 
 ```sh
 # Linux / macOS
@@ -155,7 +111,7 @@ Set `LUMISOUND_RPC_CONFIG` to use a different path entirely.
 
 If you're self-hosting the ios-bridge instead of using the hosted one, add
 `"bridge_url": "https://your-bridge-host.example.com"` to `config.json`, or
-pass `--bridge-url https://...` to the install scripts.
+pass `--bridge-url https://...` to `install`.
 
 ## How it works
 

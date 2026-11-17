@@ -9,7 +9,6 @@ use crate::state::AppState;
 use axum::body::Bytes;
 use axum::extract::{ConnectInfo, Path, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::response::Html;
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use chrono::NaiveDateTime;
@@ -19,11 +18,11 @@ use sha2::{Digest, Sha256};
 use std::net::SocketAddr;
 use std::time::Duration;
 
-const DASHBOARD: &str = include_str!("../admin.html");
-
 pub fn routes() -> Router<AppState> {
     Router::new()
-        .route("/admin", get(|| async { Html(DASHBOARD) }))
+        .route("/admin", get(super::admin_page::page))
+        .route("/admin/login", post(super::admin_page::login))
+        .route("/admin/logout", post(super::admin_page::logout))
         .route("/admin/api/overview", get(overview))
         .route("/admin/api/lms3", get(lms3_status).post(lms3_run))
         .route("/admin/api/download-jobs", get(download_jobs).delete(clear_download_jobs))
@@ -89,6 +88,10 @@ async fn lms3_run(State(st): State<AppState>, _a: Admin) -> Json<Value> {
 }
 
 async fn overview(State(st): State<AppState>, _a: Admin) -> ApiResult<Json<Value>> {
+    Ok(Json(overview_data(&st).await?))
+}
+
+pub(crate) async fn overview_data(st: &AppState) -> ApiResult<Value> {
     let (users, files, bytes, jobs, errs): (i64, i64, i64, Value, i64) = sqlx::query_as(
         "SELECT (SELECT COUNT(*) FROM ios_users), (SELECT COUNT(*) FROM ios_user_music_metadata), \
                 (SELECT COALESCE(SUM(file_size_bytes), 0)::bigint FROM ios_user_music_metadata), \
@@ -100,7 +103,7 @@ async fn overview(State(st): State<AppState>, _a: Admin) -> ApiResult<Json<Value
     .await?;
     let disk = st.user_music_root().filter(|r| r.exists()).and_then(|r| disk_usage(&r));
     let c = &st.cfg;
-    Ok(Json(json!({
+    Ok(json!({
         "version": "1.0.0", "yt_dlp_version": st.ytdlp_version, "user_count": users, "music_file_count": files, "music_bytes": bytes,
         "disk": disk, "download_jobs_24h": jobs, "recent_error_count_24h": errs,
         "concurrency": {
@@ -110,12 +113,15 @@ async fn overview(State(st): State<AppState>, _a: Admin) -> ApiResult<Json<Value
             "available_mb": crate::ytdlp::available_memory_mb().unwrap_or(0.0).round() as i64,
             "ytdlp_available": st.ytdlp.limiter.available(), "transcode_available": st.ytdlp.transcode.available(),
         },
-    })))
+    }))
 }
 
 async fn download_jobs(State(st): State<AppState>, _a: Admin, Q(p): Q<P>) -> ApiResult<Json<Value>> {
-    let l = limit(&p, 50, 200)?;
-    Ok(Json(
+    Ok(Json(download_jobs_data(&st, limit(&p, 50, 200)?).await?))
+}
+
+pub(crate) async fn download_jobs_data(st: &AppState, l: i64) -> ApiResult<Value> {
+    Ok(
         sqlx::query_scalar(
             "SELECT COALESCE(json_agg(json_build_object('id', id, 'source', source, 'source_id', source_id, 'title', title, 'status', status, \
                'error_message', error_message, 'duration_ms', duration_ms, 'created_at', lumi_iso(created_at)) ORDER BY created_at DESC), '[]'::json) \
@@ -124,7 +130,7 @@ async fn download_jobs(State(st): State<AppState>, _a: Admin, Q(p): Q<P>) -> Api
         .bind(l)
         .fetch_one(&st.db)
         .await?,
-    ))
+    )
 }
 
 #[derive(Deserialize)]
@@ -138,6 +144,10 @@ struct PerfQ {
 async fn perf(State(st): State<AppState>, _a: Admin, Q(q): Q<PerfQ>) -> ApiResult<Json<Value>> {
     let hours = q.hours.unwrap_or(48);
     check_range("hours", hours, 1, 24 * 30)?;
+    Ok(Json(perf_data(&st, hours).await?))
+}
+
+pub(crate) async fn perf_data(st: &AppState, hours: i64) -> ApiResult<Value> {
     let v: Value = sqlx::query_scalar(
         "WITH w AS (SELECT created_at, detail, detail->>'appVersion' AS ver FROM ios_app_event_log \
            WHERE event IN ('perf_window', 'perf_heartbeat') AND created_at >= NOW() - make_interval(hours => $1)), \
@@ -167,12 +177,15 @@ async fn perf(State(st): State<AppState>, _a: Admin, Q(q): Q<PerfQ>) -> ApiResul
     .bind(hours as i32)
     .fetch_one(&st.db)
     .await?;
-    Ok(Json(v))
+    Ok(v)
 }
 
 async fn errors(State(st): State<AppState>, _a: Admin, Q(p): Q<P>) -> ApiResult<Json<Value>> {
-    let l = limit(&p, 50, 200)?;
-    Ok(Json(
+    Ok(Json(errors_data(&st, limit(&p, 50, 200)?).await?))
+}
+
+pub(crate) async fn errors_data(st: &AppState, l: i64) -> ApiResult<Value> {
+    Ok(
         sqlx::query_scalar(
             "SELECT COALESCE(json_agg(json_build_object('category', category, 'message', message, 'file', file, 'line', line, \
                'timestamp', lumi_iso(timestamp), 'app_version', app_version, 'os_version', os_version) ORDER BY timestamp DESC NULLS FIRST), '[]'::json) \
@@ -181,7 +194,7 @@ async fn errors(State(st): State<AppState>, _a: Admin, Q(p): Q<P>) -> ApiResult<
         .bind(l)
         .fetch_one(&st.db)
         .await?,
-    ))
+    )
 }
 
 /// `datetime.fromisoformat` → naive wall-clock time (what a TIMESTAMP column compares against).

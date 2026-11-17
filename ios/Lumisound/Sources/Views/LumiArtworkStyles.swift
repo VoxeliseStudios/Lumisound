@@ -680,15 +680,15 @@ struct LiveSpectrumArtworkView: View {
     let isPlaying: Bool
 
     @ObservedObject private var visualizer = AudioVisualizerService.shared
-    @ObservedObject private var luaVisualizer = LuaVisualizerStore.shared
+    @ObservedObject private var presetVisualizer = VisualizerPresetStore.shared
 
     private var colors: [Color] {
-        guard let hex = luaVisualizer.activeConfig?.colors, !hex.isEmpty else { return [AppTheme.dynamicAccent, .cyan] }
+        guard let hex = presetVisualizer.activeConfig?.colors, !hex.isEmpty else { return [AppTheme.dynamicAccent, .cyan] }
         return hex.map { Color(hex: $0) }
     }
 
     var body: some View {
-        let sensitivity = Float(luaVisualizer.activeConfig?.sensitivity ?? 1.0)
+        let sensitivity = Float(presetVisualizer.activeConfig?.sensitivity ?? 1.0)
         let mags = visualizer.magnitudes.map { min(1, max(0, $0 * sensitivity)) }
         ZStack {
             Canvas { ctx, size in

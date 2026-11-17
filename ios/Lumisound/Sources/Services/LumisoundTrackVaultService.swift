@@ -161,8 +161,8 @@ enum LumisoundTrackVaultService {
         let candidates = library.importedSongs.filter { candidateIDs.contains($0.id) }
         guard !candidates.isEmpty else { return }
 
-        let allowedIDs = loadUserRuleScript().flatMap { script in
-            LumisoundTrackVaultEngine.filterSongIDs(script: script, songs: candidates, favorites: library.favoriteSongIDs)
+        let allowedIDs = loadUserRule().map { rule in
+            Set(smartFilter(playlistJson: rule, songs: candidates.map(SmartPlaylist.facts), favorites: Array(library.favoriteSongIDs)))
         }
 
         appLog("LumisoundTrackVaultService: backfilling \(candidates.count) untagged/mistagged track(s)", category: "background")
@@ -643,14 +643,15 @@ enum LumisoundTrackVaultService {
         }
     }
 
-    /// Optional user-authored policy script — no bundled/picker UI for this
-    /// (unlike Effects/Visualizers), just an opt-in advanced override: drop a
-    /// `.lua` file defining `should_tag(track)` at this path to exclude
-    /// specific tracks from tagging. Absent by default, which means "tag
-    /// everything" (see runBackfill's `allowedIDs` handling above).
-    private static func loadUserRuleScript() -> String? {
+    /// Optional user policy: a `LumisoundTrackVaultRule.json` in Documents,
+    /// in the smart-playlist rule format (`{"match": "all", "rules": [...],
+    /// "groups": [...]}`), limits tagging to the tracks it matches. Absent
+    /// by default, which means "tag everything". (Was a Lua `should_tag`
+    /// script; a leftover `LumisoundTrackVaultRule.lua` is ignored.)
+    private static func loadUserRule() -> Data? {
         let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("LumisoundTrackVaultRule.lua")
-        return try? String(contentsOf: url, encoding: .utf8)
+            .appendingPathComponent("LumisoundTrackVaultRule.json")
+        // The core treats a file it can't parse as "no rules" (tag everything).
+        return try? Data(contentsOf: url)
     }
 }

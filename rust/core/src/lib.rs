@@ -17,6 +17,7 @@ pub mod crossdevice;
 pub mod downloads;
 pub mod dropdown;
 pub mod gallery;
+pub mod hub;
 pub mod haptics;
 pub mod haptic_brain;
 pub mod intro;
@@ -30,7 +31,7 @@ pub mod lock;
 pub mod lumiclip;
 pub mod logger;
 pub mod lyrics;
-pub mod lua;
+pub mod presets;
 pub mod metadata;
 pub mod mood;
 pub mod perf;
@@ -71,4 +72,20 @@ where
 #[uniffi::export]
 pub fn core_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
+}
+
+/// Lowercase hex SHA-256 of `text` (UTF-8): stable keys for folder covers and
+/// Rich Presence artwork, shared with the bridge and the RPC daemon.
+#[uniffi::export]
+pub fn sha256_hex(text: String) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(text.as_bytes()))
+}
+
+#[cfg(test)]
+mod lib_tests {
+    #[test]
+    fn sha256_hex_matches_known_vector() {
+        assert_eq!(super::sha256_hex("abc".into()), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    }
 }
