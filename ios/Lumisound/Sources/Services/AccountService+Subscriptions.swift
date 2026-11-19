@@ -218,7 +218,8 @@ extension AccountService {
                             destinationDir: destinationDir,
                             existingSongs: existingSongsSnapshot,
                             destinationFolderName: subscription.destinationFolder,
-                            reportExistingAsSkipped: true
+                            reportExistingAsSkipped: true,
+                            automatic: true
                         )
                         return true
                     } catch StreamingError.alreadyDownloaded {

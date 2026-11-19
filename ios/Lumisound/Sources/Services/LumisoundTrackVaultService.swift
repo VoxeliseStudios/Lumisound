@@ -66,11 +66,7 @@ enum LumisoundTrackVaultService {
         request.requiresNetworkConnectivity = false
         request.requiresExternalPower = false
         request.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60)
-        do {
-            try BGTaskScheduler.shared.submit(request)
-        } catch {
-            appWarn("LumisoundTrackVaultService: submit failed: \(error.localizedDescription)", category: "background")
-        }
+        BackgroundRefreshService.submit(request, label: "LumisoundTrackVaultService")
     }
 
     private static func handle(task: BGProcessingTask) {

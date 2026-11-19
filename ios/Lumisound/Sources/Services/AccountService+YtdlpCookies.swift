@@ -33,6 +33,7 @@ extension AccountService {
         do {
             _ = try await makeRequest("/user/ytdlp-cookies", method: "PUT", body: Body(cookies_text: cookiesText))
             errorMessage = nil
+            blockedClearAll()
             return true
         } catch let err as AccountError {
             errorMessage = err.message

@@ -33,8 +33,14 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         // Expected on Simulator and on devices without a valid provisioning
         // profile/entitlement — not fatal, the app just keeps working with
         // in-app + server-inbox-poll notifications only.
+        // Sideloaded builds can never get the aps-environment entitlement, and
+        // registration is retried on every foreground — say it once per launch
+        // (2.0.0.64: 198 identical warnings in two days).
+        guard !Self.reportedAPNsFailure else { return }
+        Self.reportedAPNsFailure = true
         appWarn("APNs registration failed: \(error.localizedDescription)", category: "notifications")
     }
+    private static var reportedAPNsFailure = false
 
     /// Entry point for the "download_ready" silent/content-available push
     /// (see _send_push_best_effort's content_available param on the bridge)

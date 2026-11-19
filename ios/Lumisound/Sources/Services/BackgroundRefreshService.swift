@@ -59,6 +59,31 @@ enum BackgroundRefreshService {
         }
     }
 
+    /// Identifiers iOS refused with `.notPermitted` this launch. That answer can't
+    /// change while the process lives (the build lacks the background mode, or
+    /// the app runs inside LiveContainer, whose own Info.plist is the one iOS
+    /// reads), so it is reported once instead of on every reschedule —
+    /// 2.0.0.64 logged it 128 times per task.
+    nonisolated(unsafe) private static var refused = Set<String>()
+    private static let refusedLock = NSLock()
+
+    /// Shared submit for every BGTaskScheduler request in the app.
+    static func submit(_ request: BGTaskRequest, label: String) {
+        let id = request.identifier
+        if refusedLock.withLock({ refused.contains(id) }) { return }
+        do {
+            try BGTaskScheduler.shared.submit(request)
+        } catch let error as NSError where error.domain == BGTaskSchedulerErrorDomain
+                    && error.code == BGTaskScheduler.Error.notPermitted.rawValue {
+            refusedLock.withLock { _ = refused.insert(id) }
+            appWarn("\(label): iOS does not permit \(id) (missing background mode, or running inside LiveContainer) — background runs off for this launch", category: "background")
+            RemoteLogger.log(category: "background", event: "bgtask_not_permitted", level: "warning",
+                             detail: ["identifier": id, "bundleID": Bundle.main.bundleIdentifier ?? ""])
+        } catch {
+            appWarn("\(label): submit failed: \(error.localizedDescription)", category: "background")
+        }
+    }
+
     /// Requests the next background run. Call once after launch and again
     /// after each run completes — a submitted request is consumed when it
     /// fires (or replaced by a newer `submit()` for the same identifier).
@@ -73,11 +98,7 @@ enum BackgroundRefreshService {
         // comment) — a 5-minute request does not produce 5-minute cadence,
         // it just removes the 4-hour floor that used to be here.
         request.earliestBeginDate = Date(timeIntervalSinceNow: 60 * 60)
-        do {
-            try BGTaskScheduler.shared.submit(request)
-        } catch {
-            appWarn("BackgroundRefreshService: submit failed: \(error.localizedDescription)", category: "background")
-        }
+        submit(request, label: "BackgroundRefreshService")
     }
 
     /// Requests the next long-form download catch-up. Call alongside
@@ -101,11 +122,7 @@ enum BackgroundRefreshService {
         let last = UserDefaults.standard.object(forKey: "autoDownloads.lastFullRun") as? Date ?? .distantPast
         let due = last.addingTimeInterval(15 * 3600)
         request.earliestBeginDate = due > Date() ? due : Date(timeIntervalSinceNow: 15 * 60)
-        do {
-            try BGTaskScheduler.shared.submit(request)
-        } catch {
-            appWarn("BackgroundRefreshService: download catch-up submit failed: \(error.localizedDescription)", category: "background")
-        }
+        submit(request, label: "BackgroundRefreshService (download catch-up)")
     }
 
     private static func handleDownloads(task: BGProcessingTask) {

@@ -2,6 +2,15 @@
 
 Full history and decisions: [`RUST-PORT.md`](../../RUST-PORT.md).
 
+## Done (2026-11-19) — 2.0.0.64 telemetry fixes
+- `downloads.rs`: soft blocks — `download_block_reason` (bot_check / premium_only), `blocked_record`,
+  `blocked_should_skip` (6 h, 1 d, 3 d, then 7 d), `blocked_clear_all`; `ledger_record` clears one.
+- `metadata.rs`: misses persisted (`metadata_misses`, 1 d / 3 d / 7 d) only when a source answered
+  (offline lookups aren't misses); a hit clears it. Was 410 lookups of 14 titles in two days.
+- `perf.rs`: unnamed threads labelled `main` (first in task_threads), `gcd <qos>` (on a dispatch
+  queue) or `thread <qos>` from priority, so the "(unnamed)" bucket can be placed.
+- `store.rs` test: dirty mark after both writes (the old order raced the writer).
+
 ## Done (2026-11-16) — time-stretch pre-echo, Lumi clips
 - `engine/stretch.rs`: onset detector on the input; frames whose second half reaches an onset are
   gated just before it (overlap-add renormalised by received weight); while a hit sits in the first

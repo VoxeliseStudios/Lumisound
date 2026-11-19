@@ -33,7 +33,8 @@ extension StreamingService {
         destinationDir: URL? = nil,
         existingSongs: [Song] = [],
         destinationFolderName: String? = nil,
-        reportExistingAsSkipped: Bool = false
+        reportExistingAsSkipped: Bool = false,
+        automatic: Bool = false
     ) async throws -> URL {
         // Marks recent download activity so returning to the app collects
         // finished background jobs (and only then).
@@ -59,6 +60,11 @@ extension StreamingService {
         if DownloadFailureStore.shared.shouldSkip(sourceTrackID: sourceTrackID) {
             appLog("downloadToLibrary: skipping \"\(track.title)\" — known unavailable, still in cool-off", category: "network")
             throw StreamingError.permanentlyUnavailable
+        }
+        // Bot-walled / Premium-only tracks: automatic passes back off per track
+        // (6 h, 1 day, 3 days, a week) instead of re-asking every pass.
+        if automatic, blockedShouldSkip(sourceTrackId: sourceTrackID) {
+            throw StreamingError.blockedBackingOff
         }
 
         // Pre-download dedupe — skip entirely if we already have a valid copy
@@ -361,6 +367,13 @@ extension StreamingService {
     /// picks up any tagged-not-converted track on its next pass, same
     /// safety net as before this change, just no longer the ONLY path a
     /// normal download takes to get there.
+    /// Remembers a bot-wall / Premium-only refusal so automatic passes back off
+    /// on this track (core `download_block_reason` decides what counts).
+    static func noteBlockIfAny(sourceTrackID: String, detail: String?) {
+        guard let detail, downloadBlockReason(detail: detail) != nil else { return }
+        blockedRecord(sourceTrackId: sourceTrackID)
+    }
+
     func finalizeAndLockDownload(destURL: URL, track: StreamTrack) async -> URL {
         let lockStartedAt = Date()
         LumisoundTrackVaultService.tagNewDownload(fileURL: destURL, trackID: track.sourceTrackID, sourceURL: track.youtubeURL)
@@ -461,6 +474,7 @@ extension StreamingService {
                     appWarn("downloadToLibrary: \"\(track.title)\" is permanently unavailable (\(detail ?? "no detail")) — suppressing future attempts", category: "network")
                 } else {
                     appWarn("downloadToLibrary: not found for \"\(track.title)\" — \(detail ?? "no detail")", category: "network")
+                    Self.noteBlockIfAny(sourceTrackID: sourceTrackID, detail: detail)
                 }
                 throw StreamingError.notFound(track.title)
             case let .Retry(message):
@@ -468,6 +482,7 @@ extension StreamingService {
                 throw StreamingError.incompleteDownload
             case let .Unavailable(detail):
                 appWarn("downloadToLibrary: unavailable for \"\(track.title)\": \(detail)", category: "network")
+                Self.noteBlockIfAny(sourceTrackID: sourceTrackID, detail: detail)
                 throw StreamingError.serverDetail(detail)
             case let .Http(code, detail) where code == 204:
                 appLog("downloadToLibrary: bridge reports \"\(track.title)\" is already in this account's library (\(detail)) — not retrying", category: "network")

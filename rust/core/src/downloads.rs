@@ -11,6 +11,7 @@ use std::sync::Mutex;
 const LEDGER: &str = "download_ledger";
 const IN_FLIGHT: &str = "download_inflight";
 const FAILURES: &str = "download_failures";
+const BLOCKED: &str = "download_blocked";
 const IN_FLIGHT_TTL: f64 = 5.0 * 60.0;
 
 static LOCK: Mutex<()> = Mutex::new(());
@@ -50,6 +51,7 @@ pub fn ledger_record(source_track_id: String, filename: String) {
     }
     let _g = LOCK.lock().unwrap();
     clear_failure(&source_track_id);
+    clear_blocked(&source_track_id);
     let mut m: HashMap<String, String> = store::load(LEDGER);
     if m.get(&source_track_id) == Some(&filename) {
         return;
@@ -181,6 +183,80 @@ pub fn failure_suppressed_total() -> u32 {
     m.values().filter(|f| skip(f, now)).count() as u32
 }
 
+// ---- soft blocks (bot wall / Premium-only) -----------------------------------------------------
+//
+// A video YouTube walls behind its "sign in to confirm you're not a bot" check
+// (or behind Premium) isn't gone, so it doesn't belong in the permanent cool-off
+// above. But asking for it again on every automatic pass changes nothing and
+// keeps feeding the bot wall (2.0.0.64 telemetry: the same 8 tracks failed on
+// every pass, 58 times in two days). Automatic downloads back off per track;
+// a manual download always tries, a success clears it, and uploading cookies
+// clears all of them.
+
+/// Why the bridge refused, when it is a per-video block worth backing off on:
+/// "bot_check" or "premium_only". Anything else (rate limits, timeouts,
+/// gateway errors) is transient and gets no back-off.
+#[uniffi::export]
+pub fn download_block_reason(detail: String) -> Option<String> {
+    let d = detail.to_lowercase().replace('\u{2019}', "'");
+    if d.contains("isn't a bot") || d.contains("not a bot") || d.contains("requiring sign-in") || d.contains("sign in to confirm") {
+        Some("bot_check".into())
+    } else if d.contains("premium members") || d.contains("premium account") {
+        Some("premium_only".into())
+    } else {
+        None
+    }
+}
+
+fn block_cooloff(strikes: u32) -> f64 {
+    const HOUR: f64 = 3_600.0;
+    match strikes {
+        0 => 0.0,
+        1 => 6.0 * HOUR,
+        2 => 24.0 * HOUR,
+        3 => 72.0 * HOUR,
+        _ => 168.0 * HOUR,
+    }
+}
+
+fn clear_blocked(id: &str) {
+    let mut m: HashMap<String, Failure> = store::load(BLOCKED);
+    if m.remove(id).is_some() {
+        store::save(BLOCKED, &m);
+    }
+}
+
+/// Inside its back-off (6 h, 1 day, 3 days, then a week per strike).
+#[uniffi::export]
+pub fn blocked_should_skip(source_track_id: String) -> bool {
+    let m = store::load_shared::<HashMap<String, Failure>>(BLOCKED);
+    let now = store::now();
+    m.get(&source_track_id).is_some_and(|f| now - f.last_failed < block_cooloff(f.strikes))
+}
+
+#[uniffi::export]
+pub fn blocked_record(source_track_id: String) {
+    if source_track_id.is_empty() {
+        return;
+    }
+    let _g = LOCK.lock().unwrap();
+    let mut m: HashMap<String, Failure> = store::load(BLOCKED);
+    let now = store::now();
+    let e = m.entry(source_track_id).or_default();
+    e.strikes += 1;
+    e.last_failed = now;
+    let cutoff = now - 2.0 * block_cooloff(u32::MAX);
+    m.retain(|_, f| f.last_failed > cutoff);
+    store::save(BLOCKED, &m);
+}
+
+/// New cookies change what YouTube lets through: give every blocked track a fresh try.
+#[uniffi::export]
+pub fn blocked_clear_all() {
+    let _g = LOCK.lock().unwrap();
+    store::save(BLOCKED, &HashMap::<String, Failure>::new());
+}
+
 // ---- naming / formats ------------------------------------------------------------------------
 
 /// Bridge download format -> file extension.
@@ -270,6 +346,22 @@ mod tests {
         assert!(ledger_begin("x".into()));
         assert_eq!(ledger_present_ids(vec!["C.m4a".into()]), vec!["youtube:c".to_string()]);
         assert_eq!(safe_filename("a/b: c?".into()), "a-b- c-");
+        // Soft blocks: classified, backed off, cleared by a success or new cookies.
+        let bot = "YouTube is requiring sign-in to verify this isn\u{2019}t a bot. Upload your YouTube cookies in Settings to fix this.";
+        assert_eq!(download_block_reason(bot.into()).as_deref(), Some("bot_check"));
+        assert_eq!(download_block_reason("Sign in to confirm you're not a bot".into()).as_deref(), Some("bot_check"));
+        assert_eq!(download_block_reason("This video is only available to YouTube Music Premium members.".into()).as_deref(), Some("premium_only"));
+        assert_eq!(download_block_reason("YouTube is rate-limiting downloads right now; this track will be retried".into()), None);
+        assert!(!blocked_should_skip("youtube:d".into()));
+        blocked_record("youtube:d".into());
+        assert!(blocked_should_skip("youtube:d".into()));
+        ledger_record("youtube:d".into(), "D.m4a".into());
+        assert!(!blocked_should_skip("youtube:d".into()));
+        blocked_record("youtube:e".into());
+        blocked_clear_all();
+        assert!(!blocked_should_skip("youtube:e".into()));
+        assert_eq!(block_cooloff(1), 6.0 * 3600.0);
+        assert_eq!(block_cooloff(9), 168.0 * 3600.0);
         let _ = std::fs::remove_dir_all(d);
     }
 }

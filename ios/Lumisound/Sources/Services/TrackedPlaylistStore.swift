@@ -283,7 +283,8 @@ final class TrackedPlaylistStore: ObservableObject {
                                 destinationDir: destinationDir,
                                 existingSongs: existingSongsSnapshot,
                                 destinationFolderName: pl.destinationFolder,
-                                reportExistingAsSkipped: true
+                                reportExistingAsSkipped: true,
+                                automatic: true
                             )
                             return (true, false, false)
                         } catch StreamingError.serverDetail {
@@ -293,6 +294,10 @@ final class TrackedPlaylistStore: ObservableObject {
                             // were skipped instead of silently dropping them.
                             return (false, true, false)
                         } catch StreamingError.alreadyDownloaded {
+                            return (false, false, false)
+                        } catch StreamingError.blockedBackingOff {
+                            // Walled off by YouTube recently and still backing off —
+                            // no request made, so neither a failure nor a download.
                             return (false, false, false)
                         } catch StreamingError.permanentlyUnavailable {
                             // Known-gone and still in cool-off, so no request was

@@ -369,6 +369,10 @@ enum StreamingError: LocalizedError {
     /// request was made — see `DownloadFailureStore`. Distinct from `.notFound`,
     /// which is a fresh answer from the server rather than a remembered one.
     case permanentlyUnavailable
+    /// An automatic download of a track YouTube recently walled off (bot check,
+    /// Premium-only) that is still inside its back-off, so no request was made —
+    /// see core `blocked_should_skip`. Manual downloads never get this.
+    case blockedBackingOff
 
     var errorDescription: String? {
         switch self {
@@ -416,6 +420,8 @@ enum StreamingError: LocalizedError {
             return "Wi-Fi Only Downloads is on and you're on cellular — connect to Wi-Fi or turn the setting off in Settings → Streaming."
         case .permanentlyUnavailable:
             return "This track is no longer available to download. The app will check again for it later."
+        case .blockedBackingOff:
+            return "YouTube blocked this track recently. It will be retried automatically later, or after you upload cookies."
         }
     }
 }

@@ -155,7 +155,7 @@ struct PowerSample {
 
 #[cfg(target_vendor = "apple")]
 mod sys {
-    use super::{PowerSample, ThreadSample};
+    use super::{unnamed_label, PowerSample, ThreadSample};
 
     unsafe extern "C" {
         fn mach_port_deallocate(task: libc::mach_port_t, name: libc::mach_port_t) -> libc::kern_return_t;
@@ -181,14 +181,20 @@ mod sys {
             let ok = unsafe { libc::thread_info(th, libc::THREAD_EXTENDED_INFO as _, &mut ext as *mut _ as libc::thread_info_t, &mut n) } == libc::KERN_SUCCESS;
             let mut ident: libc::thread_identifier_info = unsafe { std::mem::zeroed() };
             let mut n2 = (std::mem::size_of::<libc::thread_identifier_info>() / 4) as libc::mach_msg_type_number_t;
-            let key = if unsafe { libc::thread_info(th, libc::THREAD_IDENTIFIER_INFO as _, &mut ident as *mut _ as libc::thread_info_t, &mut n2) } == libc::KERN_SUCCESS {
-                ident.thread_id
-            } else {
-                th as u64
-            };
+            let have_ident = unsafe { libc::thread_info(th, libc::THREAD_IDENTIFIER_INFO as _, &mut ident as *mut _ as libc::thread_info_t, &mut n2) } == libc::KERN_SUCCESS;
+            let key = if have_ident { ident.thread_id } else { th as u64 };
             if ok {
                 let raw: Vec<u8> = ext.pth_name.iter().take_while(|c| **c != 0).map(|c| *c as u8).collect();
-                out.push(ThreadSample { key, name: String::from_utf8_lossy(&raw).into_owned(), cpu_ns: ext.pth_user_time + ext.pth_system_time });
+                let mut name = String::from_utf8_lossy(&raw).into_owned();
+                if name.trim().is_empty() {
+                    // The main thread and GCD / Swift-concurrency workers have no
+                    // pthread name, so they all used to land in one "(unnamed)"
+                    // bucket (2.0.0.64: ~240 CPU-minutes nobody could place).
+                    // The kernel lists the main thread first; workers are split
+                    // by the QoS their current priority maps to.
+                    name = unnamed_label(i == 0, have_ident && ident.dispatch_qaddr != 0, ext.pth_priority);
+                }
+                out.push(ThreadSample { key, name, cpu_ns: ext.pth_user_time + ext.pth_system_time });
             }
             unsafe { mach_port_deallocate(task(), th) };
         }
@@ -539,6 +545,25 @@ pub fn thermal_name(raw: i64) -> &'static str {
         3 => "critical",
         _ => "unknown",
     }
+}
+
+/// Label for a thread without a pthread name: "main", or "gcd <qos>" for a
+/// dispatch worker (running a queue), else "thread <qos>". QoS from the
+/// thread's priority (47 user-interactive, 37 user-initiated, 31 default,
+/// 20 utility, 4 background).
+#[cfg_attr(not(target_vendor = "apple"), allow(dead_code))]
+fn unnamed_label(is_main: bool, on_queue: bool, priority: i32) -> String {
+    if is_main {
+        return "main".into();
+    }
+    let qos = match priority {
+        p if p >= 46 => "user-interactive",
+        p if p >= 33 => "user-initiated",
+        p if p >= 25 => "default",
+        p if p >= 10 => "utility",
+        _ => "background",
+    };
+    format!("{} {qos}", if on_queue { "gcd" } else { "thread" })
 }
 
 /// Collapse per-instance names ("tokio-runtime-worker", numbered queues)
@@ -972,5 +997,9 @@ mod tests {
         assert_eq!(thread_group("com.apple.audio.IOThread.client"), "com.apple.audio.IOThread.client");
         assert_eq!(thread_group("lumisound-deck-12"), "lumisound-deck");
         assert_eq!(thread_group(""), "(unnamed)");
+        assert_eq!(unnamed_label(true, false, 47), "main");
+        assert_eq!(unnamed_label(false, true, 20), "gcd utility");
+        assert_eq!(unnamed_label(false, false, 31), "thread default");
+        assert_eq!(thread_group(&unnamed_label(false, true, 37)), "gcd user-initiated");
     }
 }

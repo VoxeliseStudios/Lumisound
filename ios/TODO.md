@@ -2,6 +2,27 @@
 
 Full history and decisions: [`../RUST-PORT.md`](../RUST-PORT.md). Swift is views + app shell only.
 
+## Done (2026-11-19) — 2.0.0.64 telemetry fixes
+- `processing` added to UIBackgroundModes: BGProcessingTaskRequest (downloads, trackvault) threw
+  BGTaskScheduler error 3 on every submit (128x per task in two days).
+- `BackgroundRefreshService.submit` (shared by the vault): `.notPermitted` is reported once per launch
+  (warning + `bgtask_not_permitted` event with the bundle id) and not resubmitted.
+- Automatic downloads (`downloadToLibrary(automatic: true)` from tracked playlists + subscriptions) skip
+  tracks in the core's bot-wall/Premium back-off (`StreamingError.blockedBackingOff`, not a failure);
+  a refusal records it, manual downloads always try, uploading cookies clears all.
+- APNs registration failure logged once per launch (sideloaded builds never have aps-environment).
+- AudioVisualizerService publishes `magnitudes` once per buffer instead of 24 element writes.
+- New `tempo_changed` event (category audio): settled speed/pitch change, from/to, source
+  (track_switch / effect / direct), per-track flag, screen.
+
+## Open (2026-11-19)
+- Verify on device: background refresh still error 3 on the iPhone 13? Then it is LiveContainer (its
+  Info.plist is the one iOS reads) — check the `bgtask_not_permitted` event's bundleID.
+- High CPU on the iPhone 13 (44–84 % avg while playing, ~240 CPU-min in unnamed threads): read the
+  next perf_window threads (now split into main / gcd <qos> / thread <qos>) and fix the top one.
+- Pitch at −0.5 / −2 st on the owner's phone (2.0.0.62–64, reset at a later launch): read
+  `tempo_changed` to see whether it is a slider brush, an effect or a per-track load.
+
 ## Done (2026-11-16) — last non-Rust pieces (see ../RUST-PORT.md)
 - Lua gone: `Services/PresetEngine.swift` (ThemePresetEngine, EffectPresets, VisualizerPresetStore,
   PresetFeatureFlags) over core `presets_*`; one picker screen for all three kinds

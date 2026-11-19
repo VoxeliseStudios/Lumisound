@@ -123,6 +123,10 @@
              to fetch/import a finished background download immediately,
              even while the app is suspended or not running. -->
         <string>remote-notification</string>
+        <!-- Required for BGProcessingTaskRequest (com.lumisound.ios.downloads and
+             .trackvault). Without it every submit throws BGTaskSchedulerErrorDomain
+             error 3 (notPermitted) — 2.0.0.64 telemetry: 128 failures per task. -->
+        <string>processing</string>
     </array>
 
     <!-- BGTaskScheduler identifier for BackgroundRefreshService's periodic

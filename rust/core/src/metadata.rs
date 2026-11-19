@@ -1,10 +1,13 @@
 //! Online metadata lookup for untagged/partly tagged tracks: iTunes Search,
 //! then MusicBrainz, then Deezer — first source with results wins, an exact
 //! (case-insensitive) title match is preferred over the first hit. Results
-//! (including misses) are cached for the process lifetime.
+//! (including misses) are cached for the process lifetime; misses are also
+//! remembered on disk with a back-off, so a title no source knows isn't
+//! re-asked of three APIs on every launch.
 
 use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
@@ -24,6 +27,54 @@ pub struct MetaLookup {
     pub source: String,
     pub candidates: Vec<MetaCandidate>,
     pub best_index: u32,
+}
+
+const MISSES: &str = "metadata_misses";
+
+/// HTTP answers received by `get` (any status). A lookup that got none was
+/// offline, not a miss, and must not be remembered as one.
+static ANSWERS: AtomicU64 = AtomicU64::new(0);
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Default)]
+struct Miss {
+    last: f64,
+    strikes: u32,
+}
+
+/// 1 day, 3 days, then a week per strike. 2.0.0.64 telemetry: 14 titles were
+/// looked up 410 times in two days because every relaunch forgot the miss.
+fn miss_cooloff(strikes: u32) -> f64 {
+    const DAY: f64 = 86_400.0;
+    match strikes {
+        0 => 0.0,
+        1 => DAY,
+        2 => 3.0 * DAY,
+        _ => 7.0 * DAY,
+    }
+}
+
+fn miss_fresh(key: &str) -> bool {
+    let m = crate::store::load_shared::<HashMap<String, Miss>>(MISSES);
+    m.get(key).is_some_and(|x| crate::store::now() - x.last < miss_cooloff(x.strikes))
+}
+
+fn note_result(key: &str, found: bool) {
+    static LOCK: Mutex<()> = Mutex::new(());
+    let _g = LOCK.lock().unwrap();
+    let mut m: HashMap<String, Miss> = crate::store::load(MISSES);
+    if found {
+        if m.remove(key).is_none() {
+            return;
+        }
+    } else {
+        let now = crate::store::now();
+        let e = m.entry(key.to_string()).or_default();
+        e.strikes += 1;
+        e.last = now;
+        let cutoff = now - 2.0 * miss_cooloff(u32::MAX);
+        m.retain(|_, x| x.last > cutoff);
+    }
+    crate::store::save(MISSES, &m);
 }
 
 static CACHE: LazyLock<Mutex<HashMap<String, Option<MetaLookup>>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -46,6 +97,7 @@ async fn get(url: &str, ua: Option<&str>) -> Option<Value> {
         rq = rq.header("User-Agent", ua);
     }
     let r = rq.send().await.ok()?;
+    ANSWERS.fetch_add(1, Ordering::Relaxed);
     if r.status().as_u16() != 200 {
         return None;
     }
@@ -115,6 +167,12 @@ pub async fn metadata_lookup(title: String, artist: String) -> Option<MetaLookup
     if let Some(hit) = CACHE.lock().unwrap().get(&key) {
         return hit.clone();
     }
+    let disk_key = key.to_lowercase();
+    if miss_fresh(&disk_key) {
+        CACHE.lock().unwrap().insert(key, None);
+        return None;
+    }
+    let answers_before = ANSWERS.load(Ordering::Relaxed);
     let res = crate::on_rt(async move {
         let q = [t.as_str(), a.as_str()].iter().filter(|x| !x.is_empty()).copied().collect::<Vec<_>>().join(" ");
         if let Some(c) = itunes(&q).await {
@@ -126,6 +184,9 @@ pub async fn metadata_lookup(title: String, artist: String) -> Option<MetaLookup
         deezer(&q).await.map(|c| MetaLookup { source: "deezer".into(), best_index: best(&c, &t), candidates: c })
     })
     .await;
+    if res.is_some() || ANSWERS.load(Ordering::Relaxed) > answers_before {
+        note_result(&disk_key, res.is_some());
+    }
     CACHE.lock().unwrap().insert(key, res.clone());
     res
 }
@@ -219,4 +280,23 @@ pub async fn artist_image_fetch(artist: String) -> Option<Vec<u8>> {
         None
     })
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn misses_are_remembered_with_backoff_and_cleared_by_a_hit() {
+        let d = std::env::temp_dir().join(format!("core-meta-{}", uuid::Uuid::new_v4().simple()));
+        crate::store::core_configure(d.to_string_lossy().into_owned());
+        assert!(!miss_fresh("brawl remix|"));
+        note_result("brawl remix|", false);
+        assert!(miss_fresh("brawl remix|"));
+        note_result("brawl remix|", true);
+        assert!(!miss_fresh("brawl remix|"));
+        assert_eq!(miss_cooloff(1), 86_400.0);
+        assert_eq!(miss_cooloff(7), 7.0 * 86_400.0);
+        let _ = std::fs::remove_dir_all(d);
+    }
 }

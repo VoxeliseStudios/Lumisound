@@ -136,9 +136,14 @@ final class AudioVisualizerService: ObservableObject {
 
     private func applySmoothed(_ new: [Float], bands: (bass: Float, mid: Float, treble: Float, overall: Float)) {
         if new.count == magnitudes.count {
-            for i in 0..<magnitudes.count {
-                magnitudes[i] = magnitudes[i] * 0.55 + new[i] * 0.45
+            // Built off to the side and published once: writing the @Published
+            // array element by element fired objectWillChange 24 times per
+            // analysed buffer, re-invalidating every observing view each time.
+            var next = magnitudes
+            for i in 0..<next.count {
+                next[i] = next[i] * 0.55 + new[i] * 0.45
             }
+            magnitudes = next
         }
         let smoothing: Float = 0.7
         bassLevel = bassLevel * smoothing + bands.bass * (1 - smoothing)

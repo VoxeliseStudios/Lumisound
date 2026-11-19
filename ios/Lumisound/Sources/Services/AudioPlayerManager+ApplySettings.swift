@@ -44,6 +44,47 @@ extension AudioPlayerManager {
         if old.activeEffectID != new.activeEffectID {
             appLog("Setting changed: activeEffectID -> \(new.activeEffectID)", category: "settings")
         }
+        if old.speed != new.speed || old.pitchSemitones != new.pitchSemitones {
+            noteTempoChange(from: old, to: new)
+        }
+    }
+
+    // MARK: - Speed / pitch audit
+    //
+    // Speed and pitch were the only audio settings with no change log, so a
+    // pitch that turned up at −0.5 or −2 st (2.0.0.62–64 snapshots, flipping back
+    // to 0 at a later launch) couldn't be told apart from a deliberate change.
+    // One event per settled change (1.5 s after the last tick of a drag), with
+    // where it came from: a track switch loading that song's own settings, an
+    // effect preset, or a direct edit, plus the screen it happened on.
+    private func noteTempoChange(from old: AudioSettings, to new: AudioSettings) {
+        if TempoAudit.baseline == nil {
+            TempoAudit.baseline = (old.speed, old.pitchSemitones, old.activeEffectID)
+            TempoAudit.duringTrackSwitch = isSwitchingTrack
+        }
+        TempoAudit.pending?.cancel()
+        TempoAudit.pending = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(1500))
+            guard !Task.isCancelled, let self, let base = TempoAudit.baseline else { return }
+            TempoAudit.baseline = nil
+            let now = self.audioSettings
+            guard now.speed != base.speed || now.pitchSemitones != base.pitch else { return }
+            let source = TempoAudit.duringTrackSwitch ? "track_switch"
+                : now.activeEffectID != base.effect ? "effect" : "direct"
+            let screen = InterfaceEdition.isLumen
+                ? "lumen.\(UserDefaults.standard.string(forKey: "lumen_selected_tab") ?? "home")"
+                : "classic.\(UserDefaults.standard.integer(forKey: "selected_tab"))"
+            let summary = String(format: "speed %.2f→%.2f, pitch %+.1f→%+.1f st (%@)",
+                                 base.speed, now.speed, base.pitch, now.pitchSemitones, source)
+            appLog("Setting changed: tempo \(summary)", category: "settings")
+            RemoteLogger.log(category: "audio", event: "tempo_changed", message: summary, detail: [
+                "fromSpeed": base.speed, "toSpeed": now.speed,
+                "fromPitch": base.pitch, "toPitch": now.pitchSemitones,
+                "source": source, "effect": now.activeEffectID,
+                "perTrack": self.isUsingTrackAudioSettings, "isPlaying": self.isPlaying,
+                "screen": screen,
+            ])
+        }
     }
 
     // MARK: - Apply Audio Settings
@@ -335,4 +376,12 @@ extension AudioPlayerManager {
             HearingHealthService.markBoostActiveToday()
         }
     }
+}
+
+/// State for `noteTempoChange`'s debounce (extensions can't hold stored properties).
+@MainActor
+private enum TempoAudit {
+    static var baseline: (speed: Float, pitch: Float, effect: String)?
+    static var duringTrackSwitch = false
+    static var pending: Task<Void, Never>?
 }

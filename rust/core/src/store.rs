@@ -168,9 +168,11 @@ mod tests {
         core_flush();
         assert_eq!(std::fs::read_to_string(&f).unwrap(), r#"{"n":1}"#);
         // Coalesced: two changes, newest value wins.
+        // (Marked dirty after both, as `save` does: marking it between them let
+        // a fast writer flush {"n":2} and never see the newer value.)
         CACHE.lock().unwrap().insert("wb_test".into(), serde_json::json!({"n": 2}));
-        DIRTY.lock().unwrap().push(("wb_test".into(), f.clone()));
         CACHE.lock().unwrap().insert("wb_test".into(), serde_json::json!({"n": 3}));
+        DIRTY.lock().unwrap().push(("wb_test".into(), f.clone()));
         LazyLock::force(&WRITER);
         WAKE.notify_one();
         for _ in 0..40 {
