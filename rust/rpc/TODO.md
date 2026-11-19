@@ -24,5 +24,12 @@ Discord Rich Presence daemon (`lumisound-discord-rpc`). History: [`RUST-PORT.md`
 - Re-sends immediately on any text/art change or a seek (> 1.5 s jump); refresh every ~13.5 s otherwise.
 
 ## Open
+- 2026-11-19: running daemon is v2.2.0 (= latest rpc release; later commits only added `install`).
+  Both Discord applications (owner's own client id: asset `lumisound_logo`; shared default: asset
+  `lumisound`) and their app icons still show the OLD "S" logo, uploaded June/August — the
+  sound-eclipse icon (2026-11-13) was never uploaded (Developer Portal only; no API). The default
+  app also has no `playpause-small` asset although the bridge sends that key. Owner's
+  ios_discord_rpc_config row has a custom client id with empty large/small images, so it gets no
+  fallback logo or small icon at all.
 - `state_url` (artist link) once playback state carries an artist URL.
 - Windows/macOS: live socket verified on Linux only (same rustls/tungstenite code on all three).

@@ -16,6 +16,21 @@ Full history and decisions: [`../RUST-PORT.md`](../RUST-PORT.md). Swift is views
   (track_switch / effect / direct), per-track flag, screen.
 
 ## Open (2026-11-19)
+- 2.0.0.65 telemetry (2026-11-19 18:00 UTC): `bgtask_not_permitted` for all three tasks on the owner's
+  iPhone 13 (bundle com.lumisound.ios.2HB39W9VS3) even with `processing` present; background refresh
+  runs fine for other sideloaded users (iPhone 14 Plus, 13 Pro Max, 17 Pro). Next: add the bundle path /
+  process name to that event to tell LiveContainer apart (Bundle.main is the guest's there).
+- CPU: main thread is the top user (iPhone 13 ~23–28 %, iPhone 15 ~16 %) on Library/Playing in the
+  foreground; workers 1–8 % each. Next: periodic main-thread stack samples (hang monitor's mainStack is
+  empty) to find the view work.
+- Pitch: `tempo_changed` 18:01:52 UTC — 0 → −0.5 st, source direct, screen classic.1, while playing.
+  If the owner didn't do it, the Now Playing pitch slider gets brushed; make it need a deliberate gesture.
+- Live Activity telemetry gaps: only text logs from the app (delivered / NOT delivered / resend /
+  duplicates / start failure). No structured events; nothing for start success, end, user dismissal
+  (activityStateUpdates), Live Activities disabled (activityEnablementUpdates), the cooldown or
+  not-active skips, the stale-date self-advance in the widget (`resolved(at:)`), widget/Live Activity
+  view rendering (extension has no logging), or the Live Activity / Control intents (LumisoundAppIntents
+  has none).
 - Verify on device: background refresh still error 3 on the iPhone 13? Then it is LiveContainer (its
   Info.plist is the one iOS reads) — check the `bgtask_not_permitted` event's bundleID.
 - High CPU on the iPhone 13 (44–84 % avg while playing, ~240 CPU-min in unnamed threads): read the
