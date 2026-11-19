@@ -507,8 +507,7 @@ mod tests {
     use super::*;
     #[test]
     fn history_bookmarks_resume() {
-        let d = std::env::temp_dir().join(format!("stores-{}", uuid::Uuid::new_v4().simple()));
-        store::core_configure(d.to_string_lossy().into());
+        let (_g, _d) = store::test_store();
         play_history_import_legacy(br#"{"a":{"playCount":3,"lastPlayedAt":100}}"#.to_vec());
         assert_eq!(play_history_record("a".into()).unwrap().play_count, 4);
         assert!(play_history_merge(vec![PlayHistoryRecord { song_id: "a".into(), play_count: 9, last_played_at: None }]));
@@ -574,7 +573,6 @@ mod tests {
         let b4: serde_json::Value = serde_json::from_slice(&skip_sync_batch().body).unwrap();
         assert_eq!(b4["since"], 0);
         assert!(skip_sync_apply(b"not json".to_vec(), 0.0) == 0);
-        let _ = std::fs::remove_dir_all(d);
     }
 }
 

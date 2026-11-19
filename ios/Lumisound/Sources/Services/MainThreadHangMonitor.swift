@@ -170,7 +170,7 @@ final class MainThreadHangMonitor {
     private var lastReportAt: Date?
     private var isProbeOutstanding = false
     /// When the outstanding ping was sent, and main-thread stacks sampled
-    /// while it has been waiting (see `MainThreadBacktrace`).
+    /// while it has been waiting (core `main_thread_stack`, rust/core/src/stack.rs).
     private var probeSentAt = Date()
     private var stackSamples: [String] = []
     /// The other threads, sampled once per stall (3 s in).
@@ -202,7 +202,6 @@ final class MainThreadHangMonitor {
     private init() {}
 
     func start() {
-        DispatchQueue.main.async { MainThreadBacktrace.registerMainThread() }
         queue.async { [weak self] in
             guard let self, self.timer == nil else { return }
             let t = DispatchSource.makeTimerSource(queue: self.queue)
@@ -237,7 +236,7 @@ final class MainThreadHangMonitor {
             let foreground = lastKnownState == .active
             lock.unlock()
             if due, foreground {
-                let stack = MainThreadBacktrace.capture()
+                let stack = mainThreadStack()
                 if !stack.isEmpty {
                     lock.lock()
                     stackSamples.append(String(format: "@%.1fs: ", waited) + stack.prefix(40).joined(separator: " | "))
@@ -250,7 +249,7 @@ final class MainThreadHangMonitor {
             if wantOthers { othersTaken = true }
             lock.unlock()
             if wantOthers {
-                let others = MainThreadBacktrace.captureOthers()
+                let others = otherThreadStacks(limit: 10)
                 lock.lock()
                 otherStacks = others
                 lock.unlock()
@@ -262,7 +261,7 @@ final class MainThreadHangMonitor {
         otherStacks = []
         othersTaken = false
         ticksWhileWaiting = 0
-        let cpuBefore = MainThreadBacktrace.mainThreadCPUSeconds()
+        let cpuBefore = mainThreadCpuSeconds()
         cpuAtSend = cpuBefore
         let sentAt = Date()
         probeSentAt = sentAt
@@ -299,7 +298,7 @@ final class MainThreadHangMonitor {
             self.lock.unlock()
 
             guard shouldReport else { return }
-            let cpu = max(0, MainThreadBacktrace.mainThreadCPUSeconds() - cpuBefore)
+            let cpu = max(0, mainThreadCpuSeconds() - cpuBefore)
             // Reported back on the monitor's own queue: the main thread has just
             // been stuck for seconds and is about to have a backlog of real work
             // to get through, so this adds none of its own to it.
@@ -327,7 +326,7 @@ final class MainThreadHangMonitor {
             return
         }
         // `stacks` are samples of the main thread taken while it was stuck
-        // (`MainThreadBacktrace`, from `probe`). `Thread.callStackSymbols`
+        // (core `main_thread_stack`, from `probe`). `Thread.callStackSymbols`
         // here would describe this queue, not the blocked thread. Alongside:
         // the true duration and whether a library scan was in flight.
         let scanning = ScanActivityIndicator.shared.isActive

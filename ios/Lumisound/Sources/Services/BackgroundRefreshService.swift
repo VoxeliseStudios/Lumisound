@@ -76,8 +76,14 @@ enum BackgroundRefreshService {
         } catch let error as BGTaskScheduler.Error where error.code == .notPermitted {
             refusedLock.withLock { _ = refused.insert(id) }
             appWarn("\(label): iOS does not permit \(id) (missing background mode, or running inside LiveContainer) — background runs off for this launch", category: "background")
+            // `hosted`: the process's executable isn't inside this bundle — the app
+            // runs as a guest of another app (LiveContainer), whose Info.plist is
+            // the one BGTaskScheduler checks. Bundle.main can't show that there.
+            let host = hostProcessInfo(bundlePath: Bundle.main.bundlePath)
             RemoteLogger.log(category: "background", event: "bgtask_not_permitted", level: "warning",
-                             detail: ["identifier": id, "bundleID": Bundle.main.bundleIdentifier ?? ""])
+                             detail: ["identifier": id, "bundleID": Bundle.main.bundleIdentifier ?? "",
+                                      "bundlePath": Bundle.main.bundlePath, "executable": host.executable,
+                                      "hosted": host.hosted])
         } catch {
             appWarn("\(label): submit failed: \(error.localizedDescription)", category: "background")
         }

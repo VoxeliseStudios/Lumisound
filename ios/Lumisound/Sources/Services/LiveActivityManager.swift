@@ -36,15 +36,102 @@ enum LiveActivityManager {
     private static var lastRequestFailureAt: Date?
     private static let requestRetryCooldown: TimeInterval = 60
 
+    // MARK: Telemetry
+    //
+    // Counters (core `live_activity_count`, summarised by `sendSummary` with the
+    // periodic diagnostics snapshot) for every path below, plus immediate events
+    // for the moments worth seeing on their own: started, start failed, dismissed
+    // by the user, ended by the system, Live Activities turned on/off.
+
+    /// Skip reasons are counted once per track, not on every publish.
+    private static var lastSkip: String?
+    /// Set while this app ends activities, so a .dismissed/.ended state seen by
+    /// the observer can be told apart from the user swiping the card away.
+    private static var endingByApp = Set<String>()
+    private static var observed = Set<String>()
+    private static var enablementTask: Task<Void, Never>?
+
+    private static func count(_ kind: String) { liveActivityCount(kind: kind) }
+
+    private static func countSkip(_ reason: String, _ snapshot: NowPlayingSnapshot) {
+        let key = reason + "|" + snapshot.trackID
+        guard lastSkip != key else { return }
+        lastSkip = key
+        count("skipped_" + reason)
+    }
+
+    private static var stateName: String {
+        UIApplication.shared.applicationState == .active ? "foreground" : "background"
+    }
+
+    /// Follows one activity's lifecycle: who ended it, and when it went stale.
+    private static func observe(_ activity: Activity<LumisoundActivityAttributes>) {
+        guard observed.insert(activity.id).inserted else { return }
+        let id = activity.id
+        Task { @MainActor in
+            for await state in activity.activityStateUpdates {
+                switch state {
+                case .stale:
+                    count("stale")
+                case .dismissed, .ended:
+                    let byApp = endingByApp.remove(id) != nil
+                    let what = state == .dismissed ? "dismissed" : "ended"
+                    count(byApp ? "\(what)_by_app" : "\(what)_by_system")
+                    if !byApp {
+                        // The user swiped it away (dismissed) or iOS ended it (e.g. the 8 h limit).
+                        RemoteLogger.log(category: "widget", event: "live_activity_\(what)", level: "warning",
+                                         message: "Live Activity \(what) outside the app",
+                                         detail: ["state": stateName, "trackID": activity.content.state.now.trackID])
+                    }
+                    observed.remove(id)
+                    return
+                default:
+                    break
+                }
+            }
+            observed.remove(id)
+        }
+    }
+
+    /// Reports Live Activities being turned off/on for the app in Settings.
+    private static func watchEnablement() {
+        guard enablementTask == nil else { return }
+        enablementTask = Task { @MainActor in
+            var last = ActivityAuthorizationInfo().areActivitiesEnabled
+            for await enabled in ActivityAuthorizationInfo().activityEnablementUpdates where enabled != last {
+                last = enabled
+                count(enabled ? "enabled_on" : "enabled_off")
+                RemoteLogger.log(category: "widget", event: "live_activity_enablement", level: enabled ? "info" : "warning",
+                                 message: enabled ? "Live Activities turned on" : "Live Activities turned off",
+                                 detail: ["enabled": enabled])
+            }
+        }
+    }
+
+    /// One `live_activity_summary` event with every counter since the last one,
+    /// including the widget extension's marks. Called with the periodic snapshot.
+    static func sendSummary() {
+        if let url = LiveActivityMarks.fileURL { liveActivityIngestMarks(path: url.path) }
+        guard let json = liveActivityTakeSummary(),
+              var detail = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any] else { return }
+        let auth = ActivityAuthorizationInfo()
+        detail["enabled"] = auth.areActivitiesEnabled
+        detail["frequentPushesEnabled"] = auth.frequentPushesEnabled
+        detail["activities"] = Activity<LumisoundActivityAttributes>.activities.count
+        detail["settingOn"] = AudioPlayerManager.showsLiveActivity
+        RemoteLogger.log(category: "widget", event: "live_activity_summary", message: "Live Activity counters", detail: detail)
+    }
+
     private static var liveActivities: [Activity<LumisoundActivityAttributes>] {
         Activity<LumisoundActivityAttributes>.activities.filter { $0.activityState == .active || $0.activityState == .stale }
     }
 
     static func publish(_ snapshot: NowPlayingSnapshot) {
         guard snapshot.hasTrack, AudioPlayerManager.showsLiveActivity else {
-            end()
+            end(reason: snapshot.hasTrack ? "setting_off" : "no_track")
             return
         }
+        watchEnablement()
         let live = liveActivities
         // Nothing the card would show differently (a favourite update that
         // changed nothing, or a small timing re-anchor the bar absorbs): skip
@@ -58,9 +145,12 @@ enum LiveActivityManager {
             return
         }
 
-        guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
-        guard UIApplication.shared.applicationState == .active else { return }
-        if let lastFailure = lastRequestFailureAt, Date().timeIntervalSince(lastFailure) < requestRetryCooldown { return }
+        guard ActivityAuthorizationInfo().areActivitiesEnabled else { countSkip("disabled", snapshot); return }
+        guard UIApplication.shared.applicationState == .active else { countSkip("background", snapshot); return }
+        if let lastFailure = lastRequestFailureAt, Date().timeIntervalSince(lastFailure) < requestRetryCooldown {
+            countSkip("cooldown", snapshot)
+            return
+        }
 
         do {
             let a = try Activity<LumisoundActivityAttributes>.request(
@@ -70,16 +160,27 @@ enum LiveActivityManager {
             )
             primaryID = a.id
             lastRequestFailureAt = nil
+            observe(a)
+            count("started")
+            RemoteLogger.log(category: "widget", event: "live_activity_started", message: "Live Activity started",
+                             detail: ["frequentPushesEnabled": ActivityAuthorizationInfo().frequentPushesEnabled,
+                                      "hasAdvanceAt": snapshot.advanceAt != nil, "upNext": snapshot.upNext?.count ?? 0])
             watch()
         } catch {
             lastRequestFailureAt = Date()
             appError("LiveActivityManager: failed to start activity: \(error.localizedDescription)", category: "widget")
+            count("start_failed")
+            RemoteLogger.log(category: "widget", event: "live_activity_start_failed", level: "error",
+                             message: error.localizedDescription,
+                             detail: ["existing": Activity<LumisoundActivityAttributes>.activities.count,
+                                      "error": String(describing: error)])
             // "Maximum number of activities" — orphans from earlier sessions
             // (a crash never runs `end()`) fill the per-app cap. End them so
             // the next attempt has room.
             let orphans = Activity<LumisoundActivityAttributes>.activities
             guard !orphans.isEmpty else { return }
             appWarn("LiveActivityManager: ending \(orphans.count) orphaned activity(s) from prior session(s)", category: "widget")
+            for o in orphans { count("orphan_ended"); endingByApp.insert(o.id) }
             Task {
                 for orphan in orphans {
                     await orphan.end(orphan.content, dismissalPolicy: .immediate)
@@ -125,6 +226,7 @@ enum LiveActivityManager {
         }
         if let last = lastVerifyResend, Date().timeIntervalSince(last) < 1.5 { return }
         lastVerifyResend = Date()
+        count(foreground ? "resend_fg" : "resend_bg")
         appWarn("LiveActivityManager: activity showed \"\(stale.content.state.now.title)\", resending \"\(latest.title)\"", category: "widget")
         send(latest)
     }
@@ -174,7 +276,9 @@ enum LiveActivityManager {
                 rounds += 1
                 let live = endExtras(liveActivities)
                 for a in live {
+                    observe(a)
                     await a.update(content(for: next))
+                    count("update_sent")
                 }
                 // Confirm what the system now holds; anything that didn't take
                 // goes round again (bounded).
@@ -186,7 +290,8 @@ enum LiveActivityManager {
                 // was the app in the background (where iOS may refuse it)?
                 if loggedDeliveryFor != next.trackID, pending == nil || !missed || rounds >= 6 {
                     loggedDeliveryFor = next.trackID
-                    let state = UIApplication.shared.applicationState == .active ? "foreground" : "background"
+                    let state = stateName
+                    count((missed ? "not_delivered_" : "delivered_") + (state == "foreground" ? "fg" : "bg"))
                     let msg = "LiveActivityManager: \(missed ? "NOT delivered" : "delivered") \"\(next.title)\" (\(state), round \(rounds), \(live.count) activity)"
                     if missed { appWarn(msg, category: "widget") } else { appLog(msg, category: "widget") }
                 }
@@ -208,6 +313,7 @@ enum LiveActivityManager {
         primaryID = keep.id
         let extras = live.filter { $0.id != keep.id }
         appWarn("LiveActivityManager: ending \(extras.count) duplicate activity(s)", category: "widget")
+        for a in extras { count("duplicate_ended"); endingByApp.insert(a.id) }
         Task {
             for a in extras { await a.end(a.content, dismissalPolicy: .immediate) }
         }
@@ -262,7 +368,7 @@ enum LiveActivityManager {
         )
     }
 
-    static func end() {
+    static func end(reason: String = "stopped") {
         lastPublished = nil
         pending = nil
         primaryID = nil
@@ -270,6 +376,8 @@ enum LiveActivityManager {
         watchTask = nil
         let all = Activity<LumisoundActivityAttributes>.activities
         guard !all.isEmpty else { return }
+        count("end." + reason)
+        for a in all { endingByApp.insert(a.id) }
         Task {
             for a in all {
                 var state = a.content.state

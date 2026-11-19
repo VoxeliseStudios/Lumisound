@@ -59,6 +59,8 @@ targets:
       # Shared with LumisoundWidget so the widget and Live Activity transport
       # buttons run in this app's process — see the file's header.
       - path: Shared/LiveActivity/LumisoundPlaybackIntents.swift
+      # Where the widget extension leaves Live Activity telemetry marks.
+      - path: Shared/LiveActivity/LiveActivityMarks.swift
       # Shared with every target below that touches the App Group container.
       - path: Shared/AppGroup.swift
       # Rust app core: UniFFI-generated Swift API + the thin Swift glue.
@@ -116,6 +118,7 @@ targets:
       - path: Shared/LiveActivity/LumisoundActivityAttributes.swift
       - path: Shared/NowPlaying/NowPlayingSnapshot.swift
       - path: Shared/LiveActivity/LumisoundPlaybackIntents.swift
+      - path: Shared/LiveActivity/LiveActivityMarks.swift
       - path: Shared/AppGroup.swift
     settings:
       base:

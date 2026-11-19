@@ -697,6 +697,7 @@ final class AudioPlayerManager: ObservableObject {
 
         // Widget and Live Activity buttons run their intents in this process
         // (see LumisoundPlaybackIntents.swift) and arrive here directly.
+        LumisoundPlaybackCommandRouter.telemetry = { liveActivityCount(kind: $0) }
         LumisoundPlaybackCommandRouter.handler = { [weak self] command in
             guard let self else { return false }
             switch command {

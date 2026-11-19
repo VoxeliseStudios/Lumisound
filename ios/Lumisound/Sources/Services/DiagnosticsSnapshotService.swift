@@ -93,6 +93,7 @@ enum DiagnosticsSnapshotService {
             "settings": settingsSnapshot(),
         ]
         RemoteLogger.log(category: "diagnostics", event: "snapshot", message: reason, detail: detail)
+        LiveActivityManager.sendSummary()
     }
 
     // MARK: - Notifications
@@ -138,6 +139,8 @@ enum DiagnosticsSnapshotService {
             // the whole question was "is the device even running the build
             // with the fix in it".
             "appVersion": info?["CFBundleShortVersionString"] as? String ?? "unknown",
+            // Runs as a guest inside another app (LiveContainer)? See core `host_process_info`.
+            "hostedProcess": hostProcessInfo(bundlePath: Bundle.main.bundlePath).hosted,
             "buildNumber": info?["CFBundleVersion"] as? String ?? "unknown",
             "osVersion": UIDevice.current.systemVersion,
             "thermalState": ProcessInfo.processInfo.thermalState.diagnosticsDescription,

@@ -332,8 +332,7 @@ mod tests {
     use super::*;
     #[test]
     fn ledger_and_failures() {
-        let d = std::env::temp_dir().join(format!("core-store-{}", uuid::Uuid::new_v4().simple()));
-        store::core_configure(d.to_string_lossy().into_owned());
+        let (_g, _d) = store::test_store();
         downloads_import_legacy(Some(br#"{"youtube:a":"A.m4a"}"#.to_vec()), Some(br#"{"youtube:b":{"lastFailed":0,"strikes":1}}"#.to_vec()));
         assert_eq!(ledger_filename("youtube:a".into()).as_deref(), Some("A.m4a"));
         assert!(!failure_should_skip("youtube:b".into()));
@@ -362,7 +361,6 @@ mod tests {
         assert!(!blocked_should_skip("youtube:e".into()));
         assert_eq!(block_cooloff(1), 6.0 * 3600.0);
         assert_eq!(block_cooloff(9), 168.0 * 3600.0);
-        let _ = std::fs::remove_dir_all(d);
     }
 }
 

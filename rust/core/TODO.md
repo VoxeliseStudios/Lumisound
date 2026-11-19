@@ -2,6 +2,16 @@
 
 Full history and decisions: [`RUST-PORT.md`](../../RUST-PORT.md).
 
+## Done (2026-11-19) — stacks, Live Activity counters
+- `stack.rs`: frame-pointer walks of other threads (suspend → registers → vm_read_overwrite chain →
+  resume, nothing allocated while suspended), `main_thread_stack`, `other_thread_stacks`,
+  `main_thread_cpu_seconds`, `host_process_info` (`_dyld_get_image_name(0)` vs the bundle path).
+- `perf.rs`: `lumisound-stacks` sampler, 20 Hz in the foreground while the main thread is running;
+  `PerfWindow.main_busy_samples` + `main_stacks` (top 3, 12 frames, symbolized after resume).
+- `live_activity.rs`: persisted counters, widget marks ingestion, `live_activity_take_summary`.
+- Tests that configure the store take `store::test_store()` (a lock + fresh dir): parallel
+  `core_configure` calls cleared each other's cache (the write-back test flake).
+
 ## Done (2026-11-19) — 2.0.0.64 telemetry fixes
 - `downloads.rs`: soft blocks — `download_block_reason` (bot_check / premium_only), `blocked_record`,
   `blocked_should_skip` (6 h, 1 d, 3 d, then 7 d), `blocked_clear_all`; `ledger_record` clears one.

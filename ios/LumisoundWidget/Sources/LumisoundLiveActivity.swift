@@ -74,9 +74,20 @@ struct LumisoundLiveActivity: Widget {
     /// background. A later real update (higher revision) replaces it.
     static func snapshot(_ context: ActivityViewContext<LumisoundActivityAttributes>) -> NowPlayingSnapshot {
         let now = Date()
-        let s = context.state.now.newest(NowPlayingSnapshot.load()).resolved(at: now)
+        let base = context.state.now
+        let newest = base.newest(NowPlayingSnapshot.load())
+        // Telemetry (LiveActivityMarks): the App Group copy was newer than what
+        // ActivityKit delivered (an update the system dropped), the view moved
+        // on to the next track by itself at `advanceAt`, or it ran out of track.
+        if newest.revision != base.revision { LiveActivityMarks.mark("group_newer", key: newest.trackID) }
+        let s = newest.resolved(at: now)
+        if s.trackID != newest.trackID { LiveActivityMarks.mark("self_advance", key: "\(newest.trackID)->\(s.trackID)") }
         guard s.isPlaying, let end = s.endDate else { return s }
-        return context.isStale && end <= now ? s.finished : s
+        if context.isStale && end <= now {
+            LiveActivityMarks.mark("finished", key: s.trackID)
+            return s.finished
+        }
+        return s
     }
 }
 

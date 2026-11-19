@@ -53,7 +53,7 @@ extension AudioPlayerManager {
         if Self.showsLiveActivity {
             WidgetDataService.shared.republish()
         } else {
-            LiveActivityManager.end()
+            LiveActivityManager.end(reason: "lock_screen_player_changed")
         }
     }
 

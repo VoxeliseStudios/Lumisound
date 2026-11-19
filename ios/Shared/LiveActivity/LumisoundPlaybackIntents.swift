@@ -73,6 +73,9 @@ enum LumisoundPlaybackCommandRouter {
     /// the intent returns, so returning before the update has landed showed
     /// the old state until the next redraw (the delay after tapping pause).
     static var settle: (@MainActor () async -> Void)?
+    /// Installed by the app: counts each command for the Live Activity
+    /// telemetry ("intent.<command>", "intent.darwin_fallback").
+    static var telemetry: (@MainActor (String) -> Void)?
 
     static func perform(_ command: LumisoundPlaybackCommand) async {
         // Inside the app the player may still be starting: a button tapped
@@ -84,10 +87,12 @@ enum LumisoundPlaybackCommandRouter {
                 try? await Task.sleep(nanoseconds: 100_000_000)
             }
         }
+        telemetry?("intent." + String(String(describing: command).prefix { $0 != "(" }))
         if let handler, handler(command) {
             await settle?()
             return
         }
+        telemetry?("intent.darwin_fallback")
         guard let name = command.darwinName else { return }
         CFNotificationCenterPostNotification(
             CFNotificationCenterGetDarwinNotifyCenter(),

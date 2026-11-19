@@ -2,6 +2,28 @@
 
 Full history and decisions: [`../RUST-PORT.md`](../RUST-PORT.md). Swift is views + app shell only.
 
+## Done (2026-11-19) — Live Activity telemetry, main-thread sampling, pitch lock
+- LiveActivityManager: counters via core `live_activity_count` for start, skips (disabled / background /
+  cooldown, once per track), updates sent, delivered/not delivered fg/bg, resends, duplicates, orphans,
+  end reasons, stale, dismissed/ended by app vs system; immediate events `live_activity_started`,
+  `live_activity_start_failed`, `live_activity_dismissed` / `live_activity_ended` (outside the app),
+  `live_activity_enablement`. `live_activity_summary` (category widget) goes out with each periodic
+  diagnostics snapshot (enabled, frequentPushesEnabled, activity count, setting).
+- Widget extension (no core, no network): `Shared/LiveActivity/LiveActivityMarks.swift` appends
+  `group_newer` / `self_advance` / `finished` marks to the App Group; the app folds them in
+  (`widget.<kind>` + `.distinct`). Intents: `intent.<command>` and `intent.darwin_fallback` counted by
+  LumisoundPlaybackCommandRouter.
+- MainThreadBacktrace.swift removed: hang monitor uses core `main_thread_stack`,
+  `other_thread_stacks`, `main_thread_cpu_seconds` (rust/core/src/stack.rs).
+- perf_window `mainThread`: busy samples + top 3 main-thread stacks (20 Hz while running, foreground).
+- `bgtask_not_permitted` and the diagnostics snapshot carry `hosted` (executable outside the bundle =
+  LiveContainer guest), plus bundlePath / executable on the bgtask event.
+- Now Playing pitch slider is locked until its lock button is tapped; re-locks 6 s after the last change.
+
+## Open (next telemetry read)
+- Symbolicate perf_window `mainThread.stacks` (Lumisound 0x… frames) with the release dSYMs and fix the
+  top main-thread cost; check `hosted` on the owner's phone; read the first `live_activity_summary`.
+
 ## Done (2026-11-19) — 2.0.0.64 telemetry fixes
 - `processing` added to UIBackgroundModes: BGProcessingTaskRequest (downloads, trackvault) threw
   BGTaskScheduler error 3 on every submit (128x per task in two days).

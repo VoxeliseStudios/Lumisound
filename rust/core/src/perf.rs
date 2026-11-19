@@ -114,6 +114,20 @@ pub struct PerfWindow {
     pub sampler_overhead_us: f64,
     pub interesting: bool,
     pub reasons: Vec<String>,
+    /// Main-thread samples taken while it was on a CPU (20 Hz in the foreground)
+    /// and the most common stacks among them.
+    pub main_busy_samples: u32,
+    pub main_stacks: Vec<HotStack>,
+}
+
+/// One main-thread stack and how often the sampler caught it.
+#[derive(uniffi::Record, Clone, Debug, Default, PartialEq)]
+pub struct HotStack {
+    pub samples: u32,
+    /// Share of the busy samples, 0–100.
+    pub share_pct: f64,
+    /// "Image 0xoffset symbol+delta", innermost first.
+    pub frames: Vec<String>,
 }
 
 #[derive(uniffi::Record, Clone, Debug, Default, PartialEq)]
@@ -460,6 +474,9 @@ struct Window {
     thermal_changes: u32,
     battery_start: Option<(f64, Instant)>,
     overhead_us_sum: f64,
+    /// Main-thread stacks (top frames, raw addresses) -> times sampled.
+    main_hot: HashMap<Vec<u64>, u32>,
+    main_busy: u32,
 }
 
 impl Window {
@@ -489,6 +506,8 @@ impl Window {
             thermal_changes: 0,
             battery_start: None,
             overhead_us_sum: 0.0,
+            main_hot: HashMap::new(),
+            main_busy: 0,
         }
     }
 }
@@ -701,6 +720,7 @@ pub fn perf_start() {
     if STARTED.swap(true, Ordering::SeqCst) {
         return;
     }
+    let _ = std::thread::Builder::new().name("lumisound-stacks".into()).spawn(main_sampler);
     let _ = std::thread::Builder::new().name("lumisound-perf".into()).spawn(|| {
         sample_now();
         loop {
@@ -709,6 +729,53 @@ pub fn perf_start() {
             sample_now();
         }
     });
+}
+
+// ---- main-thread sampler ----------------------------------------------------------------------
+
+/// Frames of a sampled stack kept as its identity (innermost first).
+const HOT_DEPTH: usize = 16;
+/// Distinct stacks kept per window; beyond it new stacks aren't tracked.
+const HOT_CAP: usize = 400;
+
+/// 20 Hz in the foreground: when the main thread is on a CPU, record its
+/// stack. Parked (waiting in the run loop) costs one thread_info call.
+fn main_sampler() {
+    let mut buf = [0u64; crate::stack::MAX_FRAMES];
+    loop {
+        let fg = STATE.lock().unwrap().foreground;
+        std::thread::sleep(Duration::from_millis(if fg { 50 } else { 1000 }));
+        if !fg || !crate::stack::main_running() {
+            continue;
+        }
+        let n = crate::stack::walk_main(&mut buf);
+        if n == 0 {
+            continue;
+        }
+        let key: Vec<u64> = buf[..n.min(HOT_DEPTH)].iter().map(|a| crate::stack::strip(*a)).collect();
+        let mut st = STATE.lock().unwrap();
+        let w = &mut st.window;
+        w.main_busy += 1;
+        if let Some(c) = w.main_hot.get_mut(&key) {
+            *c += 1;
+        } else if w.main_hot.len() < HOT_CAP {
+            w.main_hot.insert(key, 1);
+        }
+    }
+}
+
+/// The 3 most sampled stacks (only once there are enough samples to mean
+/// something), symbolized now that every thread is running.
+fn hot_stacks(hot: &HashMap<Vec<u64>, u32>, busy: u32) -> Vec<HotStack> {
+    if busy < 20 {
+        return Vec::new();
+    }
+    let mut v: Vec<(&Vec<u64>, &u32)> = hot.iter().collect();
+    v.sort_by(|a, b| b.1.cmp(a.1));
+    v.into_iter()
+        .take(3)
+        .map(|(k, c)| HotStack { samples: *c, share_pct: *c as f64 / busy as f64 * 100.0, frames: k.iter().take(12).map(|a| crate::stack::describe(*a)).collect() })
+        .collect()
 }
 
 /// Foreground/background and the screen being shown.
@@ -807,6 +874,7 @@ pub fn perf_take_window() -> PerfWindow {
         _ => 0.0,
     };
     let frames = w.frames.stats();
+    let main_stacks = hot_stacks(&w.main_hot, w.main_busy);
     let mut out = PerfWindow {
         seconds: secs,
         foreground_seconds: w.fg_secs,
@@ -840,6 +908,8 @@ pub fn perf_take_window() -> PerfWindow {
         sampler_overhead_us: w.overhead_us_sum / (w.samples.max(1) as f64 + 1.0),
         interesting: false,
         reasons: Vec::new(),
+        main_busy_samples: w.main_busy,
+        main_stacks,
     };
     judge(&mut out);
     out
@@ -903,6 +973,8 @@ pub fn perf_window_json(w: PerfWindow) -> String {
         "thermal": {"now": w.thermal_now, "max": w.thermal_max, "changes": w.thermal_changes, "fairS": r1(w.thermal_fair_s), "seriousS": r1(w.thermal_serious_s), "criticalS": r1(w.thermal_critical_s)},
         "samplerOverheadUs": r1(w.sampler_overhead_us),
         "reasons": w.reasons,
+        "mainThread": {"busySamples": w.main_busy_samples,
+                       "stacks": w.main_stacks.iter().map(|h| serde_json::json!({"samples": h.samples, "sharePct": r1(h.share_pct), "frames": h.frames})).collect::<Vec<_>>()},
     })
     .to_string()
 }
@@ -998,6 +1070,12 @@ mod tests {
         assert_eq!(thread_group("lumisound-deck-12"), "lumisound-deck");
         assert_eq!(thread_group(""), "(unnamed)");
         assert_eq!(unnamed_label(true, false, 47), "main");
+        let mut hot = HashMap::new();
+        hot.insert(vec![1u64, 2], 30u32);
+        hot.insert(vec![3u64], 10u32);
+        assert!(hot_stacks(&hot, 10).is_empty());
+        let h = hot_stacks(&hot, 40);
+        assert_eq!((h.len(), h[0].samples, h[0].share_pct as u32, h[0].frames.len()), (2, 30, 75, 2));
         assert_eq!(unnamed_label(false, true, 20), "gcd utility");
         assert_eq!(unnamed_label(false, false, 31), "thread default");
         assert_eq!(thread_group(&unnamed_label(false, true, 37)), "gcd user-initiated");

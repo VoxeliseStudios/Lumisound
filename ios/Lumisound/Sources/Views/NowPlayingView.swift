@@ -284,6 +284,10 @@ struct NowPlayingView: View {
     @State var editingSpeed = false
     @State var speedInput = ""
     @State var editingPitch = false
+    /// The pitch slider only moves after its lock is tapped, and locks again
+    /// 6 s after the last change: brushing it while swiping between songs set
+    /// −0.5 / −2 st without the listener noticing (2.0.0.62–65 telemetry).
+    @State var pitchUnlocked = false
     @State var pitchInput = ""
 
     // Lyrics

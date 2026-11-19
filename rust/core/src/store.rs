@@ -151,12 +151,26 @@ pub fn now() -> f64 {
 /// Apple reference date (2001-01-01) offset, for importing JSONEncoder dates.
 pub const APPLE_EPOCH: f64 = 978_307_200.0;
 
+/// A fresh store directory for one test, held until the guard drops.
+/// `core_configure` clears the shared cache, so tests that configured their
+/// own directory in parallel wiped each other's state and pending writes;
+/// every test that configures or depends on the cache takes this lock.
+#[cfg(test)]
+pub(crate) fn test_store() -> (std::sync::MutexGuard<'static, ()>, PathBuf) {
+    static L: Mutex<()> = Mutex::new(());
+    let g = L.lock().unwrap_or_else(|e| e.into_inner());
+    let d = std::env::temp_dir().join(format!("core-test-store-{}", uuid::Uuid::new_v4().simple()));
+    core_configure(d.to_string_lossy().into_owned());
+    (g, d)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn writes_reach_disk_in_background_and_on_flush() {
+        let (_g, _cfg) = test_store();
         let d = std::env::temp_dir().join(format!("store-wb-{}", uuid::Uuid::new_v4().simple()));
         let f = d.join("wb_test.json");
         std::fs::create_dir_all(&d).unwrap();
@@ -187,6 +201,7 @@ mod tests {
 
     #[test]
     fn shared_reads_follow_saves() {
+        let (_g, _cfg) = test_store();
         let ns = format!("shared-{}", uuid::Uuid::new_v4().simple());
         let mut m: HashMap<String, f64> = HashMap::new();
         m.insert("a".into(), 1.0);
@@ -206,6 +221,7 @@ mod tests {
 
     #[test]
     fn a_lookup_in_a_large_map_is_cheap() {
+        let (_g, _cfg) = test_store();
         let ns = format!("big-{}", uuid::Uuid::new_v4().simple());
         let m: HashMap<String, f64> = (0..6000).map(|i| (format!("/var/mobile/Containers/Data/Application/Documents/Imported Music/Folder {}/Track number {i}.opus.lms|1731400000|4812345", i % 40), i as f64)).collect();
         save(&ns, &m);

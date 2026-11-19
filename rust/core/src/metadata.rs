@@ -288,8 +288,7 @@ mod tests {
 
     #[test]
     fn misses_are_remembered_with_backoff_and_cleared_by_a_hit() {
-        let d = std::env::temp_dir().join(format!("core-meta-{}", uuid::Uuid::new_v4().simple()));
-        crate::store::core_configure(d.to_string_lossy().into_owned());
+        let (_g, _d) = crate::store::test_store();
         assert!(!miss_fresh("brawl remix|"));
         note_result("brawl remix|", false);
         assert!(miss_fresh("brawl remix|"));
@@ -297,6 +296,5 @@ mod tests {
         assert!(!miss_fresh("brawl remix|"));
         assert_eq!(miss_cooloff(1), 86_400.0);
         assert_eq!(miss_cooloff(7), 7.0 * 86_400.0);
-        let _ = std::fs::remove_dir_all(d);
     }
 }
