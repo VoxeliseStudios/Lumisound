@@ -73,8 +73,7 @@ enum BackgroundRefreshService {
         if refusedLock.withLock({ refused.contains(id) }) { return }
         do {
             try BGTaskScheduler.shared.submit(request)
-        } catch let error as NSError where error.domain == BGTaskSchedulerErrorDomain
-                    && error.code == BGTaskScheduler.Error.notPermitted.rawValue {
+        } catch let error as BGTaskScheduler.Error where error.code == .notPermitted {
             refusedLock.withLock { _ = refused.insert(id) }
             appWarn("\(label): iOS does not permit \(id) (missing background mode, or running inside LiveContainer) — background runs off for this launch", category: "background")
             RemoteLogger.log(category: "background", event: "bgtask_not_permitted", level: "warning",
