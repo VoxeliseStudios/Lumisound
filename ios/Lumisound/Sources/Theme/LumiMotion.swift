@@ -16,21 +16,17 @@ import SwiftUI
 // - `drift`   — slow ambient loops (glows, auras), always repeating.
 // - `beat`    — a pulse that loops at a musical feel (≈ 100 BPM).
 //
-// Frame rate: Core Animation transitions run at up to 60 fps (display links
-// use `displayRange`; Info.plist leaves CADisableMinimumFrameDurationOnPhone
-// off so ProMotion iPhones never run above 60 Hz). Hand-drawn TimelineView
-// animation (artwork styles, seekers, avatar effects) uses `frame`, which
-// follows the heat governor's content rate (core thermal.rs `content_fps`:
-// 30 normally, less when hot or in Low Power Mode). At a fixed 60 fps those
-// effects were the biggest main-thread cost on Now Playing in 2.0.0.66.
+// Frame rate: everything is held to 60 fps. `frame` is the TimelineView
+// interval for hand-drawn animation, display links use `displayRange`, and
+// Info.plist leaves CADisableMinimumFrameDurationOnPhone off so Core
+// Animation on ProMotion iPhones never runs above 60 Hz. Effects stay at
+// 60 fps and are kept cheap per frame instead (animate opacity / transform,
+// keep blurs, shadows and blends in static layers).
 enum LumiMotion {
-    /// Frames per second for Core Animation (springs, transitions).
+    /// Frames per second for every animation in the app.
     static let fps: Double = 60
-    /// Content frame rate from the heat governor (set by `HeatGovernor`).
-    nonisolated(unsafe) static var contentFps: Double = 30
-    /// TimelineView minimum interval for hand-drawn animation. Paused
-    /// content (rate 0) still gets a slow 1 s tick so views don't freeze mid-state.
-    static var frame: Double { contentFps > 0 ? 1.0 / contentFps : 1.0 }
+    /// TimelineView minimum interval (one 60 fps frame).
+    static let frame: Double = 1.0 / 60.0
     /// For CADisplayLink.
     static let displayRange = CAFrameRateRange(minimum: 30, maximum: 60, preferred: 60)
 

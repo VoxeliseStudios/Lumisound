@@ -2,10 +2,6 @@
 
 Full history and decisions: [`RUST-PORT.md`](../../RUST-PORT.md).
 
-## Done (2026-11-23)
-- `thermal.rs`: `ThermalPolicy.content_fps` (30 / 24 / 15 / 10, 15 in Low Power, 0 in the background) for
-  the apps' hand-drawn animation.
-
 ## Done (2026-11-23) — upgrade pass
 - `streamcache.rs`: played-stream cache by source id (`stream_source_key` drops the ticket), shared
   downloads, Content-Type naming, `.lms` kept for locked bytes, LRU cap; `stream_cache_prefetch`.

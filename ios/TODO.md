@@ -6,11 +6,10 @@ Full history and decisions: [`../RUST-PORT.md`](../RUST-PORT.md). Swift is views
 - 2.0.0.66 main-thread stacks by screen: Playing 45 % GPU command submission + 34 % view-graph updates,
   Library 24 % GPU submission + 11 % SwiftUI memmove; the owner's setup is Tape Glitch artwork, Neon Tube
   seeker, reactive gallery background.
-- Hand-drawn animation (every `TimelineView(.animation(minimumInterval: LumiMotion.frame))`: artwork
-  styles, seekers, avatar effects, launch) follows the core's new `ThermalPolicy.content_fps`: 30 normally,
-  24 fair, 15 serious / Low Power, 10 critical, paused in the background (was a fixed 60).
+- Animation stays locked at 60 fps (user, 2026-11-23: optimize, don't lower the rate). A brief 30 fps
+  content-rate experiment was reverted.
 - Reactive aura: no drawingGroup and no 40 pt blurs (wider gradients instead), not observing the analyzer
-  (read per tick), content rate.
+  (read per tick).
 - Tape Glitch: RGB-split cover + scanlines are a static Equatable layer (re-rendered only when a tear
   starts/ends); the tracking band is a moving rectangle.
 - Neon Tube seeker: static shadows, only glow opacity / spark scale animate.

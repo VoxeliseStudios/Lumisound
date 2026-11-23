@@ -22,12 +22,6 @@ pub struct ThermalPolicy {
     pub background_motion: bool,
     /// Frame rate for the animated backgrounds when they move.
     pub motion_fps: f64,
-    /// Frame rate for on-screen content animation (artwork styles, seekers,
-    /// avatar effects): 30 normally, lower as the phone heats up or in Low
-    /// Power Mode, 0 (paused) in the background. 60 fps generative effects
-    /// were the largest main-thread cost in 2.0.0.66 (Metal submits + view
-    /// graph updates on Now Playing).
-    pub content_fps: f64,
     /// Postpone deferrable heavy jobs (pre-analysis, mood analysis,
     /// conversion sweeps, metadata refresh).
     pub defer_heavy_work: bool,
@@ -54,19 +48,12 @@ pub fn thermal_policy(level: ThermalLevel, low_power: bool, foreground: bool) ->
         ThermalLevel::Serious => (10.0, 2.0, false, 0.0, true),
         ThermalLevel::Critical => (0.0, 1.0, false, 0.0, true),
     };
-    let mut content: f64 = match level {
-        ThermalLevel::Nominal => 30.0,
-        ThermalLevel::Fair => 24.0,
-        ThermalLevel::Serious => 15.0,
-        ThermalLevel::Critical => 10.0,
-    };
     if low_power {
         viz = f64::min(viz, 15.0);
         analysis = f64::min(analysis, 2.0);
         motion = false;
         fps = 0.0;
         defer = true;
-        content = content.min(15.0);
     }
     if !foreground {
         // Nothing is on screen: no visualizer, no motion; slow levels only.
@@ -74,7 +61,6 @@ pub fn thermal_policy(level: ThermalLevel, low_power: bool, foreground: bool) ->
         analysis = f64::min(analysis, 2.0);
         motion = false;
         fps = 0.0;
-        content = 0.0;
     }
     let label = format!(
         "{}{}{}",
@@ -87,7 +73,7 @@ pub fn thermal_policy(level: ThermalLevel, low_power: bool, foreground: bool) ->
         if low_power { "+lowpower" } else { "" },
         if foreground { "" } else { "+background" }
     );
-    ThermalPolicy { visualizer_hz: viz, analysis_hz: analysis, background_motion: motion, motion_fps: fps, content_fps: content, defer_heavy_work: defer, label }
+    ThermalPolicy { visualizer_hz: viz, analysis_hz: analysis, background_motion: motion, motion_fps: fps, defer_heavy_work: defer, label }
 }
 
 /// Rate the spectrum analyzer should run at: the visualizer rate while one
@@ -338,8 +324,6 @@ mod tests {
         assert_eq!(thermal_analyzer_hz(bg, false, false), 0.0);
         let lp = thermal_policy(ThermalLevel::Fair, true, true);
         assert!(!lp.background_motion && lp.defer_heavy_work && lp.visualizer_hz == 15.0);
-        let bg2 = thermal_policy(ThermalLevel::Nominal, false, false);
-        assert_eq!((n.content_fps, s.content_fps, bg2.content_fps, lp.content_fps), (30.0, 15.0, 0.0, 15.0));
         assert_eq!(thermal_level(3), ThermalLevel::Critical);
     }
 

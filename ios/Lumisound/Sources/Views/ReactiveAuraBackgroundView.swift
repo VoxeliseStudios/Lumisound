@@ -25,11 +25,9 @@ struct ReactiveAuraBackgroundView: View {
     @State private var visible = false
 
     /// Frame rate the heat governor allows (1 fps "breathing" when it doesn't).
-    /// The blobs follow the music's energy, so they get the content rate
-    /// (30 fps normally), not the slow ambient-background rate.
     private var frameInterval: Double {
         guard !reduceMotion, visible, governor.policy.backgroundMotion else { return 1.0 }
-        return 1.0 / min(max(governor.policy.contentFps, 1), 30)
+        return 1.0 / min(max(governor.policy.motionFps, 1), LumiMotion.fps)
     }
 
     @State private var palette: ArtworkPalette?

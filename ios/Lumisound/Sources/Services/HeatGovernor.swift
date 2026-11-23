@@ -21,7 +21,6 @@ final class HeatGovernor: ObservableObject {
         let info = ProcessInfo.processInfo
         _ = Self.core.update(thermalRaw: Int64(info.thermalState.rawValue), lowPower: info.isLowPowerModeEnabled, foreground: true)
         policy = Self.core.policy()
-        LumiMotion.contentFps = policy.contentFps
         let nc = NotificationCenter.default
         nc.addObserver(forName: ProcessInfo.thermalStateDidChangeNotification, object: nil, queue: .main) { _ in
             MainActor.assumeIsolated { HeatGovernor.shared.refresh(trigger: "thermal") }
@@ -50,7 +49,6 @@ final class HeatGovernor: ObservableObject {
         guard let change = Self.core.update(thermalRaw: Int64(info.thermalState.rawValue),
                                             lowPower: info.isLowPowerModeEnabled, foreground: foreground) else { return }
         policy = change.policy
-        LumiMotion.contentFps = change.policy.contentFps
         appLog("HeatGovernor: \(change.previousLabel) → \(change.policy.label) (\(trigger))", category: "performance")
         if change.shouldReport { report(change, trigger: trigger) }
     }
