@@ -299,16 +299,22 @@ struct NeonLineScrubberView: View {
         VStack(spacing: 8) {
             GeometryReader { geo in
                 let w = geo.size.width
+                // Per frame only the glow layers' opacity and the spark's
+                // scale change (compositor-only): the shadows themselves are
+                // static. Animating shadow colors and radii re-rendered two
+                // Gaussian shadows every frame.
                 TimelineView(.animation(minimumInterval: LumiMotion.frame, paused: !isPlaying)) { ctx in
                     let t = ctx.date.timeIntervalSinceReferenceDate
                     let hum = isPlaying ? 0.85 + 0.15 * sin(t * 37) * sin(t * 3.1) : 1
+                    let spark = isPlaying ? abs(sin(t * 9)) : 0
                     ZStack(alignment: .leading) {
                         Capsule().fill(AppTheme.textSecondary.opacity(0.12)).frame(height: 3)
+                        NeonTubeGlow(width: w * m.progress).opacity(hum)
                         Capsule().fill(AppTheme.dynamicAccent).frame(width: w * m.progress, height: 3)
-                            .shadow(color: AppTheme.dynamicAccent.opacity(hum), radius: 4)
-                            .shadow(color: AppTheme.dynamicAccent.opacity(0.6 * hum), radius: 10)
                         Circle().fill(.white).frame(width: 7, height: 7)
-                            .shadow(color: .white, radius: 4 + 3 * (isPlaying ? abs(sin(t * 9)) : 0))
+                            .shadow(color: .white, radius: 4)
+                            .background(Circle().fill(.white.opacity(0.35)).frame(width: 14, height: 14).blur(radius: 3)
+                                .scaleEffect(1 + 0.5 * spark).opacity(0.4 + 0.6 * spark))
                             .position(x: w * m.progress, y: 6)
                     }
                     .frame(height: 12)
@@ -319,6 +325,18 @@ struct NeonLineScrubberView: View {
             .frame(height: 12)
             SeekerTimes(shown: m.shown, duration: duration)
         }
+    }
+}
+
+/// The neon tube's glow at full strength; `NeonLineScrubberView` fades it.
+private struct NeonTubeGlow: View {
+    let width: CGFloat
+
+    var body: some View {
+        Capsule().fill(AppTheme.dynamicAccent).frame(width: width, height: 3)
+            .shadow(color: AppTheme.dynamicAccent, radius: 4)
+            .shadow(color: AppTheme.dynamicAccent.opacity(0.6), radius: 10)
+            .compositingGroup()
     }
 }
 

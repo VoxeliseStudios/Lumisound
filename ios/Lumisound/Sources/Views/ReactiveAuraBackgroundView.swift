@@ -16,16 +16,20 @@ import SwiftUI
 /// perfectly still even during a quiet passage.
 struct ReactiveAuraBackgroundView: View {
     @EnvironmentObject private var player: AudioPlayerManager
-    @ObservedObject private var analyzer = AudioVisualizerService.shared
+    /// Read on each timeline tick, not observed: observing it re-rendered the
+    /// whole backdrop on every analysed audio buffer on top of the timeline.
+    private let analyzer = AudioVisualizerService.shared
     @AppStorage("app_reduce_motion") private var reduceMotion = false
     @ObservedObject private var governor = HeatGovernor.shared
     /// Mounted in every tab; only the visible one animates.
     @State private var visible = false
 
     /// Frame rate the heat governor allows (1 fps "breathing" when it doesn't).
+    /// The blobs follow the music's energy, so they get the content rate
+    /// (30 fps normally), not the slow ambient-background rate.
     private var frameInterval: Double {
         guard !reduceMotion, visible, governor.policy.backgroundMotion else { return 1.0 }
-        return 1.0 / min(max(governor.policy.motionFps, 1), LumiMotion.fps)
+        return 1.0 / min(max(governor.policy.contentFps, 1), 30)
     }
 
     @State private var palette: ArtworkPalette?
@@ -63,7 +67,12 @@ struct ReactiveAuraBackgroundView: View {
                         in: geo.size
                     )
                 }
-                .drawingGroup()
+                // No drawingGroup / blur: three gradients that already fade
+                // to clear composite in Core Animation, and only their scale
+                // and position change per frame. The old version flattened
+                // three 40 pt Gaussian blurs of full-screen layers into a
+                // Metal texture on every tick (the top main-thread cost on
+                // Now Playing and Library in 2.0.0.66).
             }
         }
         .ignoresSafeArea()
@@ -91,20 +100,24 @@ struct ReactiveAuraBackgroundView: View {
         // 1.0 at rest, up to ~1.35x at full energy — clamped so a sudden
         // loud transient doesn't blow the blob past the frame in one frame.
         let scale = 1.0 + CGFloat(min(1, max(0, level))) * 0.35
+        // The 40 pt blur used to soften the edge; a wider gradient with a
+        // mid stop gives the same soft falloff without any blur pass.
         Circle()
             .fill(
                 RadialGradient(
-                    colors: [color.opacity(0.55), color.opacity(0)],
+                    stops: [
+                        .init(color: color.opacity(0.55), location: 0),
+                        .init(color: color.opacity(0.32), location: 0.45),
+                        .init(color: color.opacity(0), location: 1),
+                    ],
                     center: .center,
                     startRadius: 0,
-                    endRadius: baseSize / 2
+                    endRadius: baseSize / 2 + 40
                 )
             )
-            .frame(width: baseSize, height: baseSize)
+            .frame(width: baseSize + 80, height: baseSize + 80)
             .scaleEffect(scale)
             .position(x: containerSize.width * center.x, y: containerSize.height * center.y)
-            .blur(radius: 40)
-            .animation(reduceMotion ? nil : LumiMotion.glide(0.12), value: level)
     }
 
     private func loadPaletteIfNeeded() {

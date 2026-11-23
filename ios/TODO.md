@@ -2,6 +2,23 @@
 
 Full history and decisions: [`../RUST-PORT.md`](../RUST-PORT.md). Swift is views + app shell only.
 
+## Done (2026-11-23) — render cost on Playing / Library
+- 2.0.0.66 main-thread stacks by screen: Playing 45 % GPU command submission + 34 % view-graph updates,
+  Library 24 % GPU submission + 11 % SwiftUI memmove; the owner's setup is Tape Glitch artwork, Neon Tube
+  seeker, reactive gallery background.
+- Hand-drawn animation (every `TimelineView(.animation(minimumInterval: LumiMotion.frame))`: artwork
+  styles, seekers, avatar effects, launch) follows the core's new `ThermalPolicy.content_fps`: 30 normally,
+  24 fair, 15 serious / Low Power, 10 critical, paused in the background (was a fixed 60).
+- Reactive aura: no drawingGroup and no 40 pt blurs (wider gradients instead), not observing the analyzer
+  (read per tick), content rate.
+- Tape Glitch: RGB-split cover + scanlines are a static Equatable layer (re-rendered only when a tear
+  starts/ends); the tracking band is a moving rectangle.
+- Neon Tube seeker: static shadows, only glow opacity / spark scale animate.
+
+## Open
+- Read 2.0.0.68 perf_window stacks for Playing/Library; next suspects: Library memmove (large song arrays
+  copied into views), other artwork styles still re-rendering blends/shadows per frame.
+
 ## Done (2026-11-23) — upgrade pass
 - Streams: core stream cache (by source id; the ticket in the URL no longer changes the cache key),
   `downloadAndSchedule` / prefetch / gapless use it; streamed next tracks get gapless + Smart Crossfade

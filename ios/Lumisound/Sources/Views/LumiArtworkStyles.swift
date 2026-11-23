@@ -890,6 +890,12 @@ struct NeonSignFlickerArtworkView: View {
 
 /// Scanlines and a rolling tracking band; every few seconds the picture tears
 /// with an RGB split.
+///
+/// Built so a frame costs almost nothing: the RGB-split cover and the
+/// scanlines are one static layer (`VHSStill`, re-rendered only when a tear
+/// starts or ends); per frame only the tracking band's offset moves. The old
+/// version redrew three screen-blended covers and ~77 scanlines in one
+/// compositing group 60 times a second.
 struct VHSScanGlitchArtworkView: View {
     let song: Song?
     let isPlaying: Bool
@@ -897,20 +903,13 @@ struct VHSScanGlitchArtworkView: View {
     var body: some View {
         StyleStage(song: song, isPlaying: isPlaying) { t, _, _ in
             let tear = t.truncatingRemainder(dividingBy: 3.7) < 0.18
-            let split: CGFloat = tear ? 6 : 1.2
-            ZStack {
-                StyleCover(song: song, size: 230).colorMultiply(.red).offset(x: -split).blendMode(.screen)
-                StyleCover(song: song, size: 230).colorMultiply(.green).blendMode(.screen)
-                StyleCover(song: song, size: 230).colorMultiply(.blue).offset(x: split).blendMode(.screen)
-                Canvas { ctx, size in
-                    var y: CGFloat = 0
-                    while y < size.height {
-                        ctx.fill(Path(CGRect(x: 0, y: y, width: size.width, height: 1)), with: .color(.black.opacity(0.25)))
-                        y += 3
-                    }
-                    let band = CGFloat((t * 40).truncatingRemainder(dividingBy: Double(size.height + 40))) - 20
-                    ctx.fill(Path(CGRect(x: 0, y: band, width: size.width, height: 16)), with: .color(.white.opacity(0.08)))
-                }
+            let band = CGFloat((t * 40).truncatingRemainder(dividingBy: 270)) - 20
+            ZStack(alignment: .top) {
+                VHSStill(song: song, split: tear ? 6 : 1.2).equatable()
+                Rectangle()
+                    .fill(Color.white.opacity(0.08))
+                    .frame(height: 16)
+                    .offset(y: band)
                 if tear {
                     StyleCover(song: song, size: 230)
                         .mask(Rectangle().frame(height: 26).offset(y: CGFloat(sin(t * 50)) * 60))
@@ -918,9 +917,44 @@ struct VHSScanGlitchArtworkView: View {
                 }
             }
             .frame(width: 230, height: 230)
-            .background(Color.black)
             .clipShape(RoundedRectangle(cornerRadius: 12))
-            .compositingGroup()
         }
+    }
+}
+
+/// The RGB-split cover with scanlines. Equatable on its inputs, so SwiftUI
+/// skips it on frames where only the band moved.
+private struct VHSStill: View, Equatable {
+    let song: Song?
+    let split: CGFloat
+
+    static func == (a: VHSStill, b: VHSStill) -> Bool {
+        a.song?.id == b.song?.id && a.split == b.split
+    }
+
+    var body: some View {
+        ZStack {
+            StyleCover(song: song, size: 230).colorMultiply(.red).offset(x: -split).blendMode(.screen)
+            StyleCover(song: song, size: 230).colorMultiply(.green).blendMode(.screen)
+            StyleCover(song: song, size: 230).colorMultiply(.blue).offset(x: split).blendMode(.screen)
+            VHSScanlines()
+        }
+        .frame(width: 230, height: 230)
+        .background(Color.black)
+        .compositingGroup()
+    }
+}
+
+/// Static scanlines (drawn once; no inputs change).
+private struct VHSScanlines: View, Equatable {
+    var body: some View {
+        Canvas { ctx, size in
+            var y: CGFloat = 0
+            while y < size.height {
+                ctx.fill(Path(CGRect(x: 0, y: y, width: size.width, height: 1)), with: .color(.black.opacity(0.25)))
+                y += 3
+            }
+        }
+        .allowsHitTesting(false)
     }
 }
