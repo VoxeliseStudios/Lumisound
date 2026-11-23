@@ -2,17 +2,20 @@ import SwiftUI
 
 // MARK: - TVArtworkStyle
 //
-// A small subset of iOS's 24 Now Playing artwork styles (see
-// ios/Lumisound/Sources/Views/NowPlayingStyle.swift), ported to tvOS.
-// Most of the originals depend on `Song`/`LibraryManager`/palette
-// extraction that don't exist on tvOS's much smaller client; these two were
-// picked (per a feasibility survey) as self-contained, non-touch,
-// non-AVAudioEngine-dependent — Circuit Pulse used a live extracted palette
-// on iOS, simplified here to its own documented fallback colors (cyan/accent)
-// since porting the palette extractor for one cosmetic detail isn't worth it.
+// How the cover is staged on Now Playing. Classic plus the four ported from
+// iOS, and seven made for the TV. Every animated style keeps its expensive
+// parts (blurs, shadows, blends, canvases) in static layers and animates only
+// transforms and opacity, so they run at a locked 60 fps without re-rendering.
 
 enum TVArtworkStyle: String, CaseIterable, Identifiable {
     case classic
+    case vinylSpin
+    case neonHalo
+    case tapeGlitch
+    case polaroidStack
+    case aurora
+    case orbit
+    case filmStrip
     case circuitPulse
     case radarSweep
     case chalkboardSketch
@@ -23,10 +26,34 @@ enum TVArtworkStyle: String, CaseIterable, Identifiable {
     var displayName: String {
         switch self {
         case .classic: return "Classic"
+        case .vinylSpin: return "Vinyl Spin"
+        case .neonHalo: return "Neon Halo"
+        case .tapeGlitch: return "Tape Glitch"
+        case .polaroidStack: return "Polaroid Stack"
+        case .aurora: return "Aurora"
+        case .orbit: return "Orbit"
+        case .filmStrip: return "Film Strip"
         case .circuitPulse: return "Circuit Pulse"
         case .radarSweep: return "Radar Sweep"
         case .chalkboardSketch: return "Chalkboard Sketch"
         case .shadowPuppetSilhouette: return "Shadow Puppet"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .classic: return "square"
+        case .vinylSpin: return "record.circle"
+        case .neonHalo: return "circle.dashed"
+        case .tapeGlitch: return "tv"
+        case .polaroidStack: return "photo.stack"
+        case .aurora: return "sparkles"
+        case .orbit: return "atom"
+        case .filmStrip: return "film"
+        case .circuitPulse: return "cpu"
+        case .radarSweep: return "dot.radiowaves.up.forward"
+        case .chalkboardSketch: return "pencil.and.scribble"
+        case .shadowPuppetSilhouette: return "hand.raised"
         }
     }
 }
@@ -362,5 +389,308 @@ private struct TVSweepWedge: Shape {
                     clockwise: false)
         path.closeSubpath()
         return path
+    }
+}
+
+// MARK: - Vinyl Spin
+
+/// The cover as the label of a spinning record (33⅓ rpm while playing), with
+/// a tonearm resting on it. Only the record's rotation changes per frame.
+struct TVVinylSpinArtworkView: View {
+    let artworkURL: URL?
+    let authToken: String?
+    let isPlaying: Bool
+
+    @State private var spinning = false
+
+    var body: some View {
+        ZStack {
+            ZStack {
+                TVVinylDisc(diameter: 430)
+                TVStyleCover(artworkURL: artworkURL, authToken: authToken, size: 170)
+                    .clipShape(Circle())
+                Circle().fill(Color.black).frame(width: 14, height: 14)
+            }
+            .rotationEffect(.degrees(spinning ? 360 : 0))
+            .animation(spinning ? .linear(duration: 1.8).repeatForever(autoreverses: false) : .easeOut(duration: 1.2),
+                       value: spinning)
+
+            // Tonearm (static).
+            Capsule()
+                .fill(LinearGradient(colors: [Color(white: 0.85), Color(white: 0.5)], startPoint: .top, endPoint: .bottom))
+                .frame(width: 12, height: 250)
+                .rotationEffect(.degrees(isPlaying ? 24 : 8), anchor: .top)
+                .offset(x: 190, y: -40)
+                .animation(.spring(response: 0.8, dampingFraction: 0.8), value: isPlaying)
+            Circle()
+                .fill(Color(white: 0.7))
+                .frame(width: 44, height: 44)
+                .offset(x: 190, y: -165)
+        }
+        .frame(width: 500, height: 500)
+        .onAppear { spinning = isPlaying }
+        .onChange(of: isPlaying) { playing in spinning = playing }
+    }
+}
+
+// MARK: - Neon Halo
+
+/// The cover inside two neon rings that breathe with the music: the rings'
+/// glow is drawn once; only their scale and opacity move.
+struct TVNeonHaloArtworkView: View {
+    let artworkURL: URL?
+    let authToken: String?
+    let isPlaying: Bool
+
+    var body: some View {
+        TimelineView(.animation(paused: !isPlaying)) { tl in
+            let p = TVArtworkClock.pingPong(tl.date, legDuration: 1.3)
+            let q = TVArtworkClock.pingPong(tl.date, legDuration: 2.1)
+            ZStack {
+                TVHaloRing(color: TVPalette.violet, diameter: 430)
+                    .scaleEffect(0.96 + 0.05 * p)
+                    .opacity(0.55 + 0.45 * p)
+                TVHaloRing(color: TVPalette.blue, diameter: 380)
+                    .scaleEffect(1.02 - 0.04 * q)
+                    .opacity(0.5 + 0.5 * q)
+                TVStyleCover(artworkURL: artworkURL, authToken: authToken, size: 300)
+                    .clipShape(Circle())
+                    .overlay(Circle().strokeBorder(Color.white.opacity(0.25), lineWidth: 2))
+            }
+        }
+        .frame(width: 500, height: 500)
+    }
+}
+
+/// A glowing ring, rendered once (Equatable: no per-frame inputs).
+private struct TVHaloRing: View, Equatable {
+    let color: Color
+    let diameter: CGFloat
+
+    var body: some View {
+        Circle()
+            .strokeBorder(color, lineWidth: 6)
+            .frame(width: diameter, height: diameter)
+            .shadow(color: color, radius: 18)
+            .shadow(color: color.opacity(0.6), radius: 40)
+            .compositingGroup()
+    }
+}
+
+// MARK: - Tape Glitch
+
+/// VHS: an RGB-split cover with scanlines (a static layer, redrawn only when a
+/// tear starts or ends) and a rolling tracking band (an offset).
+struct TVTapeGlitchArtworkView: View {
+    let artworkURL: URL?
+    let authToken: String?
+    let isPlaying: Bool
+
+    var body: some View {
+        TimelineView(.animation(paused: !isPlaying)) { tl in
+            let t = tl.date.timeIntervalSinceReferenceDate
+            let tear = isPlaying && t.truncatingRemainder(dividingBy: 3.7) < 0.18
+            let band = CGFloat((t * 60).truncatingRemainder(dividingBy: 460)) - 20
+            ZStack(alignment: .top) {
+                TVTapeStill(artworkURL: artworkURL, authToken: authToken, split: tear ? 9 : 2).equatable()
+                Rectangle()
+                    .fill(Color.white.opacity(0.09))
+                    .frame(height: 26)
+                    .offset(y: band)
+                if tear {
+                    TVStyleCover(artworkURL: artworkURL, authToken: authToken, size: 420)
+                        .mask(Rectangle().frame(height: 44).offset(y: CGFloat(sin(t * 50)) * 110))
+                        .offset(x: 22)
+                }
+            }
+            .frame(width: 420, height: 420)
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }
+        .frame(width: 500, height: 500)
+    }
+}
+
+private struct TVTapeStill: View, Equatable {
+    let artworkURL: URL?
+    let authToken: String?
+    let split: CGFloat
+
+    var body: some View {
+        ZStack {
+            TVStyleCover(artworkURL: artworkURL, authToken: authToken, size: 420).colorMultiply(.red).offset(x: -split).blendMode(.screen)
+            TVStyleCover(artworkURL: artworkURL, authToken: authToken, size: 420).colorMultiply(.green).blendMode(.screen)
+            TVStyleCover(artworkURL: artworkURL, authToken: authToken, size: 420).colorMultiply(.blue).offset(x: split).blendMode(.screen)
+            TVScanlines()
+        }
+        .frame(width: 420, height: 420)
+        .background(Color.black)
+        .compositingGroup()
+    }
+}
+
+// MARK: - Polaroid Stack
+
+/// Three instant photos of the cover, fanned on a table; they sway a little
+/// while the music plays (rotation only).
+struct TVPolaroidStackArtworkView: View {
+    let artworkURL: URL?
+    let authToken: String?
+    let isPlaying: Bool
+
+    var body: some View {
+        TimelineView(.animation(paused: !isPlaying)) { tl in
+            let sway = (TVArtworkClock.pingPong(tl.date, legDuration: 2.6) - 0.5) * 3
+            ZStack {
+                polaroid.rotationEffect(.degrees(-14 + sway)).offset(x: -40, y: 14)
+                polaroid.rotationEffect(.degrees(9 - sway)).offset(x: 36, y: 6)
+                polaroid.rotationEffect(.degrees(-2 + sway * 0.5))
+            }
+        }
+        .frame(width: 500, height: 500)
+    }
+
+    private var polaroid: some View {
+        VStack(spacing: 0) {
+            TVStyleCover(artworkURL: artworkURL, authToken: authToken, size: 300)
+            Spacer(minLength: 0)
+        }
+        .padding(16)
+        .frame(width: 332, height: 392)
+        .background(Color(white: 0.96))
+        .shadow(color: .black.opacity(0.45), radius: 16, y: 10)
+    }
+}
+
+// MARK: - Aurora
+
+/// The cover floating in a slow aurora: three soft light ribbons (blurred
+/// once, statically) that drift behind it. Offsets only per frame.
+struct TVAuroraArtworkView: View {
+    let artworkURL: URL?
+    let authToken: String?
+    let isPlaying: Bool
+
+    var body: some View {
+        TimelineView(.animation(paused: !isPlaying)) { tl in
+            let a = TVArtworkClock.pingPong(tl.date, legDuration: 7)
+            let b = TVArtworkClock.pingPong(tl.date, legDuration: 9.5)
+            ZStack {
+                TVAuroraRibbon(color: TVPalette.violet).offset(x: -80 + 160 * a, y: -110)
+                TVAuroraRibbon(color: TVPalette.blue).offset(x: 90 - 180 * b, y: 20)
+                TVAuroraRibbon(color: TVPalette.neon).offset(x: -60 + 120 * b, y: 140).opacity(0.7)
+                TVStyleCover(artworkURL: artworkURL, authToken: authToken, size: 320, cornerRadius: 28)
+                    .shadow(color: .black.opacity(0.5), radius: 30, y: 18)
+            }
+        }
+        .frame(width: 500, height: 500)
+    }
+}
+
+private struct TVAuroraRibbon: View, Equatable {
+    let color: Color
+
+    var body: some View {
+        Capsule()
+            .fill(LinearGradient(colors: [color.opacity(0), color.opacity(0.75), color.opacity(0)],
+                                 startPoint: .leading, endPoint: .trailing))
+            .frame(width: 520, height: 110)
+            .blur(radius: 34)
+            .rotationEffect(.degrees(-12))
+            .drawingGroup()
+    }
+}
+
+// MARK: - Orbit
+
+/// The cover as a planet with three moons on their own orbits (each orbit a
+/// rotation of a static ring).
+struct TVOrbitArtworkView: View {
+    let artworkURL: URL?
+    let authToken: String?
+    let isPlaying: Bool
+
+    var body: some View {
+        TimelineView(.animation(paused: !isPlaying)) { tl in
+            let t = tl.date.timeIntervalSinceReferenceDate
+            ZStack {
+                ForEach(0..<3, id: \.self) { i in
+                    let d = CGFloat(330 + i * 55)
+                    ZStack {
+                        Circle().strokeBorder(Color.white.opacity(0.1), lineWidth: 1)
+                        Circle()
+                            .fill(i == 1 ? TVPalette.blue : (i == 0 ? TVPalette.violet : TVPalette.neon))
+                            .frame(width: CGFloat(18 - i * 3), height: CGFloat(18 - i * 3))
+                            .shadow(color: TVPalette.violet, radius: 8)
+                            .offset(y: -d / 2)
+                    }
+                    .frame(width: d, height: d)
+                    .rotationEffect(.degrees((t * Double(40 - i * 11)).truncatingRemainder(dividingBy: 360) * (i == 1 ? -1 : 1)))
+                }
+                TVStyleCover(artworkURL: artworkURL, authToken: authToken, size: 260)
+                    .clipShape(Circle())
+                    .shadow(color: TVPalette.violet.opacity(0.5), radius: 30)
+            }
+        }
+        .frame(width: 500, height: 500)
+    }
+}
+
+// MARK: - Film Strip
+
+/// The cover on a strip of film running through the gate: frames scroll
+/// upward (an offset of a static strip).
+struct TVFilmStripArtworkView: View {
+    let artworkURL: URL?
+    let authToken: String?
+    let isPlaying: Bool
+
+    private let frameH: CGFloat = 300
+
+    var body: some View {
+        TimelineView(.animation(paused: !isPlaying)) { tl in
+            let travel = CGFloat(tl.date.timeIntervalSinceReferenceDate * 40).truncatingRemainder(dividingBy: frameH + 24)
+            ZStack {
+                strip
+                    .offset(y: -travel)
+            }
+            .frame(width: 400, height: 470)
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay {
+                // The gate: the middle frame is the lit one.
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(TVPalette.brand, lineWidth: 3)
+                    .frame(width: 330, height: frameH + 8)
+            }
+        }
+        .frame(width: 500, height: 500)
+    }
+
+    private var strip: some View {
+        VStack(spacing: 24) {
+            ForEach(0..<4, id: \.self) { _ in
+                TVStyleCover(artworkURL: artworkURL, authToken: authToken, size: frameH)
+            }
+        }
+        .padding(.vertical, 12)
+        .padding(.horizontal, 50)
+        .background(Color(white: 0.06))
+        .overlay {
+            HStack {
+                TVSprockets()
+                Spacer()
+                TVSprockets()
+            }
+            .padding(.horizontal, 14)
+        }
+    }
+}
+
+private struct TVSprockets: View, Equatable {
+    var body: some View {
+        VStack(spacing: 18) {
+            ForEach(0..<24, id: \.self) { _ in
+                RoundedRectangle(cornerRadius: 3).fill(Color.white.opacity(0.75)).frame(width: 16, height: 22)
+            }
+        }
     }
 }

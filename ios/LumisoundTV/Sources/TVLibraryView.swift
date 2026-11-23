@@ -5,6 +5,7 @@ import SwiftUI
 struct TVLibraryView: View {
     @ObservedObject var client: TVBridgeClient
     let token: String
+    @Environment(\.tvTheme) private var theme
 
     private enum Mode: String, CaseIterable, Identifiable {
         case songs = "Songs"
@@ -21,6 +22,17 @@ struct TVLibraryView: View {
             case .artists: return "music.mic"
             case .genres: return "guitars"
             case .favorites: return "star.fill"
+            }
+        }
+
+        /// The letter printed on the crate divider's tab.
+        var tab: String {
+            switch self {
+            case .songs: return "S"
+            case .albums: return "A"
+            case .artists: return "R"
+            case .genres: return "G"
+            case .favorites: return "★"
             }
         }
     }
@@ -76,18 +88,22 @@ struct TVLibraryView: View {
         return "\(n) track\(n == 1 ? "" : "s")"
     }
 
+    // MARK: The crate
+    //
+    // Library is a record crate. Down the left, the crate's dividers — tall
+    // tabs for each way of browsing (and Search, which is a pushed screen of
+    // its own so the system keyboard gets the whole width). On the right, the
+    // records: a song list, a flip-through crate of album sleeves, a wall of
+    // artist portraits, a board of genre stickers.
     var body: some View {
-        VStack(spacing: 0) {
-            if !client.isLoadingLibrary && client.libraryError == nil && !client.library.isEmpty {
-                TVScreenTitle(title: "Library", detail: libraryDetail)
-                    .padding(.bottom, 22)
-                modeChips
-                    .padding(.bottom, 10)
-            }
+        HStack(alignment: .top, spacing: 0) {
+            dividers
+                .frame(width: 300)
+                .focusSection()
 
             Group {
                 if client.isLoadingLibrary {
-                    TVLoadingState(text: "Loading your library…")
+                    TVLoadingState(text: "Flipping through your records…")
                 } else if let err = client.libraryError {
                     TVEmptyState(systemImage: "exclamationmark.icloud",
                                  title: "Couldn't load your library",
@@ -101,8 +117,8 @@ struct TVLibraryView: View {
                         .focusEffectDisabled()
                     }
                 } else if client.library.isEmpty {
-                    TVEmptyState(systemImage: "music.note.list",
-                                 title: "Your library is empty",
+                    TVEmptyState(systemImage: "shippingbox",
+                                 title: "The crate is empty",
                                  message: "Add music to your Personal Cloud Library from the iPhone app and it will show up here.")
                 } else {
                     switch mode {
@@ -114,7 +130,8 @@ struct TVLibraryView: View {
                     }
                 }
             }
-            .frame(maxHeight: .infinity, alignment: .top)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .focusSection()
         }
         // NO `.searchable` here. On tvOS that modifier does not render a compact
         // field — it lays out a full search surface, prompt plus a letter picker
@@ -124,7 +141,7 @@ struct TVLibraryView: View {
         // AND over the player column beside it, which is the alphabet strip
         // running over everything in the 1.9.0 screenshot.
         //
-        // Search now lives behind the pill in `modeChips` and is presented as
+        // Search now lives behind the first crate divider and is presented as
         // its own pushed screen (`librarySearchScreen`), which is the platform's
         // actual pattern for tvOS search and gets dictation for free.
         .task {
@@ -136,43 +153,47 @@ struct TVLibraryView: View {
         .onChange(of: client.library.count) { _ in recomputeFilteredSongs() }
     }
 
-    /// Custom chip row replacing the stock segmented `Picker` — matches the
-    /// filter/pill visual language used across the rest of the redesign
-    /// instead of a plain system control.
-    private var modeChips: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 14) {
-                // Leads the row: searching is a different KIND of action from
-                // switching browse dimension, so it keeps the search glyph and
-                // shows the live query when one is set, rather than pretending
-                // to be a sixth mode.
-                NavigationLink {
-                    librarySearchScreen
+    /// The crate dividers: the library's size on the label up top, then a tab
+    /// per browse mode, Search first (it is a different kind of action).
+    private var dividers: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("THE CRATE")
+                    .font(TVType.eyebrow)
+                    .tracking(theme.tracking)
+                    .foregroundStyle(TVPalette.neonAlt)
+                Text("Library")
+                    .font(theme.display(46))
+                if let libraryDetail {
+                    Text(libraryDetail)
+                        .font(TVType.meta)
+                        .foregroundStyle(TVPalette.textTertiary)
+                }
+            }
+            .padding(.bottom, 18)
+
+            NavigationLink {
+                librarySearchScreen
+            } label: {
+                TVCrateDividerLabel(tab: "⌕", title: searchText.isEmpty ? "Search" : searchText,
+                                    systemImage: "magnifyingglass", isSelected: !searchText.isEmpty)
+            }
+            .buttonStyle(.plain)
+            .focusEffectDisabled()
+
+            ForEach(Mode.allCases) { m in
+                Button {
+                    mode = m
                 } label: {
-                    TVChip(
-                        title: searchText.isEmpty ? "Search" : searchText,
-                        isSelected: !searchText.isEmpty,
-                        systemImage: "magnifyingglass"
-                    )
+                    TVCrateDividerLabel(tab: m.tab, title: m.rawValue, systemImage: m.systemImage, isSelected: mode == m)
                 }
                 .buttonStyle(.plain)
                 .focusEffectDisabled()
-
-                ForEach(Mode.allCases) { m in
-                    Button {
-                        mode = m
-                    } label: {
-                        TVChip(title: m.rawValue, isSelected: mode == m, systemImage: m.systemImage)
-                    }
-                    .buttonStyle(.plain)
-                    .focusEffectDisabled()
-                }
             }
-            .padding(.horizontal, TVMetrics.margin)
-            // Room for a focused chip's scale and shadow, which the scroll
-            // view would otherwise clip.
-            .padding(.vertical, 16)
+            Spacer(minLength: 0)
         }
+        .padding(.leading, TVMetrics.margin)
+        .padding(.top, 20)
     }
 
     /// Songs as a dense list rather than a grid of covers — see `TVTrackRow`
@@ -253,5 +274,56 @@ struct TVLibraryView: View {
             .tvAmbientBackground()
         }
         .ignoresSafeArea()
+    }
+}
+
+// MARK: - Crate divider
+
+/// A crate divider: a tab with a letter sticking out on the left, the browse
+/// mode's name on the card. Selected dividers stand proud in the theme's
+/// light; focus lifts and whitens the tab.
+struct TVCrateDividerLabel: View {
+    let tab: String
+    let title: String
+    let systemImage: String
+    let isSelected: Bool
+
+    @Environment(\.isFocused) private var isFocused
+    @Environment(\.tvTheme) private var theme
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Text(tab)
+                .font(theme.display(26, .black))
+                .foregroundStyle(isFocused ? Color.black : (isSelected ? theme.ground : Color.white.opacity(0.7)))
+                .frame(width: 54, height: 72)
+                .background {
+                    UnevenRoundedRectangle(topLeadingRadius: 16, bottomLeadingRadius: 16,
+                                           bottomTrailingRadius: 4, topTrailingRadius: 4, style: .continuous)
+                        .fill(isFocused ? AnyShapeStyle(Color.white)
+                              : isSelected ? AnyShapeStyle(TVPalette.brandVertical)
+                              : AnyShapeStyle(Color.white.opacity(0.1)))
+                }
+            HStack(spacing: 12) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 18, weight: .semibold))
+                Text(title)
+                    .font(.system(size: 22, weight: isSelected ? .bold : .semibold))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(isSelected || isFocused ? Color.white : Color.white.opacity(0.6))
+            .padding(.horizontal, 16)
+            .frame(width: 176, height: 72, alignment: .leading)
+            .background {
+                UnevenRoundedRectangle(topLeadingRadius: 4, bottomLeadingRadius: 4,
+                                       bottomTrailingRadius: 16, topTrailingRadius: 16, style: .continuous)
+                    .fill(isFocused ? theme.raised : (isSelected ? theme.surface : theme.surface.opacity(0.35)))
+            }
+        }
+        .shadow(color: (isSelected || isFocused) ? theme.primary.opacity(0.35) : .clear, radius: 18, y: 6)
+        .offset(x: isSelected ? 10 : 0)
+        .scaleEffect(isFocused ? 1.05 : 1, anchor: .leading)
+        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isFocused)
+        .animation(.spring(response: 0.35, dampingFraction: 0.8), value: isSelected)
     }
 }

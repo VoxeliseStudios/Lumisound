@@ -16,20 +16,10 @@ import SwiftUI
 struct TVPlaylistsView: View {
     @ObservedObject var client: TVBridgeClient
     let token: String
+    @Environment(\.tvTheme) private var theme
 
     @State private var showNewPlaylist = false
     @State private var renamingPlaylist: TVPlaylist?
-
-    /// The first playlist with something in it gets the hero; the grid holds
-    /// the rest so nothing is shown twice.
-    private var featured: TVPlaylist? {
-        guard let first = client.playlists.first, !first.tracks.isEmpty else { return nil }
-        return first
-    }
-
-    private var gridPlaylists: [TVPlaylist] {
-        featured == nil ? client.playlists : Array(client.playlists.dropFirst())
-    }
 
     var body: some View {
         GeometryReader { geo in
@@ -49,13 +39,13 @@ struct TVPlaylistsView: View {
                         .focusEffectDisabled()
                     }
                 } else if client.playlists.isEmpty {
-                    TVEmptyState(systemImage: "music.note.list",
-                                 title: "No playlists yet",
-                                 message: "Make one here, or on your iPhone — playlists sync across your devices.") {
+                    TVEmptyState(systemImage: "recordingtape",
+                                 title: "No mixtapes yet",
+                                 message: "Record one here, or on your iPhone — playlists sync across your devices.") {
                         Button {
                             showNewPlaylist = true
                         } label: {
-                            TVPillLabel(title: "New Playlist", systemImage: "plus")
+                            TVPillLabel(title: "Record a Tape", systemImage: "plus")
                         }
                         .buttonStyle(.plain)
                         .focusEffectDisabled()
@@ -80,46 +70,56 @@ struct TVPlaylistsView: View {
         }
     }
 
+    /// The tape wall: every playlist a cassette on the shelf, the blank tape
+    /// first for recording a new one.
     private func content(width: CGFloat) -> some View {
-        // Definite cell widths, for the same reason as TVCardGrid — that view
-        // owns its own ScrollView, so it can't sit under the hero here.
-        let count = max(2, min(4, TVAudioSettings.shared.gridColumns + 1))
-        let spacing: CGFloat = 40
+        let count = 4
+        let spacing: CGFloat = 44
         let usable = width - TVMetrics.margin * 2 - spacing * CGFloat(count - 1)
-        let cell = max(140, usable / CGFloat(count))
+        let cell = max(200, usable / CGFloat(count))
 
-        return VStack(alignment: .leading, spacing: TVMetrics.section) {
-            VStack(alignment: .leading, spacing: 0) {
-                TVScreenTitle(title: "Playlists",
-                              detail: "\(client.playlists.count) \(client.playlists.count == 1 ? "playlist" : "playlists")")
-                if let featured {
-                    featuredHero(featured)
+        return VStack(alignment: .leading, spacing: 30) {
+            HStack(alignment: .lastTextBaseline, spacing: 22) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("THE TAPE WALL")
+                        .font(TVType.eyebrow)
+                        .tracking(theme.tracking)
+                        .foregroundStyle(TVPalette.neonAlt)
+                    Text("Mixtapes")
+                        .font(theme.display(58))
                 }
+                Text("\(client.playlists.count) \(client.playlists.count == 1 ? "tape" : "tapes")")
+                    .font(TVType.meta)
+                    .foregroundStyle(TVPalette.textSecondary)
+                Spacer(minLength: 0)
             }
+            .padding(.horizontal, TVMetrics.margin)
+            .padding(.top, 20)
 
-            VStack(alignment: .leading, spacing: 24) {
-                TVSectionHeader(title: featured == nil ? "Your Playlists" : "More Playlists")
-                    .padding(.horizontal, TVMetrics.margin)
-
-                LazyVGrid(
-                    columns: Array(repeating: GridItem(.fixed(cell), spacing: spacing), count: count),
-                    alignment: .leading,
-                    spacing: spacing + 16
-                ) {
-                    newPlaylistCard(width: cell)
-                    ForEach(gridPlaylists) { playlist in
-                        NavigationLink {
-                            TVPlaylistDetailView(client: client, token: token, playlist: playlist)
-                        } label: {
-                            playlistCard(playlist, width: cell)
-                        }
-                        .buttonStyle(.plain)
-                        .focusEffectDisabled()
-                        .contextMenu { playlistMenu(playlist) }
+            LazyVGrid(
+                columns: Array(repeating: GridItem(.fixed(cell), spacing: spacing), count: count),
+                alignment: .leading,
+                spacing: spacing + 10
+            ) {
+                newPlaylistCard(width: cell)
+                ForEach(client.playlists) { playlist in
+                    NavigationLink {
+                        TVPlaylistDetailView(client: client, token: token, playlist: playlist)
+                    } label: {
+                        TVCassetteLabel(
+                            name: playlist.name,
+                            detail: tvSongCount(playlist.tracks.count),
+                            artworkURLs: client.artworkURLs(for: playlist, token: token),
+                            token: token,
+                            width: cell
+                        )
                     }
+                    .buttonStyle(.plain)
+                    .focusEffectDisabled()
+                    .contextMenu { playlistMenu(playlist) }
                 }
-                .padding(.horizontal, TVMetrics.margin)
             }
+            .padding(.horizontal, TVMetrics.margin)
         }
         .padding(.bottom, 80)
     }
@@ -142,63 +142,11 @@ struct TVPlaylistsView: View {
         Button {
             showNewPlaylist = true
         } label: {
-            TVArtworkCardLabel(title: "New Playlist", subtitle: "Start from scratch", width: width) {
-                ZStack {
-                    Color.white.opacity(0.04)
-                    RoundedRectangle(cornerRadius: TVMetrics.cardCorner, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.25),
-                                      style: StrokeStyle(lineWidth: 2, dash: [12, 10]))
-                    Image(systemName: "plus")
-                        .font(.system(size: width * 0.2, weight: .semibold))
-                        .foregroundStyle(TVPalette.brandVertical)
-                }
-            }
+            TVCassetteLabel(name: "Record a New Tape", detail: "Start from scratch",
+                            artworkURLs: [], token: token, width: width, isBlank: true)
         }
         .buttonStyle(.plain)
         .focusEffectDisabled()
-    }
-
-    /// The first playlist as the hero — same component Home uses.
-    @ViewBuilder
-    private func featuredHero(_ playlist: TVPlaylist) -> some View {
-        let queue = playlist.tracks.compactMap { client.playable(from: $0, token: token) }
-        if let first = queue.first {
-            TVHeroBanner(
-                eyebrow: "Featured Playlist",
-                title: playlist.name,
-                subtitle: playlist.description.flatMap { $0.isEmpty ? nil : $0 }
-                    ?? tvSongCount(playlist.tracks.count),
-                art: {
-                    TVPlaylistArtwork(name: playlist.name,
-                                      artworkURLs: client.artworkURLs(for: playlist, token: token),
-                                      token: token)
-                },
-                playButton: {
-                    HStack(spacing: 22) {
-                        NavigationLink(value: TVPlayContext(queue: queue, startID: first.id)) {
-                            TVPillLabel(title: "Play", systemImage: "play.fill")
-                        }
-                        .buttonStyle(.plain)
-                        .focusEffectDisabled()
-                        NavigationLink {
-                            TVPlaylistDetailView(client: client, token: token, playlist: playlist)
-                        } label: {
-                            TVPillLabel(title: "Open", systemImage: "list.bullet", style: .secondary)
-                        }
-                        .buttonStyle(.plain)
-                        .focusEffectDisabled()
-                    }
-                }
-            )
-        }
-    }
-
-    private func playlistCard(_ playlist: TVPlaylist, width: CGFloat) -> some View {
-        TVArtworkCardLabel(title: playlist.name, subtitle: tvSongCount(playlist.tracks.count), width: width) {
-            TVPlaylistArtwork(name: playlist.name,
-                              artworkURLs: client.artworkURLs(for: playlist, token: token),
-                              token: token)
-        }
     }
 }
 
@@ -232,38 +180,33 @@ struct TVPlaylistDetailView: View {
         let current = current
         let queue: [TVPlayable] = current.tracks.compactMap { client.playable(from: $0, token: token) }
         let urls = client.artworkURLs(for: current, token: token)
-        ScrollView {
-            VStack(alignment: .leading, spacing: 40) {
-                TVDetailHeader(
-                    eyebrow: "Playlist",
-                    title: current.name,
-                    subtitle: current.description,
-                    meta: meta(playableCount: queue.count, totalCount: current.tracks.count)
-                ) {
-                    TVPlaylistArtwork(name: current.name, artworkURLs: urls, token: token, showsTitle: false)
-                } actions: {
-                    if let first = queue.first {
-                        NavigationLink(value: TVPlayContext(queue: queue, startID: first.id)) {
-                            TVPillLabel(title: "Play", systemImage: "play.fill")
-                        }
-                        .buttonStyle(.plain)
-                        .focusEffectDisabled()
-                    }
+        TVGatefold(
+            eyebrow: "Mixtape",
+            title: current.name,
+            subtitle: current.description,
+            meta: meta(playableCount: queue.count, totalCount: current.tracks.count)
+        ) {
+            TVPlaylistArtwork(name: current.name, artworkURLs: urls, token: token, showsTitle: false)
+        } actions: {
+            if let first = queue.first {
+                NavigationLink(value: TVPlayContext(queue: queue, startID: first.id)) {
+                    TVPillLabel(title: "Press Play", systemImage: "play.fill")
                 }
-
-                if current.tracks.isEmpty {
-                    TVEmptyState(systemImage: "music.note.list",
-                                 title: "This playlist is empty",
-                                 message: "Press and hold Select on any song and choose Add to Playlist.")
-                } else {
-                    TVTrackList {
-                        ForEach(current.tracks) { track in
-                            row(for: track, queue: queue)
-                        }
+                .buttonStyle(.plain)
+                .focusEffectDisabled()
+            }
+        } tracks: {
+            if current.tracks.isEmpty {
+                TVEmptyState(systemImage: "recordingtape",
+                             title: "A blank tape",
+                             message: "Press and hold Select on any song and choose Add to Playlist.")
+            } else {
+                TVTrackList {
+                    ForEach(current.tracks) { track in
+                        row(for: track, queue: queue)
                     }
                 }
             }
-            .padding(.bottom, 80)
         }
         .background(TVCollectionBackdrop(url: urls.first, token: token))
     }
@@ -344,5 +287,148 @@ struct TVPlaylistNameSheet: View {
             }
         }
         .onAppear { name = initialName }
+    }
+}
+
+// MARK: - Cassette
+
+/// A playlist as a cassette tape: the shell, a label in the playlist's own
+/// colour with its name and a strip of its covers, and the two reels in the
+/// window — which spin while the tape has focus.
+struct TVCassetteLabel: View {
+    let name: String
+    let detail: String
+    let artworkURLs: [URL]
+    let token: String
+    let width: CGFloat
+    var isBlank: Bool = false
+
+    @Environment(\.isFocused) private var isFocused
+    @Environment(\.tvTheme) private var theme
+    @State private var spin = false
+
+    private var height: CGFloat { width * 0.64 }
+
+    /// The label colour, stable per name.
+    private var labelColor: Color {
+        let hues: [Double] = [0.0, 0.07, 0.13, 0.33, 0.5, 0.58, 0.72, 0.85, 0.93]
+        var h: UInt32 = 2_166_136_261
+        for s in name.unicodeScalars { h = (h ^ s.value) &* 16_777_619 }
+        return Color(hue: hues[Int(h % UInt32(hues.count))], saturation: 0.55, brightness: 0.92)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            ZStack {
+                // Shell
+                RoundedRectangle(cornerRadius: width * 0.05, style: .continuous)
+                    .fill(LinearGradient(colors: [Color(white: 0.2), Color(white: 0.09)],
+                                         startPoint: .top, endPoint: .bottom))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: width * 0.05, style: .continuous)
+                            .strokeBorder(isFocused ? AnyShapeStyle(TVPalette.brand) : AnyShapeStyle(Color.white.opacity(0.12)),
+                                          lineWidth: isFocused ? 3 : 1)
+                    }
+                // Corner screws
+                ForEach(0..<4, id: \.self) { i in
+                    Circle()
+                        .fill(Color(white: 0.32))
+                        .frame(width: width * 0.025, height: width * 0.025)
+                        .position(x: i % 2 == 0 ? width * 0.05 : width * 0.95,
+                                  y: i < 2 ? height * 0.07 : height * 0.93)
+                }
+                // Label
+                VStack(spacing: 0) {
+                    HStack(spacing: width * 0.03) {
+                        Text(name)
+                            .font(.system(size: max(16, width * 0.062), weight: .bold, design: theme.design))
+                            .foregroundStyle(Color.black.opacity(0.82))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.6)
+                        Spacer(minLength: 0)
+                        Text(isBlank ? "C-90" : "A")
+                            .font(.system(size: max(14, width * 0.05), weight: .black, design: .monospaced))
+                            .foregroundStyle(Color.black.opacity(0.55))
+                    }
+                    .padding(.horizontal, width * 0.05)
+                    .frame(height: height * 0.2)
+                    Rectangle().fill(isBlank ? Color.gray.opacity(0.3) : Color.black.opacity(0.18)).frame(height: 2)
+                    // Window with the reels
+                    ZStack {
+                        RoundedRectangle(cornerRadius: width * 0.03)
+                            .fill(Color.black.opacity(0.82))
+                        HStack(spacing: width * 0.22) {
+                            reel
+                            reel
+                        }
+                        // The tape between the reels.
+                        Rectangle()
+                            .fill(Color(red: 0.25, green: 0.15, blue: 0.1))
+                            .frame(width: width * 0.22, height: height * 0.035)
+                    }
+                    .frame(width: width * 0.62, height: height * 0.3)
+                    .padding(.vertical, height * 0.05)
+                    // A strip of the tape's covers, like a hand-made J-card.
+                    HStack(spacing: 2) {
+                        ForEach(Array(artworkURLs.prefix(4).enumerated()), id: \.offset) { _, url in
+                            TVAuthImage(url: url, token: token) { Color.black.opacity(0.2) }
+                                .frame(width: height * 0.13, height: height * 0.13)
+                                .clipped()
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, width * 0.05)
+                    .frame(height: height * 0.13)
+                }
+                .padding(.vertical, height * 0.04)
+                .background {
+                    RoundedRectangle(cornerRadius: width * 0.03, style: .continuous)
+                        .fill(isBlank ? Color(white: 0.9) : labelColor)
+                }
+                .padding(.horizontal, width * 0.07)
+                .padding(.top, height * 0.1)
+                .padding(.bottom, height * 0.2)
+                // The trapezoid at the bottom of the shell.
+                Path { p in
+                    p.move(to: CGPoint(x: width * 0.22, y: height))
+                    p.addLine(to: CGPoint(x: width * 0.28, y: height * 0.84))
+                    p.addLine(to: CGPoint(x: width * 0.72, y: height * 0.84))
+                    p.addLine(to: CGPoint(x: width * 0.78, y: height))
+                }
+                .fill(Color(white: 0.14))
+            }
+            .frame(width: width, height: height)
+            .shadow(color: isFocused ? theme.primary.opacity(0.5) : .black.opacity(0.5),
+                    radius: isFocused ? 30 : 12, y: isFocused ? 18 : 8)
+            .scaleEffect(isFocused ? 1.06 : 1)
+            .rotationEffect(.degrees(isFocused ? 0 : -1.2))
+
+            Text(detail)
+                .font(TVType.meta)
+                .foregroundStyle(isFocused ? TVPalette.textSecondary : TVPalette.textTertiary)
+                .frame(width: width, alignment: .leading)
+        }
+        .animation(.spring(response: 0.32, dampingFraction: 0.78), value: isFocused)
+        .onChange(of: isFocused) { focused in
+            spin = focused
+        }
+    }
+
+    /// One reel: a white hub with six teeth. Spins (a transform, cheap) while
+    /// the tape is focused.
+    private var reel: some View {
+        ZStack {
+            Circle().fill(Color(red: 0.25, green: 0.15, blue: 0.1)).frame(width: height * 0.26, height: height * 0.26)
+            Circle().fill(Color.white.opacity(0.9)).frame(width: height * 0.13, height: height * 0.13)
+            ForEach(0..<6, id: \.self) { i in
+                Rectangle()
+                    .fill(Color.black.opacity(0.8))
+                    .frame(width: height * 0.016, height: height * 0.04)
+                    .offset(y: -height * 0.045)
+                    .rotationEffect(.degrees(Double(i) * 60))
+            }
+        }
+        .rotationEffect(.degrees(spin ? 360 : 0))
+        .animation(spin ? .linear(duration: 2.2).repeatForever(autoreverses: false) : .easeOut(duration: 0.4), value: spin)
     }
 }

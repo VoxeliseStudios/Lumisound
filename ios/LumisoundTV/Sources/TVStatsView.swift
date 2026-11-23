@@ -13,6 +13,7 @@ import SwiftUI
 struct TVStatsView: View {
     @ObservedObject var client: TVBridgeClient
     let token: String
+    @Environment(\.tvTheme) private var theme
 
     /// The badge whose "how to unlock" detail sheet is currently presented —
     /// same shape as `AchievementsView.selectedBadge` on iOS.
@@ -24,7 +25,16 @@ struct TVStatsView: View {
                 TVLoadingState(text: "Loading your stats…")
             } else {
                 VStack(alignment: .leading, spacing: TVMetrics.section) {
-                    TVScreenTitle(title: "Listening Stats", eyebrow: "Account")
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("THE SCOREBOARD")
+                            .font(TVType.eyebrow)
+                            .tracking(theme.tracking)
+                            .foregroundStyle(TVPalette.neonAlt)
+                        Text("Listening Stats")
+                            .font(theme.display(58))
+                    }
+                    .padding(.horizontal, TVMetrics.margin)
+                    .padding(.top, 36)
                     lifetimeSection.padding(.horizontal, TVMetrics.margin)
                     HStack(alignment: .top, spacing: 40) {
                         weeklySection
@@ -69,11 +79,8 @@ struct TVStatsView: View {
                 .frame(width: 76, height: 76)
                 .background(Circle().fill(TVPalette.brand))
                 .shadow(color: TVPalette.violet.opacity(0.5), radius: 16, y: 6)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(value)
-                    .font(.system(size: 64, weight: .heavy, design: .rounded).monospacedDigit())
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.5)
+            VStack(alignment: .leading, spacing: 10) {
+                TVSplitFlapText(text: value)
                 Text(label.uppercased())
                     .font(TVType.eyebrow)
                     .tracking(2)
@@ -112,7 +119,7 @@ struct TVStatsView: View {
                 .frame(width: 40)
             VStack(alignment: .leading, spacing: 0) {
                 Text(streakLabel(days))
-                    .font(.system(size: 34, weight: .bold, design: .rounded).monospacedDigit())
+                    .font(.system(size: 34, weight: .bold, design: TVTheme.current.design).monospacedDigit())
                 Text(label)
                     .font(TVType.rowDetail)
                     .foregroundStyle(TVPalette.textTertiary)
@@ -123,7 +130,7 @@ struct TVStatsView: View {
     @ViewBuilder
     private var topArtistsShelf: some View {
         if let stats = client.stats, !stats.topArtists.isEmpty {
-            TVShelfSection(title: "Top Artists", subtitle: "Who you play most") {
+            TVShelfSection(title: "The Charts · Artists", subtitle: "Who you play most") {
                 ForEach(Array(stats.topArtists.enumerated()), id: \.element.id) { index, artist in
                     rankCard(rank: index + 1, primary: artist.artist, secondary: nil, count: artist.playCount)
                 }
@@ -134,7 +141,7 @@ struct TVStatsView: View {
     @ViewBuilder
     private var topTracksShelf: some View {
         if let stats = client.stats, !stats.topTracks.isEmpty {
-            TVShelfSection(title: "Top Tracks", subtitle: "Your most-played songs") {
+            TVShelfSection(title: "The Charts · Songs", subtitle: "Your most-played songs") {
                 ForEach(Array(stats.topTracks.enumerated()), id: \.element.id) { index, track in
                     rankCard(rank: index + 1, primary: track.title, secondary: track.artist, count: track.playCount)
                 }
@@ -151,7 +158,7 @@ struct TVStatsView: View {
             LinearGradient(colors: [.clear, .black.opacity(0.65)], startPoint: .center, endPoint: .bottom)
             VStack(alignment: .leading, spacing: 4) {
                 Text("\(rank)")
-                    .font(.system(size: 64, weight: .heavy, design: .rounded))
+                    .font(.system(size: 64, weight: .heavy, design: TVTheme.current.design))
                     .foregroundStyle(.white)
                     .shadow(color: .black.opacity(0.3), radius: 8, y: 3)
                 Spacer(minLength: 0)
@@ -203,7 +210,7 @@ struct TVStatsView: View {
                                 .shadow(color: day.listenSeconds > 0 ? TVPalette.violet.opacity(0.4) : .clear,
                                         radius: 10, y: 4)
                             Text(weekdayLabel(day.date))
-                                .font(.system(size: 17, weight: .semibold, design: .rounded))
+                                .font(.system(size: 17, weight: .semibold, design: TVTheme.current.design))
                                 .foregroundStyle(TVPalette.textTertiary)
                         }
                     }
@@ -261,7 +268,7 @@ struct TVStatsView: View {
             .frame(width: 100, height: 100)
             .shadow(color: isUnlocked ? TVPalette.violet.opacity(0.5) : .clear, radius: 18, y: 6)
             Text(badge.title)
-                .font(.system(size: 18, weight: .semibold, design: .rounded))
+                .font(.system(size: 18, weight: .semibold, design: TVTheme.current.design))
                 .multilineTextAlignment(.center)
                 .lineLimit(2, reservesSpace: true)
                 .foregroundStyle(isUnlocked ? Color.white : TVPalette.textTertiary)
@@ -287,23 +294,23 @@ struct TVStatsView: View {
             .padding(.top, 20)
 
             Text(badge.title)
-                .font(.system(size: 36, weight: .bold, design: .rounded))
+                .font(.system(size: 36, weight: .bold, design: TVTheme.current.design))
                 .foregroundStyle(Color.white)
 
             HStack(spacing: 8) {
                 Image(systemName: isUnlocked ? "checkmark.seal.fill" : "lock.fill")
                 Text(isUnlocked ? "Unlocked" : "Locked")
             }
-            .font(.system(size: 20, weight: .semibold, design: .rounded))
+            .font(.system(size: 20, weight: .semibold, design: TVTheme.current.design))
             .foregroundStyle(isUnlocked ? AnyShapeStyle(TVPalette.brand) : AnyShapeStyle(TVPalette.textTertiary))
 
             VStack(spacing: 10) {
                 Text("HOW TO EARN THIS")
-                    .font(.system(size: 15, weight: .semibold, design: .rounded))
+                    .font(.system(size: 15, weight: .semibold, design: TVTheme.current.design))
                     .foregroundStyle(TVPalette.textTertiary)
                     .kerning(1.2)
                 Text(badge.requirement)
-                    .font(.system(size: 22, design: .rounded))
+                    .font(.system(size: 22, design: TVTheme.current.design))
                     .multilineTextAlignment(.center)
                     .foregroundStyle(Color.white.opacity(0.9))
                     .fixedSize(horizontal: false, vertical: true)
@@ -410,4 +417,42 @@ struct TVBadge: Identifiable {
         TVBadge(id: "shuffle_master", title: "Shuffle Master", icon: "shuffle",
                 requirement: "Listen to a long shuffled session with shuffle mode turned on."),
     ]
+}
+
+// MARK: - Split-flap
+
+/// A value on a split-flap (Solari) board: each character on its own flap,
+/// with the hinge line across the middle. Characters flip in when the value
+/// changes.
+struct TVSplitFlapText: View {
+    let text: String
+    var flapWidth: CGFloat = 54
+    var flapHeight: CGFloat = 78
+
+    @Environment(\.tvTheme) private var theme
+
+    var body: some View {
+        HStack(spacing: 5) {
+            ForEach(Array(text.enumerated()), id: \.offset) { _, ch in
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(LinearGradient(colors: [Color(white: 0.16), Color(white: 0.08)],
+                                             startPoint: .top, endPoint: .bottom))
+                    Text(String(ch))
+                        .font(.system(size: flapHeight * 0.62, weight: .heavy, design: .monospaced))
+                        .foregroundStyle(Color(red: 0.98, green: 0.95, blue: 0.85))
+                        .id(String(ch))
+                        .transition(.asymmetric(insertion: .move(edge: .top).combined(with: .opacity),
+                                                removal: .move(edge: .bottom).combined(with: .opacity)))
+                    Rectangle()
+                        .fill(Color.black.opacity(0.75))
+                        .frame(height: 2)
+                }
+                .frame(width: flapWidth, height: flapHeight)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .shadow(color: .black.opacity(0.5), radius: 4, y: 3)
+            }
+        }
+        .animation(.spring(response: 0.35, dampingFraction: 0.8), value: text)
+    }
 }

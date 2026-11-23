@@ -6,40 +6,43 @@ struct TVContentView: View {
     @StateObject private var account = TVAccount.shared
     @StateObject private var client = TVBridgeClient.shared
     // Adopted here (not constructed) for the same reason `client`/`account`
-    // are — see TVPlayerModel.shared's doc comment. Not otherwise used
-    // directly in this view; holding the reference here just keeps it
-    // consistent with the rest of this file's root-level singleton pattern.
+    // are — see TVPlayerModel.shared's doc comment.
     @StateObject private var player = TVPlayerModel.shared
+    @StateObject private var themeStore = TVThemeStore.shared
     @State private var selection: TVDestination = .home
 
     var body: some View {
-        if account.isLoggedIn, let token = account.token {
+        Group {
+            if account.isLoggedIn, let token = account.token {
+                signedIn(token: token)
+            } else {
+                TVLoginView(account: account)
+            }
+        }
+        // Every view that reads `\.tvTheme` restyles the moment the theme
+        // changes (Settings → Appearance), without rebuilding the navigation.
+        .environment(\.tvTheme, themeStore.theme)
+    }
+
+    @ViewBuilder
+    private func signedIn(token: String) -> some View {
             NavigationStack {
-                // Three columns: navigation | content | what's playing.
+                // The marquee across the top, the screen below at full width.
                 //
-                // This replaces a top nav bar over a full-width content area with
-                // a mini-player strip inset across the bottom. Side by side, a
-                // left/right move changes region and an up/down move stays inside
-                // one, so navigation is no longer in the path of scrolling a list
-                // and the player is no longer in the path of leaving it.
-                //
-                // The player column is composed with a plain `if`. v1.7.0 pinned
-                // the player as a `safeAreaInset` that rendered an empty view when
-                // nothing was playing, and wrapped it in a focus section — a
-                // zero-size focus section inside a safe-area inset, in exactly the
-                // state the app launches in, which made it relaunch in a loop.
-                // Here, nothing playing means no view at all: nothing to size,
-                // nothing to focus, no empty branch to get wrong.
-                HStack(spacing: 0) {
-                    TVSideRail(
+                // Earlier shells put navigation in a left rail and the player in a
+                // right column; both took width from every screen and the player
+                // column had to be hidden on Search because the system keyboard
+                // drew over it. Here the only chrome is one strip, and what's
+                // playing lives in its On Air pill.
+                VStack(spacing: 0) {
+                    TVMarqueeBar(
                         selection: $selection,
-                        accountName: account.user?.name ?? "Account",
-                        accountBadge: client.notifications.filter(\.isUnread).count,
+                        player: player,
+                        client: client,
+                        token: token,
                         user: account.user,
-                        baseURL: client.baseURL
+                        accountBadge: client.notifications.filter(\.isUnread).count
                     )
-                    // Above the content column, so the focused item's floating
-                    // name label paints over it rather than under it.
                     .zIndex(1)
 
                     ZStack {
@@ -58,30 +61,9 @@ struct TVContentView: View {
                             TVAccountView(client: client, account: account, token: token)
                         }
                     }
-                    .frame(maxWidth: .infinity)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .focusSection()
-
-                    // The player column is HIDDEN on Search.
-                    //
-                    // tvOS's search surface brings the system keyboard, which it
-                    // lays out across the full width of the window regardless of
-                    // what else is on screen — so with the card present the
-                    // keyboard drew straight over it and over the rail, which is
-                    // the overlap in the 1.13.2 screenshot. Nothing in the app
-                    // can reposition a system keyboard, so the fix is to give the
-                    // screen the width it is going to take anyway.
-                    //
-                    // Hidden for the full player too: that screen is pushed over
-                    // this shell and already shows everything the card does.
-                    if player.current != nil,
-                       !player.isShowingFullPlayer,
-                       selection != .search {
-                        TVNowPlayingPanel(model: player, client: client, token: token)
-                            .transition(.move(edge: .trailing))
-                    }
                 }
-                .animation(.easeOut(duration: 0.3), value: player.current == nil)
-                .animation(.easeOut(duration: 0.25), value: selection == .search)
                 .background(TVAmbientBackground())
                 .navigationDestination(for: TVPlayContext.self) { ctx in
                     TVPlayerView(context: ctx, client: client, token: token)
@@ -108,9 +90,6 @@ struct TVContentView: View {
             .onChange(of: selection) { newValue in
                 TVAdvancedTelemetry.noteScreen(newValue.rawValue)
             }
-        } else {
-            TVLoginView(account: account)
-        }
     }
 }
 
@@ -147,8 +126,7 @@ struct TVSearchView: View {
             ScrollView { emptyState }
         } else {
             VStack(alignment: .leading, spacing: 0) {
-                TVSectionHeader(title: "Results",
-                                subtitle: "\(client.results.count) matches for “\(query)”")
+                TVSignalHeader(query: query, count: client.results.count)
                     .padding(.horizontal, TVMetrics.margin)
                     .padding(.top, 20)
                 TVCardGrid(items: client.results) { track, cell in
@@ -185,15 +163,15 @@ struct TVSearchView: View {
     private var emptyState: some View {
         VStack(alignment: .leading, spacing: 30) {
             TVEmptyState(
-                systemImage: "waveform.and.magnifyingglass",
-                title: "Find anything",
-                message: "Search YouTube by song, artist or album — or press the microphone and just say it."
+                systemImage: "antenna.radiowaves.left.and.right",
+                title: "Searching for a signal",
+                message: "Type a song, artist or album — or press the microphone and just say it."
             )
             .padding(.bottom, 20)
 
             if !client.discoverMix.isEmpty {
                 let suggestQueue = client.discoverMix.compactMap { client.playable(from: $0) }
-                TVShelfSection(title: "Try One Of These", subtitle: "Based on your most-played artists") {
+                TVShelfSection(title: "Strong Signals", subtitle: "Picked from the artists you play most") {
                     ForEach(client.discoverMix) { track in
                         NavigationLink(value: TVPlayContext(queue: suggestQueue, startID: track.id)) {
                             TVTrackCard(track: track)
@@ -232,12 +210,20 @@ struct TVTrackCard: View {
     }
 }
 
-// MARK: - Account tab
+// MARK: - Account tab — "Backstage Pass"
+//
+// The account as a backstage pass on a lanyard: the laminate on the left
+// (photo, name, handle, a holographic ALL ACCESS band, the headline numbers
+// stamped on it, and Sign Out), and the "zones" the pass opens on the right —
+// stats, notifications, sessions, Listen Together, settings — with friends'
+// listening and the activity feed underneath.
 
 struct TVAccountView: View {
     @ObservedObject var client: TVBridgeClient
     @ObservedObject var account: TVAccount
     let token: String
+
+    @Environment(\.tvTheme) private var theme
 
     private var unreadNotificationCount: Int {
         client.notifications.filter(\.isUnread).count
@@ -245,105 +231,123 @@ struct TVAccountView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: TVMetrics.section) {
-                profileHeader
-                    // Its own focus region: Sign Out is the only control in it
-                    // and the escape hatch from a bad restored session, so it
-                    // must be reachable from the tiles below with one "up".
+            HStack(alignment: .top, spacing: 60) {
+                TVBackstagePass(account: account, client: client)
+                    // Its own focus region: Sign Out is the escape hatch from
+                    // a bad restored session, so it must be one "left" away.
                     .focusSection()
 
-                VStack(alignment: .leading, spacing: 22) {
-                    TVSectionHeader(title: "Your Account")
-                    HStack(spacing: 28) {
-                        tile("Listening Stats", subtitle: "Plays, streaks, badges",
-                             systemImage: "chart.bar.fill") {
+                VStack(alignment: .leading, spacing: 40) {
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text("ACCESS ZONES")
+                            .font(TVType.eyebrow)
+                            .tracking(theme.tracking)
+                            .foregroundStyle(TVPalette.neonAlt)
+                        zone("A", "Listening Stats", subtitle: "Plays, streaks, badges", systemImage: "chart.bar.fill") {
                             TVStatsView(client: client, token: token)
                         }
-                        tile("Notifications",
+                        zone("B", "Notifications",
                              subtitle: unreadNotificationCount > 0 ? "\(unreadNotificationCount) unread" : "All caught up",
                              systemImage: "bell.fill", badge: unreadNotificationCount) {
                             TVNotificationsView(client: client, token: token)
                         }
-                        tile("Sessions", subtitle: "Devices signed in",
-                             systemImage: "rectangle.stack.badge.person.crop") {
+                        zone("C", "Sessions", subtitle: "Devices signed in", systemImage: "rectangle.stack.badge.person.crop") {
                             TVSessionsView(client: client, account: account, token: token)
                         }
-                        tile("Listen Together", subtitle: TVListenTogether.shared.isInRoom ? "In a room" : "Join a friend",
+                        zone("D", "Listen Together",
+                             subtitle: TVListenTogether.shared.isInRoom ? "In a room now" : "Join a friend's room",
                              systemImage: "person.2.wave.2.fill") {
                             TVListenTogetherView(client: client, token: token)
                         }
-                        tile("Settings", subtitle: "Playback & display",
-                             systemImage: "gearshape.fill") {
+                        zone("E", "Settings", subtitle: "Playback, sound, appearance", systemImage: "slider.horizontal.3") {
                             TVSettingsView()
                         }
                     }
-                }
-                .padding(.horizontal, TVMetrics.margin)
-                .focusSection()
+                    .focusSection()
 
-                if !client.friendsListening.isEmpty {
-                    VStack(alignment: .leading, spacing: 22) {
-                        TVSectionHeader(title: "Friends Listening Now")
-                        TVFriendsListeningCard(friendsListening: client.friendsListening)
+                    if !client.friendsListening.isEmpty {
+                        VStack(alignment: .leading, spacing: 18) {
+                            TVSectionHeader(title: "In the Green Room", subtitle: "Friends listening now")
+                            TVFriendsListeningCard(friendsListening: client.friendsListening)
+                        }
                     }
-                    .frame(maxWidth: 1200, alignment: .leading)
-                    .padding(.horizontal, TVMetrics.margin)
-                }
 
-                VStack(alignment: .leading, spacing: 22) {
-                    TVSectionHeader(title: "Listening Activity",
-                                    subtitle: "What people who share their listening have played")
-                    TVSocialActivityFeed(activity: client.socialActivity)
+                    VStack(alignment: .leading, spacing: 18) {
+                        TVSectionHeader(title: "Overheard",
+                                        subtitle: "What people who share their listening have played")
+                        TVSocialActivityFeed(activity: client.socialActivity)
+                    }
                 }
-                // Bounded: the feed rows contain spacers, which grow to
-                // whatever width they're offered.
-                .frame(maxWidth: 1200, alignment: .leading)
-                .padding(.horizontal, TVMetrics.margin)
+                .frame(maxWidth: 1000, alignment: .leading)
             }
+            .padding(.horizontal, TVMetrics.margin)
+            .padding(.top, 20)
             .padding(.bottom, 80)
         }
         .task {
             if client.notifications.isEmpty { await client.fetchNotifications(token: token) }
             if client.stats == nil { await client.fetchStats(token: token) }
-            // Unlike the two guards above, these ran unconditionally — every
-            // navigation into Account re-issued both round trips (plus
-            // whatever `fetchFriendsListening` itself fans out to for
-            // presence) even when already loaded this session. Same
-            // `.isEmpty` guard shape as `notifications` above; genuinely
-            // having zero friends/activity means this re-fetches each visit,
-            // same accepted tradeoff that row already has.
             if client.friendsListening.isEmpty { await client.fetchFriendsListening(token: token) }
             if client.socialActivity.isEmpty { await client.fetchSocialActivity(token: token) }
         }
     }
 
-    /// The profile as a banner across the top: avatar, name, a couple of
-    /// headline numbers, and Sign Out.
-    private var profileHeader: some View {
-        HStack(alignment: .center, spacing: 40) {
-            TVAvatarView(user: account.user, baseURL: client.baseURL, diameter: 168)
+    @ViewBuilder
+    private func zone<Destination: View>(
+        _ code: String, _ title: String, subtitle: String, systemImage: String, badge: Int = 0,
+        @ViewBuilder destination: () -> Destination
+    ) -> some View {
+        NavigationLink {
+            destination()
+        } label: {
+            TVZoneLabel(code: code, title: title, subtitle: subtitle, systemImage: systemImage, badge: badge)
+        }
+        .buttonStyle(.plain)
+        .focusEffectDisabled()
+    }
+}
 
-            VStack(alignment: .leading, spacing: 10) {
-                Text("SIGNED IN")
-                    .font(TVType.eyebrow)
-                    .tracking(2.4)
-                    .foregroundStyle(TVPalette.neonAlt)
-                Text(account.user?.name ?? "Signed in")
-                    .font(TVType.display)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.6)
-                if let username = account.user?.username, !username.isEmpty {
-                    Text("@\(username)")
-                        .font(TVType.rowDetail)
-                        .foregroundStyle(TVPalette.textSecondary)
+/// The laminate. Fixed size: a label in a tvOS button is offered unlimited
+/// width, and the pass is the one thing on the screen that must not grow.
+private struct TVBackstagePass: View {
+    @ObservedObject var account: TVAccount
+    @ObservedObject var client: TVBridgeClient
+
+    @Environment(\.tvTheme) private var theme
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Lanyard clip
+            Capsule()
+                .fill(Color.black.opacity(0.65))
+                .frame(width: 110, height: 22)
+                .overlay(Capsule().strokeBorder(Color.white.opacity(0.18), lineWidth: 1))
+                .padding(.top, 22)
+
+            TVAvatarView(user: account.user, baseURL: client.baseURL, diameter: 170)
+                .padding(.top, 26)
+
+            Text(account.user?.name ?? "Signed in")
+                .font(theme.display(40))
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
+                .padding(.top, 18)
+                .padding(.horizontal, 24)
+            if let username = account.user?.username, !username.isEmpty {
+                Text("@\(username)")
+                    .font(TVType.rowDetail)
+                    .foregroundStyle(TVPalette.textSecondary)
+            }
+
+            TVHoloBand(text: "ALL ACCESS")
+                .padding(.top, 22)
+
+            if let stats = client.stats {
+                HStack(spacing: 14) {
+                    stamp(value: "\(stats.totalPlays)", label: "PLAYS")
+                    stamp(value: listenHours(stats.totalListenSeconds), label: "HOURS")
                 }
-                if let stats = client.stats {
-                    HStack(spacing: 14) {
-                        statPill("\(stats.totalPlays) plays", systemImage: "play.fill")
-                        statPill(listenTime(stats.totalListenSeconds), systemImage: "clock.fill")
-                    }
-                    .padding(.top, 6)
-                }
+                .padding(.top, 22)
             }
 
             Spacer(minLength: 20)
@@ -356,100 +360,152 @@ struct TVAccountView: View {
             }
             .buttonStyle(.plain)
             .focusEffectDisabled()
+            .padding(.bottom, 30)
         }
-        .padding(40)
+        .frame(width: 460, height: 800)
         .background {
-            ZStack {
-                RoundedRectangle(cornerRadius: 36, style: .continuous)
-                    .fill(TVPalette.brand)
-                    .opacity(0.35)
-                RoundedRectangle(cornerRadius: 36, style: .continuous)
-                    .fill(.ultraThinMaterial)
-                    .opacity(0.6)
-            }
+            RoundedRectangle(cornerRadius: 34, style: .continuous)
+                .fill(LinearGradient(colors: [theme.raised, theme.surface, theme.ground],
+                                     startPoint: .top, endPoint: .bottom))
         }
         .overlay {
-            RoundedRectangle(cornerRadius: 36, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
+            // The laminate's sheen.
+            RoundedRectangle(cornerRadius: 34, style: .continuous)
+                .fill(LinearGradient(colors: [.white.opacity(0.12), .clear, .white.opacity(0.05)],
+                                     startPoint: .topLeading, endPoint: .bottomTrailing))
+                .allowsHitTesting(false)
         }
-        .padding(.horizontal, TVMetrics.margin)
-        .padding(.top, 40)
-    }
-
-    private func statPill(_ text: String, systemImage: String) -> some View {
-        Label(text, systemImage: systemImage)
-            .font(.system(size: 19, weight: .semibold, design: .rounded))
-            .foregroundStyle(.white.opacity(0.85))
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
-            .background(Color.white.opacity(0.1), in: Capsule())
-    }
-
-    private func listenTime(_ seconds: Int) -> String {
-        let hours = seconds / 3600
-        if hours > 0 { return "\(hours)h listened" }
-        return "\((seconds % 3600) / 60)m listened"
-    }
-
-    @ViewBuilder
-    private func tile<Destination: View>(
-        _ title: String, subtitle: String, systemImage: String, badge: Int = 0,
-        @ViewBuilder destination: () -> Destination
-    ) -> some View {
-        NavigationLink {
-            destination()
-        } label: {
-            TVAccountTileLabel(title: title, subtitle: subtitle,
-                               systemImage: systemImage, badge: badge)
+        .overlay {
+            RoundedRectangle(cornerRadius: 34, style: .continuous)
+                .strokeBorder(TVPalette.brand, lineWidth: 2)
         }
-        .buttonStyle(.plain)
-        .focusEffectDisabled()
+        .shadow(color: theme.primary.opacity(0.35), radius: 40, y: 20)
+        .rotationEffect(.degrees(-1.5))
+    }
+
+    private func stamp(value: String, label: String) -> some View {
+        VStack(spacing: 2) {
+            Text(value)
+                .font(theme.display(30, .black).monospacedDigit())
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
+            Text(label)
+                .font(.system(size: 13, weight: .black, design: .monospaced))
+                .tracking(2)
+                .foregroundStyle(TVPalette.textTertiary)
+        }
+        .frame(width: 160, height: 92)
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(TVPalette.neon.opacity(0.6), style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
+        }
+        .rotationEffect(.degrees(label == "PLAYS" ? -3 : 2.5))
+    }
+
+    private func listenHours(_ seconds: Int) -> String {
+        let h = Double(seconds) / 3600
+        return h >= 10 ? "\(Int(h))" : String(format: "%.1f", h)
     }
 }
 
-/// One Account tile. A FIXED width: a label inside a tvOS button is offered an
-/// unconstrained width, and a greedy one grows past the screen — where the
-/// focus engine cannot reach it. Four of these fit the content column even
-/// with the Now Playing card open.
-private struct TVAccountTileLabel: View {
+/// A holographic band: a stripe of the theme's lights that shimmers slowly
+/// sideways (an offset of a static gradient — a cheap transform at 60 fps).
+private struct TVHoloBand: View {
+    let text: String
+    @Environment(\.tvTheme) private var theme
+
+    var body: some View {
+        TimelineView(.animation) { ctx in
+            let phase = CGFloat(ctx.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 6) / 6)
+            ZStack {
+                LinearGradient(colors: [theme.primary, .white.opacity(0.85), theme.secondary, theme.lift, theme.primary],
+                               startPoint: .leading, endPoint: .trailing)
+                    .frame(width: 920)
+                    .offset(x: -230 + 460 * phase)
+                Text(text)
+                    .font(.system(size: 22, weight: .black, design: .monospaced))
+                    .tracking(8)
+                    .foregroundStyle(Color.black.opacity(0.75))
+            }
+            .frame(width: 460, height: 52)
+            .clipped()
+        }
+        .frame(width: 460, height: 52)
+    }
+}
+
+/// An access zone row: the zone letter in a block, the title and subtitle,
+/// a badge when something waits there.
+private struct TVZoneLabel: View {
+    let code: String
     let title: String
     let subtitle: String
     let systemImage: String
     var badge: Int = 0
 
     @Environment(\.isFocused) private var isFocused
+    @Environment(\.tvTheme) private var theme
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .top) {
-                Image(systemName: systemImage)
-                    .font(.system(size: 28, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 64, height: 64)
-                    .background(Circle().fill(TVPalette.brand))
-                    .shadow(color: TVPalette.violet.opacity(0.5), radius: 12, y: 4)
-                Spacer(minLength: 0)
-                if badge > 0 {
-                    Text("\(badge)")
-                        .font(.system(size: 17, weight: .bold, design: .rounded))
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 5)
-                        .background(Capsule().fill(Color(red: 0.96, green: 0.33, blue: 0.47)))
+        HStack(spacing: 22) {
+            Text(code)
+                .font(theme.display(34, .black))
+                .foregroundStyle(isFocused ? Color.black : theme.ground)
+                .frame(width: 74, height: 74)
+                .background(RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(isFocused ? AnyShapeStyle(Color.white) : AnyShapeStyle(TVPalette.brand)))
+            VStack(alignment: .leading, spacing: 4) {
+                Text("ZONE \(code) · \(title.uppercased())")
+                    .font(.system(size: 13, weight: .black, design: .monospaced))
+                    .foregroundStyle(TVPalette.textTertiary)
+                Text(title)
+                    .font(.system(size: 26, weight: .bold))
+                Text(subtitle)
+                    .font(TVType.rowDetail)
+                    .foregroundStyle(TVPalette.textSecondary)
+            }
+            Spacer(minLength: 10)
+            if badge > 0 {
+                Text("\(badge)")
+                    .font(.system(size: 18, weight: .bold, design: TVTheme.current.design))
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 6)
+                    .background(Capsule().fill(Color(red: 0.96, green: 0.33, blue: 0.47)))
+            }
+            Image(systemName: systemImage)
+                .font(.system(size: 24, weight: .semibold))
+                .foregroundStyle(isFocused ? TVPalette.neon : TVPalette.textTertiary)
+        }
+        .padding(18)
+        .frame(width: 900)
+        .tvNeonCard(cornerRadius: 26, isFocused: isFocused)
+    }
+}
+
+/// "12 results for 'x'" as signal strength.
+private struct TVSignalHeader: View {
+    let query: String
+    let count: Int
+    @Environment(\.tvTheme) private var theme
+
+    var body: some View {
+        HStack(alignment: .bottom, spacing: 18) {
+            HStack(alignment: .bottom, spacing: 5) {
+                ForEach(0..<5, id: \.self) { i in
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(i < min(5, max(1, count / 4 + 1)) ? AnyShapeStyle(TVPalette.brandVertical) : AnyShapeStyle(Color.white.opacity(0.12)))
+                        .frame(width: 8, height: CGFloat(10 + i * 7))
                 }
             }
-            Spacer(minLength: 16)
-            Text(title)
-                .font(.system(size: 25, weight: .bold, design: .rounded))
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-            Text(subtitle)
-                .font(.system(size: 18))
-                .foregroundStyle(TVPalette.textTertiary)
-                .lineLimit(1)
-                .padding(.top, 2)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("SIGNAL ACQUIRED")
+                    .font(TVType.eyebrow)
+                    .tracking(theme.tracking)
+                    .foregroundStyle(TVPalette.neonAlt)
+                Text("\(count) \(count == 1 ? "match" : "matches") for “\(query)”")
+                    .font(TVType.section)
+                    .lineLimit(1)
+            }
         }
-        .padding(24)
-        .frame(width: 262, height: 200, alignment: .topLeading)
-        .tvNeonCard(cornerRadius: 26, isFocused: isFocused)
     }
 }

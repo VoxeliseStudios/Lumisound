@@ -115,7 +115,7 @@ struct TVTrackRow: View {
     private var leading: some View {
         if let trackNumber {
             Text("\(trackNumber)")
-                .font(.system(size: 22, weight: .semibold, design: .rounded).monospacedDigit())
+                .font(.system(size: 22, weight: .semibold, design: TVTheme.current.design).monospacedDigit())
                 .foregroundStyle(isFocused ? Color.white : TVPalette.textTertiary)
                 .frame(width: 50, alignment: .center)
         } else {

@@ -24,7 +24,7 @@ struct TVAvatarView: View {
             ZStack {
                 TVGeneratedArt(seed: user?.name ?? "", systemImage: "person.fill")
                 Text(String((user?.name ?? "?").prefix(1)).uppercased())
-                    .font(.system(size: diameter * 0.42, weight: .heavy, design: .rounded))
+                    .font(.system(size: diameter * 0.42, weight: .heavy, design: TVTheme.current.design))
                     .foregroundStyle(.white)
             }
         }
@@ -162,7 +162,7 @@ struct TVSocialActivityFeed: View {
                             ZStack {
                                 TVGeneratedArt(seed: entry.name, systemImage: "person.fill")
                                 Text(String(entry.name.prefix(1)).uppercased())
-                                    .font(.system(size: 24, weight: .heavy, design: .rounded))
+                                    .font(.system(size: 24, weight: .heavy, design: TVTheme.current.design))
                             }
                         }
                         .frame(width: 56, height: 56)

@@ -139,7 +139,7 @@ struct TVLyricsPanel: View {
 
     private func lyricLine(line: TVLyricLine, isCurrent: Bool) -> some View {
         Text(line.text.isEmpty ? "♪" : line.text)
-            .font(.system(size: isCurrent ? 50 : 40, weight: .bold, design: .rounded))
+            .font(.system(size: isCurrent ? 50 : 40, weight: .bold, design: TVTheme.current.design))
             .foregroundStyle(isCurrent ? Color.white : Color.white.opacity(0.3))
             .shadow(color: isCurrent ? TVPalette.violet.opacity(0.6) : .clear, radius: 20)
             .multilineTextAlignment(.center)

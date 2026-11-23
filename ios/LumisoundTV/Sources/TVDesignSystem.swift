@@ -1,33 +1,24 @@
 import SwiftUI
 
-// MARK: - TVDesignSystem — "Prism"
+// MARK: - TVDesignSystem — "Stage"
 //
-// The shared visual language for the tvOS port.
+// The shared visual language for the tvOS app. Every screen is its own set
+// piece (Home is a programme guide, Library a record crate, Playlists a wall
+// of cassettes, Discover a radio dial, Account a backstage pass, Stats a
+// split-flap scoreboard, Settings a mixing desk, Now Playing the stage), and
+// they share four rules:
 //
-// Prism replaces the "neon on indigo" pass. That pass gave the app an identity
-// of its own, but the identity was not *Lumisound's*: cyan rims on an indigo
-// slab matched nothing else the product ships, and outlining every row and card
-// in a lit border meant the outline — not the content — was the loudest thing
-// on every screen. Prism takes its colour straight from the app icon (the
-// violet → blue gradient behind the white waveform bars) and is built on four
-// rules:
-//
-//   1. **Colour is earned.** The ground is a near-black with a violet cast, and
-//      surfaces at rest are quiet glass with no outline at all. The brand
-//      gradient appears only where something is *selected* or *primary* (the
-//      current tab, a Play button, the progress fill), so wherever the gradient
-//      is, that's where the meaning is.
-//   2. **Focus is light, not a border.** A focused element lifts, brightens,
-//      and casts a soft violet glow, with a thin gradient edge. Buttons invert to
-//      a white fill — the tvOS idiom — because a small control needs the
-//      strongest signal; large surfaces (rows, cards) never go white, because a
-//      white slab across a 10-foot screen is a flashbulb.
-//   3. **The backdrop still comes from the music.** `TVAmbientBackground` keeps
-//      rendering the playing artwork blurred behind every screen; Prism only
-//      changes the floor it sits on.
-//   4. **One scale, rounded.** Display and section type use SF Rounded, which
-//      echoes the capsule bars of the logo, and the sizes below are the only
-//      sizes screens should use.
+//   1. **Colour comes from the theme.** `TVTheme` (Settings → Appearance) sets
+//      the ground and the two lights; `TVPalette` below reads it, so every
+//      screen restyles together. Colour still marks meaning: the lights appear
+//      where something is selected or primary.
+//   2. **Focus is light, not a border.** A focused element lifts, brightens
+//      and glows; small controls invert to white (the tvOS idiom); large
+//      surfaces never go white.
+//   3. **The backdrop comes from the music.** `TVAmbientBackground` renders the
+//      playing artwork blurred behind every screen, over the theme's floor.
+//   4. **One type scale.** Display type uses the theme's face (rounded, serif,
+//      monospaced…); the sizes below are the only sizes screens use.
 
 // MARK: Metrics and type scale
 
@@ -48,11 +39,11 @@ enum TVMetrics {
 
 enum TVType {
     /// Screen titles ("Library", "Discover") — one per screen, nothing else.
-    static let display = Font.system(size: 58, weight: .bold, design: .rounded)
+    static var display: Font { TVTheme.current.display(58, .bold) }
     /// Hero/Now Playing track titles.
-    static let hero = Font.system(size: 38, weight: .bold, design: .rounded)
+    static var hero: Font { TVTheme.current.display(38, .bold) }
     /// Section headings inside a screen.
-    static let section = Font.system(size: 30, weight: .bold, design: .rounded)
+    static var section: Font { TVTheme.current.display(30, .bold) }
     /// The primary line of a list row or card.
     static let rowTitle = Font.system(size: 24, weight: .semibold)
     /// Secondary/supporting text — artists, counts, hints.
@@ -62,46 +53,44 @@ enum TVType {
     /// Numeric/trailing metadata: durations, indices, "3 of 40".
     static let meta = Font.system(size: 18, weight: .medium).monospacedDigit()
     /// All-caps kicker above a title.
-    static let eyebrow = Font.system(size: 15, weight: .heavy, design: .rounded)
+    static var eyebrow: Font { .system(size: 15, weight: .heavy, design: TVTheme.current.design) }
 }
 
 // MARK: Palette
 
 enum TVPalette {
-    /// Base ground — near-black with a violet cast, so the brand gradient reads
-    /// as belonging to the surface rather than pasted onto it.
-    static let ground = Color(red: 0.035, green: 0.031, blue: 0.075)
-    /// Quiet raised surface — panels, the rail, sheets.
-    static let surface = Color(red: 0.094, green: 0.086, blue: 0.173)
+    /// Base ground — the theme's near-black floor.
+    static var ground: Color { TVTheme.current.ground }
+    /// Quiet raised surface — panels, sheets.
+    static var surface: Color { TVTheme.current.surface }
     /// A step above `surface` — focused rows, inset wells.
-    static let raised = Color(red: 0.149, green: 0.137, blue: 0.259)
+    static var raised: Color { TVTheme.current.raised }
 
-    /// Brand violet, sampled from the top of the app icon.
-    static let violet = Color(red: 0.545, green: 0.361, blue: 0.965)
-    /// Brand blue, sampled from the bottom of the app icon.
-    static let blue = Color(red: 0.231, green: 0.510, blue: 0.965)
+    /// The theme's first light (was the icon's violet; the name stays so the
+    /// many call sites keep meaning "the primary light").
+    static var violet: Color { TVTheme.current.primary }
+    /// The theme's second light.
+    static var blue: Color { TVTheme.current.secondary }
 
-    /// The brand blue lifted for legibility as text/glyph colour on the dark
-    /// ground. Kept under its old name so callers that meant "the app's light
-    /// accent" keep meaning it.
-    static let neon = Color(red: 0.443, green: 0.643, blue: 1.0)
-    /// The brand violet lifted the same way.
-    static let neonAlt = Color(red: 0.690, green: 0.553, blue: 1.0)
+    /// The second light lifted for legibility as text/glyph colour.
+    static var neon: Color { TVTheme.current.lift }
+    /// The first light lifted the same way.
+    static var neonAlt: Color { TVTheme.current.liftAlt }
 
     static let textSecondary = Color.white.opacity(0.62)
     static let textTertiary = Color.white.opacity(0.38)
 
-    /// The icon's gradient, diagonal — fills, selected states, primary actions.
+    /// Both lights, diagonal — fills, selected states, primary actions.
     static var brand: LinearGradient {
         LinearGradient(colors: [violet, blue], startPoint: .topLeading, endPoint: .bottomTrailing)
     }
 
-    /// The icon's gradient, horizontal — progress bars and meters.
+    /// Both lights, horizontal — progress bars and meters.
     static var brandHorizontal: LinearGradient {
         LinearGradient(colors: [violet, blue], startPoint: .leading, endPoint: .trailing)
     }
 
-    /// The icon's gradient as it actually appears on the icon: top to bottom.
+    /// Both lights, top to bottom.
     static var brandVertical: LinearGradient {
         LinearGradient(colors: [violet, blue], startPoint: .top, endPoint: .bottom)
     }
@@ -351,7 +340,7 @@ struct TVScreenTitle: View {
             if let eyebrow {
                 Text(eyebrow.uppercased())
                     .font(TVType.eyebrow)
-                    .tracking(2.4)
+                    .tracking(TVTheme.current.tracking)
                     .foregroundStyle(TVPalette.neonAlt)
             }
             HStack(alignment: .center, spacing: 22) {
@@ -432,7 +421,7 @@ struct TVGeneratedArt: View {
                     .offset(x: side * 0.08, y: side * 0.06)
                 if let title {
                     Text(title)
-                        .font(.system(size: max(16, side * 0.11), weight: .heavy, design: .rounded))
+                        .font(.system(size: max(16, side * 0.11), weight: .heavy, design: TVTheme.current.design))
                         .foregroundStyle(.white)
                         .lineLimit(3)
                         .minimumScaleFactor(0.6)
@@ -491,7 +480,7 @@ struct TVSectionHeader: View {
 
 // MARK: - Top-level destinations
 //
-// The shell's six destinations, rendered by `TVSideRail`. Kept separate from
+// The shell's six destinations, rendered by `TVMarqueeBar`. Kept separate from
 // whatever draws it, which has changed several times.
 
 enum TVDestination: String, CaseIterable, Identifiable {
@@ -546,7 +535,7 @@ struct TVChip: View {
             Text(title)
                 .lineLimit(1)
         }
-        .font(.system(size: 21, weight: isSelected || isFocused ? .semibold : .medium, design: .rounded))
+        .font(.system(size: 21, weight: isSelected || isFocused ? .semibold : .medium, design: TVTheme.current.design))
         .foregroundStyle(
             isFocused ? Color.black
             : isSelected ? Color.white
@@ -607,7 +596,7 @@ struct TVPillLabel: View {
                     .lineLimit(1)
             }
         }
-        .font(.system(size: 24, weight: .semibold, design: .rounded))
+        .font(.system(size: 24, weight: .semibold, design: TVTheme.current.design))
         .foregroundStyle(isFocused ? Color.black : Color.white)
         .padding(.horizontal, 34)
         .frame(width: width)
@@ -761,7 +750,7 @@ struct TVEmptyState<Action: View>: View {
             .frame(height: 150)
 
             Text(title)
-                .font(.system(size: 34, weight: .bold, design: .rounded))
+                .font(.system(size: 34, weight: .bold, design: TVTheme.current.design))
                 .multilineTextAlignment(.center)
             if let message {
                 Text(message)
@@ -827,103 +816,6 @@ struct TVLoadingBars: View {
         }
         .frame(height: height)
         .onAppear { phase = true }
-    }
-}
-
-// MARK: - Hero banner
-
-/// The big featured treatment at the top of Home and Playlists.
-///
-/// Layout: the artwork, blurred and full-bleed, fills the banner as light; the
-/// same artwork sits crisp on the right as an object; the title and the action
-/// sit on the left over a gradient that fades the light into the ground. The
-/// old banner stretched the artwork edge to edge at full brightness, which
-/// cropped a square cover to a 3:1 strip (usually through someone's face) and
-/// left the title fighting the image for contrast.
-struct TVHeroBanner<Art: View, PlayButton: View>: View {
-    let eyebrow: String
-    let title: String
-    let subtitle: String
-    let art: () -> Art
-    /// The one focusable element in the banner — a caller-supplied
-    /// `NavigationLink` or `Button`. Nesting a button inside a banner that is
-    /// itself a link makes two overlapping focus targets, which tvOS's focus
-    /// engine cannot resolve cleanly.
-    let playButton: () -> PlayButton
-
-    static var height: CGFloat { 540 }
-
-    init(
-        eyebrow: String,
-        title: String,
-        subtitle: String,
-        @ViewBuilder art: @escaping () -> Art,
-        @ViewBuilder playButton: @escaping () -> PlayButton
-    ) {
-        self.eyebrow = eyebrow
-        self.title = title
-        self.subtitle = subtitle
-        self.art = art
-        self.playButton = playButton
-    }
-
-    var body: some View {
-        ZStack(alignment: .leading) {
-            // Light: the artwork as colour, not as picture.
-            art()
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .scaleEffect(1.3)
-                .blur(radius: 70, opaque: true)
-                .saturation(1.3)
-                .overlay(TVPalette.ground.opacity(0.35))
-                .clipped()
-
-            LinearGradient(
-                colors: [TVPalette.ground.opacity(0.95), TVPalette.ground.opacity(0.55), .clear],
-                startPoint: .leading, endPoint: .trailing
-            )
-
-            HStack(alignment: .center, spacing: 56) {
-                VStack(alignment: .leading, spacing: 16) {
-                    Text(eyebrow.uppercased())
-                        .font(TVType.eyebrow)
-                        .tracking(2.6)
-                        .foregroundStyle(TVPalette.neonAlt)
-                    Text(title)
-                        .font(.system(size: 62, weight: .heavy, design: .rounded))
-                        .lineLimit(2)
-                        .minimumScaleFactor(0.6)
-                    Text(subtitle)
-                        .font(.system(size: 26, weight: .medium))
-                        .foregroundStyle(TVPalette.textSecondary)
-                        .lineLimit(1)
-
-                    playButton()
-                        .padding(.top, 18)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-                // Object: the crisp cover.
-                art()
-                    .frame(width: 380, height: 380)
-                    .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 26, style: .continuous)
-                            .strokeBorder(Color.white.opacity(0.15), lineWidth: 1)
-                    }
-                    .shadow(color: .black.opacity(0.55), radius: 40, y: 22)
-                    .rotation3DEffect(.degrees(-8), axis: (x: 0, y: 1, z: 0), perspective: 0.6)
-            }
-            .padding(.horizontal, 56)
-        }
-        .frame(height: Self.height)
-        .clipShape(RoundedRectangle(cornerRadius: 36, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 36, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.08), lineWidth: 1)
-        }
-        .padding(.horizontal, TVMetrics.margin)
-        .padding(.top, 36)
     }
 }
 
@@ -1008,7 +900,7 @@ private struct TVSeeAllLabel: View {
             Image(systemName: "chevron.right")
                 .font(.system(size: 16, weight: .bold))
         }
-        .font(.system(size: 20, weight: .semibold, design: .rounded))
+        .font(.system(size: 20, weight: .semibold, design: TVTheme.current.design))
         .foregroundStyle(isFocused ? Color.black : TVPalette.textSecondary)
         .padding(.horizontal, 22)
         .padding(.vertical, 10)
@@ -1076,49 +968,54 @@ struct TVCardCaption: View {
     }
 }
 
-// MARK: - Detail header
+// MARK: - Gatefold (collection detail layout)
 
-/// The header every collection detail screen shares — album, artist, genre,
-/// playlist, smart playlist: big artwork on the left, then an eyebrow (what
-/// kind of thing this is), the title, a subtitle, a meta line and the actions.
-///
-/// Each of those screens previously laid out its own header with its own
-/// sizes, so the album screen had artwork and the playlist screen had a bare
-/// 40pt title, and moving between them felt like moving between apps.
-struct TVDetailHeader<Art: View, Actions: View>: View {
+/// Every collection detail screen — album, genre, playlist, smart mix — opens
+/// like a gatefold sleeve: the cover on the left with its record sliding out
+/// from behind it, the title and actions under it, and the tracklist down the
+/// right as its own scrolling column. Left and right are separate focus
+/// regions, so moving through a long tracklist never drags the header along
+/// and the Play button is always one press to the left.
+struct TVGatefold<Art: View, Actions: View, Tracks: View>: View {
     let eyebrow: String
     let title: String
     var subtitle: String? = nil
     var meta: String? = nil
-    var artSize: CGFloat = 320
-    var isCircle: Bool = false
     @ViewBuilder var art: () -> Art
     @ViewBuilder var actions: () -> Actions
+    @ViewBuilder var tracks: () -> Tracks
+
+    @Environment(\.tvTheme) private var theme
 
     var body: some View {
-        HStack(alignment: .bottom, spacing: 50) {
-            Group {
-                if isCircle {
-                    art().clipShape(Circle())
-                } else {
-                    art().clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        HStack(alignment: .top, spacing: 40) {
+            VStack(alignment: .leading, spacing: 14) {
+                ZStack(alignment: .leading) {
+                    TVVinylDisc(diameter: 380)
+                        .offset(x: 150)
+                    art()
+                        .frame(width: 400, height: 400)
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
+                        }
+                        .shadow(color: .black.opacity(0.6), radius: 30, x: 10, y: 18)
                 }
-            }
-            .frame(width: artSize, height: artSize)
-            .shadow(color: .black.opacity(0.5), radius: 34, y: 18)
+                .frame(width: 560, height: 400, alignment: .leading)
+                .padding(.bottom, 16)
 
-            VStack(alignment: .leading, spacing: 12) {
                 Text(eyebrow.uppercased())
                     .font(TVType.eyebrow)
-                    .tracking(2.4)
+                    .tracking(theme.tracking)
                     .foregroundStyle(TVPalette.neonAlt)
                 Text(title)
-                    .font(TVType.display)
+                    .font(theme.display(46))
                     .lineLimit(2)
-                    .minimumScaleFactor(0.6)
+                    .minimumScaleFactor(0.55)
                 if let subtitle, !subtitle.isEmpty {
                     Text(subtitle)
-                        .font(.system(size: 26, weight: .medium))
+                        .font(.system(size: 24, weight: .medium))
                         .foregroundStyle(TVPalette.textSecondary)
                         .lineLimit(2)
                 }
@@ -1127,15 +1024,22 @@ struct TVDetailHeader<Art: View, Actions: View>: View {
                         .font(TVType.meta)
                         .foregroundStyle(TVPalette.textTertiary)
                 }
-                HStack(spacing: 22) {
-                    actions()
-                }
-                .padding(.top, 16)
+                HStack(spacing: 20) { actions() }
+                    .padding(.top, 12)
+                Spacer(minLength: 0)
             }
-            Spacer(minLength: 0)
+            .frame(width: 560, alignment: .leading)
+            .padding(.leading, TVMetrics.margin)
+            .padding(.top, 50)
+            .focusSection()
+
+            ScrollView {
+                tracks()
+                    .padding(.top, 50)
+                    .padding(.bottom, 80)
+            }
+            .focusSection()
         }
-        .padding(.horizontal, TVMetrics.margin)
-        .padding(.top, 50)
     }
 }
 

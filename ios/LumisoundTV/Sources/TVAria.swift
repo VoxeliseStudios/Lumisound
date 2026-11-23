@@ -220,7 +220,7 @@ struct TVAriaBlurbView: View {
         HStack(alignment: .top, spacing: 14) {
             TVAriaMark(isAnimating: true)
             Text(text)
-                .font(.system(size: 21, weight: .medium, design: .rounded))
+                .font(.system(size: 21, weight: .medium, design: TVTheme.current.design))
                 .italic()
                 .foregroundStyle(.white.opacity(0.85))
                 .fixedSize(horizontal: false, vertical: true)
@@ -281,7 +281,7 @@ struct TVAriaDailyPickCard: View {
                     .tracking(2.4)
                     .foregroundStyle(TVPalette.neonAlt)
                 Text(pick.pick?.title ?? "")
-                    .font(.system(size: 36, weight: .heavy, design: .rounded))
+                    .font(.system(size: 36, weight: .heavy, design: TVTheme.current.design))
                     .lineLimit(2)
                 Text(pick.pick?.artist ?? "")
                     .font(.system(size: 22, weight: .medium))
@@ -289,7 +289,7 @@ struct TVAriaDailyPickCard: View {
                     .lineLimit(1)
                 if let reason = pick.reason, !reason.isEmpty {
                     Text("“\(reason)”")
-                        .font(.system(size: 21, design: .rounded))
+                        .font(.system(size: 21, design: TVTheme.current.design))
                         .italic()
                         .foregroundStyle(.white.opacity(0.75))
                         .lineLimit(3)

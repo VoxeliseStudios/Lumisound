@@ -77,55 +77,193 @@ func tvGenreGroups(from library: [UserMusicTrack]) -> [TVGenreGroup] {
         }
 }
 
-// MARK: - Albums grid
+// MARK: - Albums: the crate
 
+/// Albums as a crate of records you flip through: sleeves stand tilted back
+/// in a row, the focused one rises upright and its liner notes (artist, length,
+/// the first tracks) appear underneath. Select opens the gatefold.
 struct TVAlbumsGridView: View {
     @ObservedObject var client: TVBridgeClient
     let token: String
     let library: [UserMusicTrack]
 
-    private var columns: [GridItem] { TVGridLayout.columns() }
+    @Environment(\.tvTheme) private var theme
 
     // `tvAlbumGroups` is a `Dictionary(grouping:)` + sort over the WHOLE
-    // library — with a several-thousand-track cloud library, recomputing it
-    // as a plain `let` inline in `body` (as this used to do) meant paying
-    // that full O(n log n) cost on every body re-evaluation, including ones
-    // triggered by unrelated state elsewhere in the view tree (e.g. typing
-    // in the Songs tab's search field re-renders `TVLibraryView`, which
-    // reconstructs this view even while `mode == .albums` isn't showing;
-    // any other `@Published` change on the shared `client` does the same).
-    // Cached in `.task(id:)` instead, same fix as iOS's `SongsTab` got for
-    // its identical A-Z grouping cost — see `sortedSongsCache` there.
+    // library; cached in `.task(id:)` so it isn't redone on every body
+    // evaluation (any `client` publish re-evaluates this view).
     @State private var cachedAlbums: [TVAlbumGroup] = []
+    @FocusState private var focusedAlbum: String?
+    /// The last album that had focus — the liner notes stay put while focus
+    /// visits the dividers.
+    @State private var linerAlbum: TVAlbumGroup?
 
     var body: some View {
         Group {
             if cachedAlbums.isEmpty {
                 TVLoadingState(text: "Gathering albums…")
             } else {
-                TVCardGrid(items: cachedAlbums) { album, cell in
-                    NavigationLink {
-                        TVAlbumDetailView(client: client, token: token, album: album)
-                    } label: {
-                        albumCard(album, width: cell)
-                    }
-                    .buttonStyle(.plain)
-                    .focusEffectDisabled()
+                VStack(alignment: .leading, spacing: 10) {
+                    crate
+                    linerNotes
+                    Spacer(minLength: 0)
                 }
             }
         }
         .task(id: library.count) {
             let library = library
             cachedAlbums = await Task.detached(priority: .userInitiated) { tvAlbumGroups(from: library) }.value
+            if linerAlbum == nil { linerAlbum = cachedAlbums.first }
+        }
+        .onChange(of: focusedAlbum) { id in
+            if let id, let album = cachedAlbums.first(where: { $0.id == id }) { linerAlbum = album }
         }
     }
 
-    private func albumCard(_ album: TVAlbumGroup, width: CGFloat) -> some View {
-        TVArtworkCardLabel(title: album.name, subtitle: album.artistName, width: width) {
-            TVAuthImage(url: client.userMusicArtworkURL(for: album.representativeTrack), token: token) {
-                TVGeneratedArt(seed: album.name, systemImage: "square.stack")
+    private var crate: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            LazyHStack(alignment: .bottom, spacing: -92) {
+                ForEach(cachedAlbums) { album in
+                    NavigationLink {
+                        TVAlbumDetailView(client: client, token: token, album: album)
+                    } label: {
+                        TVCrateSleeveLabel(
+                            name: album.name,
+                            artURL: client.userMusicArtworkURL(for: album.representativeTrack),
+                            token: token
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .focusEffectDisabled()
+                    .focused($focusedAlbum, equals: album.id)
+                    // The focused sleeve is pulled up out of the crate, in
+                    // front of its neighbours.
+                    .zIndex(focusedAlbum == album.id ? 10 : 0)
+                }
             }
+            .padding(.leading, 40)
+            .padding(.trailing, TVMetrics.margin + 200)
+            .padding(.vertical, 50)
         }
+        .frame(height: 470)
+    }
+
+    @ViewBuilder
+    private var linerNotes: some View {
+        if let album = linerAlbum {
+            HStack(alignment: .top, spacing: 50) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("LINER NOTES")
+                        .font(TVType.eyebrow)
+                        .tracking(theme.tracking)
+                        .foregroundStyle(TVPalette.neonAlt)
+                    Text(album.name)
+                        .font(theme.display(40))
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.6)
+                    Text(album.artistName)
+                        .font(.system(size: 24, weight: .medium))
+                        .foregroundStyle(TVPalette.textSecondary)
+                    Text(tvCollectionMeta(album.tracks))
+                        .font(TVType.meta)
+                        .foregroundStyle(TVPalette.textTertiary)
+                }
+                .frame(width: 520, alignment: .leading)
+
+                // The side's running order, two columns, like the back of a sleeve.
+                let shown = Array(album.tracks.prefix(10))
+                LazyVGrid(columns: [GridItem(.flexible(), alignment: .leading), GridItem(.flexible(), alignment: .leading)],
+                          alignment: .leading, spacing: 10) {
+                    ForEach(Array(shown.enumerated()), id: \.element.id) { i, track in
+                        HStack(spacing: 12) {
+                            Text("\(i + 1)")
+                                .font(.system(size: 17, weight: .bold, design: .monospaced))
+                                .foregroundStyle(TVPalette.neon)
+                                .frame(width: 30, alignment: .trailing)
+                            Text(track.displayTitle)
+                                .font(.system(size: 19))
+                                .foregroundStyle(.white.opacity(0.8))
+                                .lineLimit(1)
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 40)
+            .padding(.trailing, TVMetrics.margin)
+            .id(album.id)
+            .transition(.opacity)
+            .animation(.easeOut(duration: 0.25), value: album.id)
+        }
+    }
+}
+
+/// A record sleeve in the crate. At rest it leans back (rotated around its
+/// vertical axis, darkened); focused it stands upright, larger, with the disc
+/// peeking out of the top.
+private struct TVCrateSleeveLabel: View {
+    let name: String
+    let artURL: URL?
+    let token: String
+
+    @Environment(\.isFocused) private var isFocused
+    @Environment(\.tvTheme) private var theme
+
+    var body: some View {
+        ZStack(alignment: .top) {
+            // The record, sliding up out of the sleeve on focus.
+            TVVinylDisc(diameter: 290)
+                .offset(y: isFocused ? -70 : 0)
+                .opacity(isFocused ? 1 : 0)
+
+            TVAuthImage(url: artURL, token: token) {
+                TVGeneratedArt(seed: name, systemImage: "square.stack", title: name)
+            }
+            .frame(width: 300, height: 300)
+            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .strokeBorder(isFocused ? AnyShapeStyle(TVPalette.brand) : AnyShapeStyle(Color.white.opacity(0.12)),
+                                  lineWidth: isFocused ? 3 : 1)
+            }
+            .overlay {
+                // Shade on the leaning sleeves, so the upright one is the lit one.
+                Color.black.opacity(isFocused ? 0 : 0.35)
+            }
+            .shadow(color: isFocused ? theme.primary.opacity(0.5) : .black.opacity(0.6),
+                    radius: isFocused ? 34 : 14, x: isFocused ? 0 : -10, y: 14)
+        }
+        .frame(width: 300, height: 300)
+        .rotation3DEffect(.degrees(isFocused ? 0 : 34), axis: (x: 0, y: 1, z: 0),
+                          anchor: .leading, perspective: 0.55)
+        .scaleEffect(isFocused ? 1.12 : 0.94, anchor: .bottom)
+        .animation(.spring(response: 0.36, dampingFraction: 0.78), value: isFocused)
+    }
+}
+
+/// A vinyl record: grooves, a light sheen, the label in the theme's lights.
+struct TVVinylDisc: View, Equatable {
+    var diameter: CGFloat = 300
+
+    var body: some View {
+        ZStack {
+            Circle().fill(Color(white: 0.05))
+            ForEach(0..<9, id: \.self) { i in
+                Circle()
+                    .strokeBorder(Color.white.opacity(0.05), lineWidth: 1)
+                    .padding(diameter * (0.06 + CGFloat(i) * 0.035))
+            }
+            AngularGradient(colors: [.white.opacity(0.0), .white.opacity(0.12), .white.opacity(0.0),
+                                     .white.opacity(0.1), .white.opacity(0.0)], center: .center)
+                .clipShape(Circle())
+            Circle()
+                .fill(TVPalette.brand)
+                .frame(width: diameter * 0.34, height: diameter * 0.34)
+            Circle()
+                .fill(Color.black)
+                .frame(width: diameter * 0.04, height: diameter * 0.04)
+        }
+        .frame(width: diameter, height: diameter)
+        .shadow(color: .black.opacity(0.6), radius: 16, y: 8)
     }
 }
 
@@ -141,49 +279,44 @@ struct TVAlbumDetailView: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 40) {
-                TVDetailHeader(
-                    eyebrow: "Album",
-                    title: album.name,
-                    subtitle: album.artistName,
-                    meta: tvCollectionMeta(album.tracks)
-                ) {
-                    TVAuthImage(url: client.userMusicArtworkURL(for: album.representativeTrack), token: token) {
-                        TVGeneratedArt(seed: album.name, systemImage: "square.stack")
-                    }
-                } actions: {
-                    if let first = queue.first {
-                        NavigationLink(value: TVPlayContext(queue: queue, startID: first.id)) {
-                            TVPillLabel(title: "Play Album", systemImage: "play.fill")
-                        }
-                        .buttonStyle(.plain)
-                        .focusEffectDisabled()
-                    }
+        TVGatefold(
+            eyebrow: "Album",
+            title: album.name,
+            subtitle: album.artistName,
+            meta: tvCollectionMeta(album.tracks)
+        ) {
+            TVAuthImage(url: client.userMusicArtworkURL(for: album.representativeTrack), token: token) {
+                TVGeneratedArt(seed: album.name, systemImage: "square.stack")
+            }
+        } actions: {
+            if let first = queue.first {
+                NavigationLink(value: TVPlayContext(queue: queue, startID: first.id)) {
+                    TVPillLabel(title: "Drop the Needle", systemImage: "play.fill")
                 }
-
-                TVTrackList {
-                    ForEach(Array(album.tracks.enumerated()), id: \.element.id) { index, track in
-                        NavigationLink(value: TVPlayContext(queue: queue, startID: track.id)) {
-                            // Numbered rather than showing the album's own
-                            // cover once per track — see TVTrackRow.trackNumber.
-                            TVTrackRow(
-                                artworkURL: nil,
-                                token: token,
-                                title: track.displayTitle,
-                                artist: track.artist,
-                                detail: track.duration.tvDurationText,
-                                isFavorite: client.isFavorite(track.id),
-                                trackNumber: index + 1
-                            )
-                        }
-                        .buttonStyle(.plain)
-                        .focusEffectDisabled()
-                        .tvTrackActions(client: client, token: token, track: track)
+                .buttonStyle(.plain)
+                .focusEffectDisabled()
+            }
+        } tracks: {
+            TVTrackList {
+                ForEach(Array(album.tracks.enumerated()), id: \.element.id) { index, track in
+                    NavigationLink(value: TVPlayContext(queue: queue, startID: track.id)) {
+                        // Numbered rather than showing the album's own
+                        // cover once per track — see TVTrackRow.trackNumber.
+                        TVTrackRow(
+                            artworkURL: nil,
+                            token: token,
+                            title: track.displayTitle,
+                            artist: track.artist,
+                            detail: track.duration.tvDurationText,
+                            isFavorite: client.isFavorite(track.id),
+                            trackNumber: index + 1
+                        )
                     }
+                    .buttonStyle(.plain)
+                    .focusEffectDisabled()
+                    .tvTrackActions(client: client, token: token, track: track)
                 }
             }
-            .padding(.bottom, 80)
         }
         .background(TVCollectionBackdrop(url: client.userMusicArtworkURL(for: album.representativeTrack), token: token))
     }
@@ -324,13 +457,13 @@ struct TVGenresGridView: View {
                              title: "No genres yet",
                              message: "Songs appear here once they carry a genre tag.")
             } else {
+                // A board of stickers: each genre slapped on at its own slight
+                // angle (stable per name), straightened when focused.
                 TVCardGrid(items: cachedGenres) { genre, cell in
                     NavigationLink {
                         TVGenreDetailView(client: client, token: token, genre: genre)
                     } label: {
-                        TVArtworkCardLabel(title: genre.name, subtitle: tvSongCount(genre.tracks.count), width: cell) {
-                            TVGeneratedArt(seed: genre.name, systemImage: "guitars", title: genre.name)
-                        }
+                        TVStickerLabel(title: genre.name, subtitle: tvSongCount(genre.tracks.count), width: cell)
                     }
                     .buttonStyle(.plain)
                     .focusEffectDisabled()
@@ -357,43 +490,38 @@ struct TVGenreDetailView: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 40) {
-                TVDetailHeader(
-                    eyebrow: "Genre",
-                    title: genre.name,
-                    meta: tvCollectionMeta(genre.tracks)
-                ) {
-                    TVGeneratedArt(seed: genre.name, systemImage: "guitars")
-                } actions: {
-                    if let first = queue.first {
-                        NavigationLink(value: TVPlayContext(queue: queue, startID: first.id)) {
-                            TVPillLabel(title: "Play", systemImage: "play.fill")
-                        }
-                        .buttonStyle(.plain)
-                        .focusEffectDisabled()
-                    }
+        TVGatefold(
+            eyebrow: "Genre",
+            title: genre.name,
+            meta: tvCollectionMeta(genre.tracks)
+        ) {
+            TVGeneratedArt(seed: genre.name, systemImage: "guitars")
+        } actions: {
+            if let first = queue.first {
+                NavigationLink(value: TVPlayContext(queue: queue, startID: first.id)) {
+                    TVPillLabel(title: "Play", systemImage: "play.fill")
                 }
-
-                TVTrackList {
-                    ForEach(genre.tracks) { track in
-                        NavigationLink(value: TVPlayContext(queue: queue, startID: track.id)) {
-                            TVTrackRow(
-                                artworkURL: client.userMusicArtworkURL(for: track),
-                                token: token,
-                                title: track.displayTitle,
-                                artist: track.artist,
-                                detail: track.duration.tvDurationText,
-                                isFavorite: client.isFavorite(track.id)
-                            )
-                        }
-                        .buttonStyle(.plain)
-                        .focusEffectDisabled()
-                        .tvTrackActions(client: client, token: token, track: track)
+                .buttonStyle(.plain)
+                .focusEffectDisabled()
+            }
+        } tracks: {
+            TVTrackList {
+                ForEach(genre.tracks) { track in
+                    NavigationLink(value: TVPlayContext(queue: queue, startID: track.id)) {
+                        TVTrackRow(
+                            artworkURL: client.userMusicArtworkURL(for: track),
+                            token: token,
+                            title: track.displayTitle,
+                            artist: track.artist,
+                            detail: track.duration.tvDurationText,
+                            isFavorite: client.isFavorite(track.id)
+                        )
                     }
+                    .buttonStyle(.plain)
+                    .focusEffectDisabled()
+                    .tvTrackActions(client: client, token: token, track: track)
                 }
             }
-            .padding(.bottom, 80)
         }
         .tvAmbientBackground()
     }
@@ -504,5 +632,42 @@ struct TVCollectionBackdrop: View {
             }
         }
         .ignoresSafeArea()
+    }
+}
+
+// MARK: - Genre sticker
+
+/// A genre as a sticker: die-cut rounded square of generated art with a white
+/// border, tilted a few degrees (stable per name), straightened on focus.
+private struct TVStickerLabel: View {
+    let title: String
+    let subtitle: String
+    let width: CGFloat
+
+    @Environment(\.isFocused) private var isFocused
+
+    /// -4…4 degrees, from the name (stable across launches).
+    private var tilt: Double {
+        var h: UInt32 = 2_166_136_261
+        for s in title.unicodeScalars { h = (h ^ s.value) &* 16_777_619 }
+        return Double(Int(h % 9) - 4)
+    }
+
+    var body: some View {
+        VStack(spacing: 16) {
+            TVGeneratedArt(seed: title, systemImage: "guitars", title: title)
+                .frame(width: width - 24, height: width - 24)
+                .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
+                .padding(12)
+                .background(RoundedRectangle(cornerRadius: 34, style: .continuous).fill(Color.white))
+                .shadow(color: .black.opacity(isFocused ? 0.55 : 0.35), radius: isFocused ? 26 : 10, y: isFocused ? 16 : 6)
+                .rotationEffect(.degrees(isFocused ? 0 : tilt))
+                .scaleEffect(isFocused ? 1.06 : 1)
+            Text(subtitle)
+                .font(TVType.meta)
+                .foregroundStyle(isFocused ? TVPalette.textSecondary : TVPalette.textTertiary)
+        }
+        .frame(width: width)
+        .animation(.spring(response: 0.32, dampingFraction: 0.75), value: isFocused)
     }
 }

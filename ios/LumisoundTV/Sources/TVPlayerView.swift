@@ -614,6 +614,9 @@ struct TVPlayerView: View {
     // to adopt an externally-owned object, same as `TVContentView`'s own
     // `@StateObject private var client = TVBridgeClient.shared`.
     @StateObject private var model = TVPlayerModel.shared
+    @ObservedObject private var aria = TVAria.shared
+    @ObservedObject private var settings = TVAudioSettings.shared
+    @Environment(\.tvTheme) private var theme
     @State private var sidePanel: TVSidePanel = .none
     // tvOS never automatically moves focus into a view that appears over
     // already-focused content — `upNextPanel` is drawn in the same ZStack
@@ -714,25 +717,33 @@ struct TVPlayerView: View {
                     TVPlayingMeter(isAnimating: model.isPlaying && !model.isBuffering)
                     Text(statusLine)
                         .font(TVType.eyebrow)
-                        .tracking(2.6)
+                        .tracking(theme.tracking)
                         .foregroundStyle(TVPalette.neonAlt)
                 }
                 .padding(.bottom, 18)
 
                 Text(displayed?.title ?? "")
-                    .font(.system(size: 66, weight: .heavy, design: .rounded))
+                    .font(theme.display(66))
                     .lineLimit(2)
                     .minimumScaleFactor(0.5)
                     .id(displayed?.id)
                     .transition(.opacity.combined(with: .move(edge: .leading)))
                 Text((displayed?.artist.isEmpty ?? true) ? "Unknown Artist" : (displayed?.artist ?? ""))
-                    .font(.system(size: 34, weight: .medium, design: .rounded))
+                    .font(.system(size: 34, weight: .medium, design: theme.design))
                     .foregroundStyle(TVPalette.textSecondary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.6)
                     .padding(.top, 6)
                     .id(displayed?.id)
                     .transition(.opacity)
+
+                // Aria's handover line, on the stage beside the act she's
+                // introducing.
+                if settings.djTransitions, let blurb = aria.currentBlurb {
+                    TVAriaBlurbView(text: blurb)
+                        .padding(.top, 22)
+                        .frame(maxWidth: 900, alignment: .leading)
+                }
 
                 // Lyrics follow the song on the stage itself. They are the one
                 // thing on this screen that changes second to second; the
@@ -773,7 +784,7 @@ struct TVPlayerView: View {
                     Text(model.lyrics[i].text.isEmpty ? "♪" : model.lyrics[i].text)
                         .font(.system(size: i == idx ? 36 : 28,
                                       weight: i == idx ? .bold : .semibold,
-                                      design: .rounded))
+                                      design: TVTheme.current.design))
                         .foregroundStyle(i == idx ? Color.white
                                          : Color.white.opacity(i < idx ? 0.22 : 0.4))
                         .lineLimit(2)
@@ -1033,6 +1044,7 @@ struct TVPlayerView: View {
                 .overlay(TVPalette.ground.opacity(0.5))
             LinearGradient(colors: [TVPalette.ground.opacity(0.2), TVPalette.ground.opacity(0.85)],
                            startPoint: .top, endPoint: .bottom)
+            TVStageDressing(isLit: model.isPlaying)
         }
         .ignoresSafeArea()
     }
@@ -1058,9 +1070,41 @@ struct TVPlayerView: View {
             artworkGlow
                 .frame(width: 500, height: 500)
 
+            styledArtwork
+        }
+        .frame(width: 500, height: 500)
+        // The stage floor: the act's reflection, faded into the boards.
+        .background(alignment: .bottom) {
+            TVAuthImage(url: displayed?.artworkURL, token: displayed?.authToken) { Color.clear }
+                .frame(width: 420, height: 420)
+                .clipShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
+                .scaleEffect(x: 1, y: -1)
+                .opacity(0.22)
+                .mask(LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .center))
+                .offset(y: 440)
+                .allowsHitTesting(false)
+        }
+    }
+
+    @ViewBuilder private var styledArtwork: some View {
+        ZStack {
             switch artworkStyle {
             case .classic:
                 classicArtwork
+            case .vinylSpin:
+                TVVinylSpinArtworkView(artworkURL: displayed?.artworkURL, authToken: displayed?.authToken, isPlaying: model.isPlaying)
+            case .neonHalo:
+                TVNeonHaloArtworkView(artworkURL: displayed?.artworkURL, authToken: displayed?.authToken, isPlaying: model.isPlaying)
+            case .tapeGlitch:
+                TVTapeGlitchArtworkView(artworkURL: displayed?.artworkURL, authToken: displayed?.authToken, isPlaying: model.isPlaying)
+            case .polaroidStack:
+                TVPolaroidStackArtworkView(artworkURL: displayed?.artworkURL, authToken: displayed?.authToken, isPlaying: model.isPlaying)
+            case .aurora:
+                TVAuroraArtworkView(artworkURL: displayed?.artworkURL, authToken: displayed?.authToken, isPlaying: model.isPlaying)
+            case .orbit:
+                TVOrbitArtworkView(artworkURL: displayed?.artworkURL, authToken: displayed?.authToken, isPlaying: model.isPlaying)
+            case .filmStrip:
+                TVFilmStripArtworkView(artworkURL: displayed?.artworkURL, authToken: displayed?.authToken, isPlaying: model.isPlaying)
             case .circuitPulse:
                 TVCircuitPulseArtworkView(artworkURL: displayed?.artworkURL, authToken: displayed?.authToken, isPlaying: model.isPlaying)
             case .radarSweep:
@@ -1076,7 +1120,7 @@ struct TVPlayerView: View {
                     Color.black.opacity(0.45)
                     VStack(spacing: 18) {
                         TVLoadingBars(height: 60)
-                        Text("Loading…").font(.system(size: 22, weight: .semibold, design: .rounded))
+                        Text("Loading…").font(.system(size: 22, weight: .semibold, design: TVTheme.current.design))
                     }
                 }
                 .frame(width: 500, height: 500)
@@ -1131,7 +1175,7 @@ struct TVPlayerView: View {
             Text(model.duration > 0 ? "-" + timeString(max(0, model.duration - model.position)) : "")
                 .frame(width: 90, alignment: .leading)
         }
-        .font(.system(size: 21, weight: .semibold, design: .rounded).monospacedDigit())
+        .font(.system(size: 21, weight: .semibold, design: TVTheme.current.design).monospacedDigit())
         .foregroundStyle(TVPalette.textSecondary)
     }
 
@@ -1234,7 +1278,9 @@ private struct TVArtworkStyleSheet: View {
                         onSelect(style)
                         dismiss()
                     } label: {
-                        HStack {
+                        HStack(spacing: 16) {
+                            Image(systemName: style.systemImage)
+                                .frame(width: 36)
                             Text(style.displayName)
                             if style == current {
                                 Spacer()
@@ -1311,5 +1357,61 @@ private struct TVSoundPanel: View {
         .padding(.vertical, 60)
         .padding(.trailing, 60)
         .onAppear { firstFocused = true }
+    }
+}
+
+// MARK: - Stage dressing
+
+/// The theatre around Now Playing: velvet curtains gathered at both edges and
+/// a spotlight from the fly loft onto the act. All static layers (the only
+/// change is the spotlight's opacity on play/pause), drawn behind everything.
+private struct TVStageDressing: View {
+    let isLit: Bool
+    @Environment(\.tvTheme) private var theme
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack {
+                // Spotlight cone onto the artwork (left third of the stage).
+                Path { p in
+                    let top = CGPoint(x: geo.size.width * 0.27, y: -40)
+                    p.move(to: CGPoint(x: top.x - 60, y: top.y))
+                    p.addLine(to: CGPoint(x: top.x + 60, y: top.y))
+                    p.addLine(to: CGPoint(x: top.x + 380, y: geo.size.height * 0.82))
+                    p.addLine(to: CGPoint(x: top.x - 380, y: geo.size.height * 0.82))
+                    p.closeSubpath()
+                }
+                .fill(LinearGradient(colors: [Color.white.opacity(0.16), Color.white.opacity(0.0)],
+                                     startPoint: .top, endPoint: .bottom))
+                .blur(radius: 30)
+                .opacity(isLit ? 1 : 0.35)
+                .animation(.easeInOut(duration: 0.8), value: isLit)
+
+                HStack {
+                    TVCurtain(color: theme.secondary).frame(width: 90)
+                    Spacer()
+                    TVCurtain(color: theme.secondary).frame(width: 90).scaleEffect(x: -1, y: 1)
+                }
+            }
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+/// A velvet curtain: vertical folds of the theme's second light, deep and dark.
+private struct TVCurtain: View, Equatable {
+    let color: Color
+
+    var body: some View {
+        LinearGradient(
+            stops: (0..<6).flatMap { i -> [Gradient.Stop] in
+                let x = Double(i) / 6
+                return [.init(color: color.opacity(0.55), location: x),
+                        .init(color: Color.black.opacity(0.85), location: x + 1.0 / 12)]
+            },
+            startPoint: .leading, endPoint: .trailing
+        )
+        .mask(LinearGradient(colors: [.black, .black.opacity(0.0)], startPoint: .leading, endPoint: .trailing))
+        .opacity(0.75)
     }
 }

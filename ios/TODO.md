@@ -2,6 +2,26 @@
 
 Full history and decisions: [`../RUST-PORT.md`](../RUST-PORT.md). Swift is views + app shell only.
 
+## Done (2026-11-23) — tvOS redesign ("Stage")
+- Themes (`TVTheme.swift`, Settings → Lighting): Afterglow (default), Prism, Neon Nocturne, Vinyl Noir,
+  Aurora, Synthwave, Studio Mono — ground, two lights, lifted tints and display typeface; `TVPalette` /
+  `TVType` read the active theme, the root injects `\.tvTheme` so views restyle live.
+- Shell: top marquee bar (`TVShell.swift`) with an On Air pill for what's playing; the side rail and the
+  Now Playing column are gone (content gets the full width).
+- Home: programme guide (clock, Now Showing, channels whose programme widths are their lengths).
+- Library: record crate (divider tabs; albums as a flip-through crate with liner notes; genre stickers).
+- Collection details (album, genre, playlist, tempo mix): gatefold (sleeve + vinyl left, tracklist right).
+- Playlists: tape wall of cassettes (reels spin on focus). Discover: radio dial (focus tunes stations).
+- Search: signal header. Account: backstage pass + access zones. Stats: split-flap scoreboard.
+- Settings: mixing desk (channel strips, LED switches) + lighting (themes) + Now Playing style chips.
+- Now Playing: stage (curtains, spotlight, floor reflection, Aria intro) + 7 new artwork styles: Vinyl
+  Spin, Neon Halo, Tape Glitch, Polaroid Stack, Aurora, Orbit, Film Strip (transform/opacity-only animation).
+- Notifications: postcards; Sessions: equipment rack; Login: box office ticket.
+
+## Open (tvOS redesign)
+- Verify on the Apple TV: focus paths in the crate (overlapping sleeves), the dial, the guide rows, the
+  marquee ↔ content moves; theme switching live; legibility of each theme at 10 feet.
+
 ## Done (2026-11-23) — render cost on Playing / Library
 - 2.0.0.66 main-thread stacks by screen: Playing 45 % GPU command submission + 34 % view-graph updates,
   Library 24 % GPU submission + 11 % SwiftUI memmove; the owner's setup is Tape Glitch artwork, Neon Tube

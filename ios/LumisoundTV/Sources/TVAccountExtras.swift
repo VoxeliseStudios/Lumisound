@@ -33,9 +33,9 @@ struct TVSessionsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 30) {
-                TVScreenTitle(title: "Active Sessions",
+                TVScreenTitle(title: "The Rack",
                               detail: client.sessions.isEmpty ? nil : "\(client.sessions.count) signed in",
-                              eyebrow: "Account")
+                              eyebrow: "Zone C · Sessions")
 
                 if client.isLoadingSessions && client.sessions.isEmpty {
                     TVLoadingState(text: "Loading sessions…")
@@ -43,12 +43,23 @@ struct TVSessionsView: View {
                     TVEmptyState(systemImage: "rectangle.stack.badge.person.crop",
                                  title: "No active sessions")
                 } else {
-                    VStack(spacing: 14) {
+                    // An equipment rack: one 1U unit per signed-in device,
+                    // between the rack's rails.
+                    VStack(spacing: 6) {
                         ForEach(client.sessions) { session in
                             sessionRow(session)
                         }
                     }
-                    .frame(maxWidth: 1300, alignment: .leading)
+                    .padding(.horizontal, 44)
+                    .padding(.vertical, 20)
+                    .background {
+                        HStack {
+                            TVRackRail()
+                            Spacer()
+                            TVRackRail()
+                        }
+                    }
+                    .frame(maxWidth: 1400, alignment: .leading)
                     .padding(.horizontal, TVMetrics.margin)
                 }
             }
@@ -62,31 +73,30 @@ struct TVSessionsView: View {
 
     private func sessionRow(_ session: TVSession) -> some View {
         HStack(spacing: 24) {
+            // Power LED: green for this Apple TV, the theme's light otherwise.
+            Circle()
+                .fill(session.isCurrent ? Color(red: 0.3, green: 1, blue: 0.5) : TVPalette.violet)
+                .frame(width: 12, height: 12)
+                .shadow(color: session.isCurrent ? Color(red: 0.3, green: 1, blue: 0.5) : TVPalette.violet, radius: 6)
             Image(systemName: session.isCurrent ? "appletv.fill" : "iphone")
-                .font(.system(size: 28, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: 68, height: 68)
-                .background {
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .fill(session.isCurrent ? AnyShapeStyle(TVPalette.brand)
-                              : AnyShapeStyle(Color.white.opacity(0.1)))
-                }
-            VStack(alignment: .leading, spacing: 5) {
+                .font(.system(size: 26, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.85))
+                .frame(width: 46)
+            VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 12) {
                     Text(session.deviceName ?? "Unknown Device")
-                        .font(TVType.rowTitle)
+                        .font(.system(size: 24, weight: .bold, design: .monospaced))
                         .lineLimit(1)
                     if session.isCurrent {
-                        Text("THIS DEVICE")
-                            .font(TVType.eyebrow)
-                            .tracking(1.6)
+                        Text("THIS UNIT")
+                            .font(.system(size: 13, weight: .black, design: .monospaced))
                             .padding(.horizontal, 10)
                             .padding(.vertical, 4)
                             .background(Capsule().fill(TVPalette.violet.opacity(0.35)))
                     }
                 }
-                Text("Signed in \(tvFormattedTimestamp(session.createdAt))")
-                    .font(TVType.rowDetail)
+                Text("Online since \(tvFormattedTimestamp(session.createdAt))")
+                    .font(.system(size: 17, weight: .medium, design: .monospaced))
                     .foregroundStyle(TVPalette.textTertiary)
             }
             Spacer(minLength: 20)
@@ -96,15 +106,43 @@ struct TVSessionsView: View {
                     if wasCurrentSession { account.logout() }
                 }
             } label: {
-                TVPillLabel(title: session.isCurrent ? "Sign Out" : "Revoke",
-                            systemImage: "xmark.circle", style: .secondary)
+                TVPillLabel(title: session.isCurrent ? "Power Off" : "Pull Unit",
+                            systemImage: "power", style: .secondary)
             }
             .buttonStyle(.plain)
             .focusEffectDisabled()
         }
-        .padding(.horizontal, 24)
-        .padding(.vertical, 18)
-        .tvNeonCard(cornerRadius: 24)
+        .padding(.horizontal, 26)
+        .padding(.vertical, 16)
+        .background {
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(LinearGradient(colors: [Color(white: 0.2), Color(white: 0.11)], startPoint: .top, endPoint: .bottom))
+        }
+        .overlay(alignment: .leading) { rackScrews }
+        .overlay(alignment: .trailing) { rackScrews }
+    }
+
+    private var rackScrews: some View {
+        VStack(spacing: 30) {
+            Circle().fill(Color(white: 0.4)).frame(width: 9, height: 9)
+            Circle().fill(Color(white: 0.4)).frame(width: 9, height: 9)
+        }
+        .padding(.horizontal, 8)
+    }
+}
+
+/// A rack rail: a vertical strip with mounting holes.
+private struct TVRackRail: View, Equatable {
+    var body: some View {
+        VStack(spacing: 14) {
+            ForEach(0..<40, id: \.self) { _ in
+                RoundedRectangle(cornerRadius: 2).fill(Color.black.opacity(0.6)).frame(width: 10, height: 10)
+            }
+        }
+        .frame(width: 30)
+        .frame(maxHeight: .infinity, alignment: .top)
+        .background(Color(white: 0.18))
+        .clipped()
     }
 }
 
@@ -120,9 +158,9 @@ struct TVNotificationsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 30) {
                 HStack(alignment: .bottom) {
-                    TVScreenTitle(title: "Notifications",
+                    TVScreenTitle(title: "The Mailroom",
                                   detail: unreadCount > 0 ? "\(unreadCount) unread" : nil,
-                                  eyebrow: "Account")
+                                  eyebrow: "Zone B · Notifications")
                     if unreadCount > 0 {
                         Button {
                             Task { await client.markAllNotificationsRead(token: token) }
@@ -142,7 +180,9 @@ struct TVNotificationsView: View {
                                  title: "You're all caught up",
                                  message: "Notifications from Lumisound and your friends show up here.")
                 } else {
-                    VStack(spacing: TVMetrics.row) {
+                    // Postcards, two to a row; select one to mark it read.
+                    LazyVGrid(columns: [GridItem(.fixed(820), spacing: 40), GridItem(.fixed(820), spacing: 40)],
+                              alignment: .leading, spacing: 40) {
                         ForEach(client.notifications) { note in
                             Button {
                                 guard note.isUnread else { return }
@@ -154,8 +194,7 @@ struct TVNotificationsView: View {
                             .focusEffectDisabled()
                         }
                     }
-                    .frame(maxWidth: 1300, alignment: .leading)
-                    .padding(.horizontal, TVMetrics.margin - 20)
+                    .padding(.horizontal, TVMetrics.margin)
                 }
             }
             .padding(.bottom, 80)
@@ -167,39 +206,76 @@ struct TVNotificationsView: View {
     }
 }
 
+/// A notification as a postcard: message on the left, a stamp top-right —
+/// a fresh coloured stamp while unread, franked with a postmark once read.
 private struct TVNotificationRowLabel: View {
     let note: TVNotification
     @Environment(\.isFocused) private var isFocused
+    @Environment(\.tvTheme) private var theme
+
+    /// Tilt per card, stable per id.
+    private var tilt: Double {
+        var h: UInt32 = 2_166_136_261
+        for s in note.id.description.unicodeScalars { h = (h ^ s.value) &* 16_777_619 }
+        return Double(Int(h % 5) - 2) * 0.6
+    }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 22) {
-            Image(systemName: note.isUnread ? "bell.badge.fill" : "bell")
-                .font(.system(size: 22, weight: .semibold))
-                .foregroundStyle(note.isUnread ? Color.white : TVPalette.textTertiary)
-                .frame(width: 54, height: 54)
-                .background {
-                    Circle().fill(note.isUnread ? AnyShapeStyle(TVPalette.brand)
-                                  : AnyShapeStyle(Color.white.opacity(0.08)))
-                }
-            VStack(alignment: .leading, spacing: 5) {
+        HStack(alignment: .top, spacing: 26) {
+            VStack(alignment: .leading, spacing: 10) {
                 Text(note.title ?? "Notification")
-                    .font(TVType.rowTitle)
-                    .foregroundStyle(note.isUnread ? Color.white : TVPalette.textSecondary)
+                    .font(.system(size: 26, weight: .bold, design: theme.design))
+                    .foregroundStyle(Color.black.opacity(0.85))
+                    .lineLimit(2)
                 if let body = note.body, !body.isEmpty {
                     Text(body)
-                        .font(TVType.rowDetail)
-                        .foregroundStyle(TVPalette.textSecondary)
+                        .font(.system(size: 21, design: theme.design))
+                        .foregroundStyle(Color.black.opacity(0.65))
+                        .lineLimit(4)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                Spacer(minLength: 0)
                 Text(tvFormattedTimestamp(note.createdAt))
-                    .font(TVType.meta)
-                    .foregroundStyle(TVPalette.textTertiary)
+                    .font(.system(size: 16, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(Color.black.opacity(0.45))
             }
             Spacer(minLength: 0)
+            ZStack {
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(note.isUnread ? AnyShapeStyle(TVPalette.brand) : AnyShapeStyle(Color(white: 0.75)))
+                    .frame(width: 92, height: 110)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 4)
+                            .strokeBorder(Color.white, style: StrokeStyle(lineWidth: 4, dash: [3, 3]))
+                    }
+                Image(systemName: note.isUnread ? "bell.badge.fill" : "bell")
+                    .font(.system(size: 34, weight: .semibold))
+                    .foregroundStyle(.white)
+                if !note.isUnread {
+                    // Postmark
+                    Circle()
+                        .strokeBorder(Color.black.opacity(0.45), lineWidth: 3)
+                        .frame(width: 96, height: 96)
+                        .overlay(Text("READ").font(.system(size: 14, weight: .black, design: .monospaced)).foregroundStyle(Color.black.opacity(0.45)))
+                        .offset(x: -30, y: 24)
+                }
+            }
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 16)
-        .tvNeonCard(cornerRadius: 22, isFocused: isFocused, isProminent: note.isUnread)
+        .padding(28)
+        .frame(width: 820, height: 250, alignment: .topLeading)
+        .background {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color(red: 0.97, green: 0.95, blue: 0.9))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(isFocused ? AnyShapeStyle(TVPalette.brand) : AnyShapeStyle(Color.clear), lineWidth: 4)
+        }
+        .opacity(note.isUnread || isFocused ? 1 : 0.75)
+        .shadow(color: isFocused ? TVPalette.violet.opacity(0.5) : .black.opacity(0.4), radius: isFocused ? 30 : 12, y: 10)
+        .rotationEffect(.degrees(isFocused ? 0 : tilt))
+        .scaleEffect(isFocused ? 1.04 : 1)
+        .animation(.spring(response: 0.3, dampingFraction: 0.78), value: isFocused)
     }
 }
 
@@ -223,7 +299,7 @@ struct TVFriendsListeningCard: View {
                             .clipShape(Circle())
                             .overlay {
                                 Text(String(entry.friend.name.prefix(1)).uppercased())
-                                    .font(.system(size: 26, weight: .heavy, design: .rounded))
+                                    .font(.system(size: 26, weight: .heavy, design: TVTheme.current.design))
                             }
                         VStack(alignment: .leading, spacing: 3) {
                             Text(entry.friend.name)
