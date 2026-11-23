@@ -2,6 +2,50 @@
 
 Full history and decisions: [`RUST-PORT.md`](../../RUST-PORT.md).
 
+## Done (2026-11-23) — upgrade pass (15 items)
+- Streaming outage (2026-11-20 → 23: 70 failed / 3 ok): the shared jar was flagged stale on 11-19 and the
+  refresher was never installed. Installed `lumisound-refresh-cookies` + the user units (timer + path), env in
+  `~/.config/lumisound-youtube-cookies.env` (also refreshes musicsplit-bots' jar). A fresh export in ~/Downloads
+  was adopted; streams resolve again.
+- Cookie pool (`ytdlp.rs`): `cookie_candidates` = own jar → shared → `YTDLP_COOKIES_POOL_DIR/*.txt`
+  (web-stack mounts `ios-bridge/cookie-pool/`, git-ignored). A bot wall benches that jar 20 min and moves on;
+  every jar walled → the `tv` client. Shared-jar bot walls write `.cookies_stale` (refresher runs). Bot-wall
+  marker matched as "not a bot" (yt-dlp prints a typographic apostrophe). `recovery.rs`: idle probe of the
+  shared jar every 10 min when unused 45 min, operator alert (webhook + `cookies_botwall` event) once per 6 h.
+  Admin: `GET /admin/api/cookies` + dashboard card.
+- Stream auth: tickets persist in `ios_stream_tickets` (restart-proof); `stream_proxy_auth_rejected` carries
+  `reason` (no_credentials / session_invalid / ticket_unknown); old builds sending only the shared key are
+  let through when the same client IP made a signed-in request in the last 30 min (`session_ips`).
+- Speed: stream URLs cached until 10 min before googlevideo's `expire=`; `POST /api/stream/prefetch`
+  (≤3 tracks, 120/h); a CDN 403 re-resolves once through the fallback client inside the same request;
+  `download_relay` shares the resolve cache. `engine=1` streams (apps on the Lumisound engine) get Opus 251,
+  Premium accounts 774 through their Premium client (`stream_format`).
+- ETag/304 on the polled JSON lists (`perf::etag`), zstd + brotli + gzip; `GET /user/music/metadata?since=`
+  (`updated_at` + trigger, tombstones in `ios_user_music_deleted`) answers changed rows + deleted ids +
+  `server_time`.
+- `routestats.rs`: per-route count / 5xx / p50 / p95 / p99 (last hour + since start), `GET /admin/api/routes`,
+  dashboard table. Slow SQL (>300 ms) logged by sqlx.
+- `recovery.rs` retry queue: `ios_download_retry` keeps bot-wall / rate-limit failures; when the cause clears
+  (a jar worked since, cookies uploaded, hold over) the app gets `/ws/live` `downloads_retry`;
+  `GET /api/download/retry`, `POST /api/download/retry/ack`. Rows expire after 14 days.
+- Migrations: `lumi_schema_migrations`; schema.sql re-runs only when its checksum changes; new schema in
+  `migrations/000N_*.sql` (`db::MIGRATIONS`). Shutdown: `server_restarting` live notice, 20 s drain
+  (compose `stop_grace_period: 30s`).
+- Trash: `/admin/storage` page (no auto refresh) lists the trash with Restore buttons (file, metadata row from
+  `.meta.json`, locked art), `GET /admin/api/trash`, `POST /admin/api/trash/restore`.
+- `housekeeping.rs`: hourly LRU caps (rp-art-yt 150 MB, rp-artwork 100 MB, artwork-cache 400 MB, legacy
+  wrap cache 2 GB, lyrics vocals 1.5 GB); storage report + "Delete the LMS3 backup" (type DELETE) on
+  `/admin/storage`, `DELETE /admin/api/storage/lms3-backup?confirm=delete-lms3-backup`.
+- Shared Smart Crossfade profiles: `GET/PUT /api/track/blend-profile?source&id&v` (`ios_track_blend_profiles`,
+  first measurement wins, plausibility checked).
+- Aria Lyrics: Demucs vocals cached per decoded-audio hash (`lyricsgen::vocals_cache_dir`).
+
+## Open (2026-11-23)
+- Watch the first days of `stream_log` / `cookies_botwall` after deploy; add a second account's jar to
+  `ios-bridge/cookie-pool/` so rotation has somewhere to go.
+- IP grace is a bridge for old builds; remove it once 1.9.x / 2.0.0.1-2 stop showing in telemetry.
+- Premium 774 streaming still unverified with real Premium cookies (none on the server).
+
 ## Done (2026-11-16) — downloads after a reinstall, cloud trash, delisted tracks
 - Single downloads (`/api/download`, `/api/download/relay`) are skipped only when the asking device's
   own `existing_ids` lists the track. The stored inventory (last install's snapshot) no longer vetoes

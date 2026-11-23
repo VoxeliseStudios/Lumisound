@@ -44,6 +44,11 @@ pub struct Inner {
     /// within ~3 s of being issued, for every request that shares it.
     pub stream_resolved_at: TtlCache<String, Instant>,
     pub stream_tickets: TtlCache<String, String>,
+    /// Client IP -> account that made a signed-in request from it in the
+    /// last 30 min. Lets old app builds (1.9.x / 2.0.0.1-2, which send only
+    /// the shared key to /api/stream/proxy) keep streaming without making
+    /// the key alone enough from anywhere else.
+    pub session_ips: TtlCache<String, String>,
     pub inventory: TtlCache<String, Arc<HashSet<String>>>,
     pub download_jobs: DashMap<String, Job>,
     pub batch_jobs: DashMap<String, BatchJob>,
@@ -81,9 +86,8 @@ impl AppState {
         // Idempotent schema (CREATE/ALTER ... IF NOT EXISTS), run on every
         // start like the Python bridge's init_db, so new columns (e.g.
         // ios_user_settings.appearance_json) reach existing databases.
-        match crate::db::migrate(&db, include_str!("../schema.sql")).await {
-            Ok(()) => tracing::info!("schema up to date"),
-            Err(e) => tracing::error!("schema migration failed (serving anyway): {e}"),
+        if let Err(e) = crate::db::migrate(&db, include_str!("../schema.sql")).await {
+            tracing::error!("schema migration failed (serving anyway): {e}");
         }
         if let Err(e) = crate::db::ensure_helpers(&db).await {
             tracing::error!("could not install SQL helpers: {e}");
@@ -124,6 +128,7 @@ impl AppState {
             stream_resolving: DashMap::new(),
             stream_resolved_at: TtlCache::new(Duration::from_secs(10), 5000),
             stream_tickets: TtlCache::new(Duration::from_secs(6 * 3600), 5000),
+            session_ips: TtlCache::new(Duration::from_secs(30 * 60), 20_000),
             inventory: TtlCache::new(Duration::from_secs(30), 5000),
             download_jobs: DashMap::new(),
             batch_jobs: DashMap::new(),
@@ -177,6 +182,7 @@ impl AppState {
                 let now = Instant::now();
                 st.session_cache.retain(|_, until| *until > now);
                 st.stream_tickets.sweep();
+                st.session_ips.sweep();
                 st.stream_urls.sweep();
                 st.stream_failures.sweep();
                 st.auth_attempts.retain(|_, v| v.iter().any(|t| now.duration_since(*t) < Duration::from_secs(60)));

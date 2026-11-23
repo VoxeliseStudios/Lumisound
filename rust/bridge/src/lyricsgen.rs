@@ -561,6 +561,57 @@ async fn pcm16k(st: &crate::state::AppState, input: &Path, out: &Path) -> Result
     Ok(b.chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0).collect())
 }
 
+/// Where separated vocals are kept (16 kHz mono s16le, by audio content).
+/// Trimmed to its cap by `housekeeping`.
+pub fn vocals_cache_dir(st: &crate::state::AppState) -> PathBuf {
+    Path::new(&st.cfg.ytdlp_cache_dir).join("lyrics-vocals")
+}
+
+/// Content key of the decoded mix: the same recording in another container
+/// or file name maps to the same vocals.
+fn audio_key(mix: &[f32]) -> String {
+    use sha2::Digest;
+    let mut h = sha2::Sha256::new();
+    h.update((mix.len() as u64).to_le_bytes());
+    for s in mix {
+        h.update(((s * 32767.0) as i16).to_le_bytes());
+    }
+    hex::encode(&h.finalize()[..16])
+}
+
+fn vocals_cache_path(st: &crate::state::AppState, key: &str) -> PathBuf {
+    vocals_cache_dir(st).join(&key[..2]).join(format!("{key}.s16"))
+}
+
+async fn read_cached_vocals(st: &crate::state::AppState, key: &str) -> Option<Vec<f32>> {
+    let p = vocals_cache_path(st, key);
+    let b = tokio::fs::read(&p).await.ok()?;
+    if b.len() < 2 {
+        return None;
+    }
+    // Mark it used, so the LRU trim keeps tracks that come back.
+    if let Ok(f) = std::fs::File::open(&p) {
+        let _ = f.set_modified(std::time::SystemTime::now());
+    }
+    tracing::info!("aria lyrics: vocals from cache ({} s)", b.len() / 2 / SR as usize);
+    Some(b.chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0).collect())
+}
+
+async fn write_cached_vocals(st: &crate::state::AppState, key: &str, v: &[f32]) {
+    let p = vocals_cache_path(st, key);
+    let bytes: Vec<u8> = v.iter().flat_map(|s| ((s.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes()).collect();
+    let tmp = p.with_extension("tmp");
+    let ok = async {
+        tokio::fs::create_dir_all(p.parent().unwrap()).await?;
+        tokio::fs::write(&tmp, &bytes).await?;
+        tokio::fs::rename(&tmp, &p).await
+    }
+    .await;
+    if let Err(e) = ok {
+        tracing::warn!("aria lyrics: could not cache vocals: {e}");
+    }
+}
+
 /// Full pipeline on an audio file. `progress` gets stage names.
 pub async fn generate(st: &crate::state::AppState, audio: &Path, title: &str, artist: &str, reference: Option<&str>, progress: impl Fn(&str)) -> Result<Outcome, String> {
     let _permit = SEM.acquire().await.map_err(|e| e.to_string())?;
@@ -577,11 +628,25 @@ async fn generate_in(st: &crate::state::AppState, audio: &Path, work: &Path, tit
     progress("separating");
     let mix = pcm16k(st, audio, &work.join("mix.raw")).await?;
     let duration = mix.len() as f64 / SR as f64;
-    let input = work.join("input.wav");
-    run_cmd(st, "ffmpeg", &["-v", "error", "-y", "-i", &audio.to_string_lossy(), "-ac", "2", "-ar", "44100", &input.to_string_lossy()].map(String::from), 180).await?;
-    let vocals_wav = crate::routes::stems::vocals_only(st, &input, work).await?;
-    let vocals = pcm16k(st, &vocals_wav, &work.join("vocals.raw")).await?;
-    stages.push(("separate".into(), t.elapsed().as_secs_f64()));
+    // Separation dominates the run (Demucs on 3 CPUs): its vocals are kept
+    // per audio content, so a re-run (aligned after ASR, a retry, another
+    // user with the same track) skips straight to recognition.
+    let key = audio_key(&mix);
+    let vocals = match read_cached_vocals(st, &key).await {
+        Some(v) => {
+            stages.push(("separate_cached".into(), t.elapsed().as_secs_f64()));
+            v
+        }
+        None => {
+            let input = work.join("input.wav");
+            run_cmd(st, "ffmpeg", &["-v", "error", "-y", "-i", &audio.to_string_lossy(), "-ac", "2", "-ar", "44100", &input.to_string_lossy()].map(String::from), 180).await?;
+            let vocals_wav = crate::routes::stems::vocals_only(st, &input, work).await?;
+            let v = pcm16k(st, &vocals_wav, &work.join("vocals.raw")).await?;
+            write_cached_vocals(st, &key, &v).await;
+            stages.push(("separate".into(), t.elapsed().as_secs_f64()));
+            v
+        }
+    };
     let segs = voice_segments(&vocals);
     if is_instrumental(&vocals, &mix, &segs, duration) {
         return Ok(Outcome { lines: vec![], instrumental: true, language: None, aligned: None, mean_p: 0.0, confidence: "high", stages });

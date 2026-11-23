@@ -12,6 +12,7 @@ final class LiveUpdateService: NSObject {
     var onNotificationEvent: (() -> Void)?
     var onSyncChangedEvent: (() -> Void)?
     var onRoomEvent: (([String: Any]) -> Void)?
+    var onDownloadsRetry: (([RetryTrack]) -> Void)?
 
     private let socket = LiveSocket()
     private lazy var relay = Relay(owner: self)
@@ -46,6 +47,8 @@ final class LiveUpdateService: NSObject {
         case .appearance(let style, let density):
             let d: Density = density == "compact" ? .compact : (density == "roomy" ? .roomy : .regular)
             Appearance.shared.apply(style: style, density: d, push: false)
+        case .downloadsRetry(let tracks):
+            onDownloadsRetry?(tracks)
         case .other:
             break
         }

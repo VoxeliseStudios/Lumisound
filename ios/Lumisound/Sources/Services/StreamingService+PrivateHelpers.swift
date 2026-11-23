@@ -25,9 +25,20 @@ extension StreamingService {
         // The bridge's shared-service routes (search, stream, download, lyrics,
         // trending, ...) need the signed-in session too: the app key ships
         // inside the IPA, so on its own it no longer authorizes anything.
-        if let accountToken = AccountService.shared?.token, !accountToken.isEmpty {
+        let accountToken = AccountService.shared?.token
+        if let accountToken, !accountToken.isEmpty {
             request.setValue(accountToken, forHTTPHeaderField: "X-Account-Token")
+        }
+        // Core-side bridge calls (prefetch, retry queue, shared blend
+        // profiles) use the same session.
+        let session = "\(base)|\(apiKey)|\(accountToken ?? "")"
+        if Self.coreSession != session {
+            Self.coreSession = session
+            bridgeSessionSet(baseUrl: base, apiKey: apiKey, accountToken: accountToken)
         }
         return request
     }
+
+    /// Last session handed to the core (`bridgeSessionSet`).
+    nonisolated(unsafe) static var coreSession = ""
 }

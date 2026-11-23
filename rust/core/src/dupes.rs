@@ -1094,7 +1094,7 @@ mod tests {
                 x ^= x << 5;
                 x as f32 / u32::MAX as f32
             };
-            let parts: Vec<(f32, f32, f32)> = (0..48).map(|i| (150.0 * (4000f32 / 150.0).powf(i as f32 / 47.0) * (0.97 + rnd() * 0.06), 0.2 + rnd() * 1.8, rnd() * 6.28)).collect();
+            let parts: Vec<(f32, f32, f32)> = (0..48).map(|i| (150.0 * (4000f32 / 150.0).powf(i as f32 / 47.0) * (0.97 + rnd() * 0.06), 0.2 + rnd() * 1.8, rnd() * std::f32::consts::TAU)).collect();
             let mut nz = 0x9e3779b9u32;
             (0..len)
                 .map(|i| {

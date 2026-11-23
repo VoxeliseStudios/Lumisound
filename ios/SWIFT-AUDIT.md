@@ -107,3 +107,13 @@ Still Apple, could move later:
   re-encodes): needs an AAC/video encoder in Rust (syom can encode AAC; video stays Apple).
 - ~~`CryptoKit.SHA256` in two places~~ → core `sha256_hex` (2026-11-16).
 - `GroupActivities` (SharePlay): task 12 replaces it with Lumisound's own Listen Together.
+
+## 6. Moved 2026-11-23
+
+| Was | Now |
+|---|---|
+| `ArtworkService` source chain (remote, embedded, thumbnail tag, hqdefault, YouTube search, iTunes), no-art cache | `artresolve.rs` |
+| `analyzeReplayGain` AVFoundation tag scan | `library::replaygain_db` |
+| Stream download, Content-Type naming, prefetch, cache keys (`downloadAndSchedule`, `prefetchUpcomingStreamIfNeeded`, `StreamCache`) | `streamcache.rs` |
+| tvOS `TVAutoCrossfade` + `TVTailLevel` | core `blend_plan` / `queue_blend` (deleted) |
+| Cloud metadata list fetch | `bridge::cloud_metadata_fetch` (incremental) |

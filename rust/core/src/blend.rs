@@ -189,6 +189,26 @@ pub fn blend_profile(path: String) -> Option<Arc<BlendProfile>> {
     Some(Arc::new(p))
 }
 
+/// Store a profile measured elsewhere (another device, via the bridge) as
+/// this file's profile. None if the JSON isn't a usable profile.
+pub(crate) fn blend_profile_store(path: String, json: &[u8]) -> Option<Arc<BlendProfile>> {
+    let p: BlendProfile = serde_json::from_slice(json).ok()?;
+    if !(p.duration >= 10.0 && p.music_end > p.music_start) {
+        return None;
+    }
+    // A profile for a different cut of the recording would misplace every
+    // beat: only accept one whose length matches this file within 1.5 s.
+    if let Some(local) = decode::probe(Path::new(&path)).map(|x| x.duration) {
+        if local > 0.0 && (local - p.duration).abs() > 1.5 {
+            return None;
+        }
+    }
+    if let Ok(b) = serde_json::to_vec(&p) {
+        crate::blobcache::blob_cache_put(CACHE_NS.into(), cache_key(&path), b);
+    }
+    Some(Arc::new(p))
+}
+
 /// Cached profile only (never decodes).
 #[uniffi::export]
 pub fn blend_profile_cached(path: String) -> Option<Arc<BlendProfile>> {

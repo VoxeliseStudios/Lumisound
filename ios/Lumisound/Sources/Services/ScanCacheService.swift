@@ -34,11 +34,13 @@ final class ScanCacheService {
         return FileStamp(mtime: mdate.timeIntervalSince1970, size: size)
     }
 
+    /// Documents path, standardized once (it was looked up and standardized
+    /// for every file on every scan; seen on the main thread in telemetry).
+    nonisolated static let standardizedDocumentsPath: String? =
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.standardizedFileURL.path
+
     nonisolated static func documentsRelativePath(for url: URL) -> String? {
-        guard url.isFileURL,
-              let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
-        else { return nil }
-        let docsPath = docs.standardizedFileURL.path
+        guard url.isFileURL, let docsPath = standardizedDocumentsPath else { return nil }
         let filePath = url.standardizedFileURL.path
         guard filePath.hasPrefix(docsPath) else { return nil }
         return String(filePath.dropFirst(docsPath.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
@@ -50,7 +52,7 @@ final class ScanCacheService {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.standardizedFileURL.path ?? ""
         let p = scanCachePartition(paths: urls.map { $0.standardizedFileURL.path }, documentsDir: docs)
         let songs = (try? JSONDecoder().decode([Song].self, from: p.cachedSongsJson)) ?? []
-        return (songs, p.uncachedPaths.map { URL(fileURLWithPath: $0) })
+        return (songs, p.uncachedPaths.map { URL(fileURLWithPath: $0, isDirectory: false) })
     }
 
     func store(song: Song, for url: URL, stamp: FileStamp) {

@@ -92,11 +92,17 @@ final class TVPlayerModel: ObservableObject {
     /// listener already skipped.
     private var loadGeneration = 0
     private var ticker: Timer?
-    /// Base overlap. With Auto Crossfade on, `TVAutoCrossfade` picks a length
-    /// per transition from this starting point; with it off this is used as-is.
-    private let crossfadeDuration: TimeInterval = TVAutoCrossfade.baseDuration
+    /// Base overlap. With Auto Crossfade on, the core's Smart Crossfade
+    /// (Lumisound Blend) bends the length around this; with it off this is used as-is.
+    private let crossfadeDuration: TimeInterval = 6
     /// Queue a gapless next track this long before the end.
     private let gaplessLead: TimeInterval = 20
+    /// Smart Crossfade plans this long before the end: the engine then starts
+    /// the fade itself, on the planned downbeat.
+    private let blendLead: TimeInterval = 45
+    /// Smart Crossfade couldn't profile this track pair (too short, no
+    /// decode): this track ends with the fixed crossfade instead.
+    private var blendUnavailable = false
 
     /// Queue order before shuffling — restored when shuffle is toggled off.
     private var originalQueue: [TVPlayable] = []
@@ -235,6 +241,7 @@ final class TVPlayerModel: ObservableObject {
             }
             guard self.loadGeneration == generation, self.current?.id == item.id else { return }
             self.currentFile = file
+            self.blendUnavailable = false
             // Leading-silence trim (skips dead air before the music).
             var start: Double = 0
             if let f = self.followStart {
@@ -275,26 +282,15 @@ final class TVPlayerModel: ObservableObject {
 
     // MARK: Transitions (gapless / crossfade, done by the engine)
 
-    /// The plan for the transition out of the current track.
-    private func currentTransitionPlan(into nextItem: TVPlayable) -> TVAutoCrossfade.Plan {
-        guard TVAudioSettings.shared.autoCrossfade else {
-            return TVAutoCrossfade.Plan(duration: crossfadeDuration,
-                                        startBefore: crossfadeDuration,
-                                        reason: "auto-off")
+    /// Smart Crossfade profile of a local file: streamed tracks (YouTube,
+    /// SoundCloud) share theirs through the bridge by source id; cloud and
+    /// other files are measured here (cached per file by the core).
+    private static func blendProfileFor(file: URL, item: TVPlayable) async -> BlendProfile? {
+        let key = streamSourceKey(url: item.streamURL.absoluteString)
+        if !key.contains("://") {
+            return await blendProfileForStream(path: file.path, sourceKey: key)
         }
-        // Only measured locally when the server has not profiled this track yet.
-        let tail: Double? = (current?.transitionProfile == nil && current?.isLocked == false)
-            ? currentFile.flatMap { TVTailLevel.measure(url: $0, duration: duration) }
-            : nil
-        return TVAutoCrossfade.plan(
-            outgoingDuration: duration,
-            incomingDuration: nextItem.durationSeconds,
-            outgoing: current?.transitionProfile,
-            incoming: nextItem.transitionProfile,
-            outgoingBPM: current?.bpm,
-            incomingBPM: nextItem.bpm,
-            tailLevel: tail
-        )
+        return await Task.detached(priority: .utility) { blendProfile(path: file.path) }.value
     }
 
     /// The track that plays after this one on its own (repeat-one: itself).
@@ -312,25 +308,47 @@ final class TVPlayerModel: ObservableObject {
         let nextItem = queue[nextIndex]
         let remaining = duration - position
         let crossfade = crossfadeEnabled && queue.count > 1 && repeatMode != .one
-        let plan = crossfade ? currentTransitionPlan(into: nextItem) : nil
-        let lead = plan.map { $0.startBefore } ?? gaplessLead
-        guard remaining <= lead, duration > lead else { return }
+        let smart = crossfade && TVAudioSettings.shared.autoCrossfade && !blendUnavailable
+        let lead = smart ? blendLead : (crossfade ? crossfadeDuration : gaplessLead)
+        guard remaining <= lead, smart || duration > lead else { return }
         transitionArmed = true
         let deck = currentDeck
+        let outFile = currentFile
+        let outItem = current
+        let base = crossfadeDuration
         Task { [weak self] in
             guard let self else { return }
             guard let file = await TVTrackFiles.shared.file(for: nextItem),
                   self.currentDeck == deck, self.transitionArmed else { return }
             do {
-                if let plan {
-                    let id = try self.core.crossfadeTo(path: file.path, secs: plan.duration, startSecs: 0,
+                if smart {
+                    // Lumisound Blend (core blend.rs): downbeat-aligned start,
+                    // whole-bar length, beat-match and bass swap; the engine
+                    // starts the fade itself at plan.outStart.
+                    guard let outFile, let outItem,
+                          let a = await Self.blendProfileFor(file: outFile, item: outItem),
+                          let b = await Self.blendProfileFor(file: file, item: nextItem) else {
+                        guard self.currentDeck == deck else { return }
+                        self.blendUnavailable = true
+                        self.transitionArmed = false
+                        return
+                    }
+                    let plan = blendPlan(out: a, inc: b, settings: BlendSettings(baseSecs: base, beatMatch: true, bassSwap: true))
+                    guard self.currentDeck == deck, self.transitionArmed else { return }
+                    let id = try self.core.queueBlend(path: file.path, plan: plan, gainDb: 0, equalPower: true)
+                    self.pendingNext = (id, nextIndex, true)
+                    tvLog(String(format: "Blend planned: %.1fs at %.1fs into %@ (%@)", plan.fadeSecs, plan.outStart, nextItem.title, plan.reason), category: "playback")
+                    TVRemoteLogger.log(category: "playback", event: "crossfade_planned",
+                                       detail: ["into": nextItem.title, "seconds": round(plan.fadeSecs * 10) / 10,
+                                                "outStart": round(plan.outStart * 10) / 10, "inStart": round(plan.inStart * 10) / 10,
+                                                "reason": plan.reason, "auto": true])
+                } else if crossfade {
+                    let id = try self.core.crossfadeTo(path: file.path, secs: base, startSecs: 0,
                                                        gainDb: 0, equalPower: true, tempoMatch: 0)
                     self.pendingNext = (id, nextIndex, true)
                     tvLog("Crossfade started into: \(nextItem.title)", category: "playback")
                     TVRemoteLogger.log(category: "playback", event: "crossfade_started",
-                                       detail: ["into": nextItem.title, "seconds": round(plan.duration * 10) / 10,
-                                                "startBefore": round(plan.startBefore * 10) / 10,
-                                                "reason": plan.reason, "auto": TVAudioSettings.shared.autoCrossfade])
+                                       detail: ["into": nextItem.title, "seconds": base, "reason": "fixed", "auto": false])
                 } else {
                     let id = try self.core.queueNext(path: file.path, gainDb: 0)
                     self.pendingNext = (id, nextIndex, false)
@@ -357,6 +375,7 @@ final class TVPlayerModel: ObservableObject {
         currentDeck = id
         pendingNext = nil
         transitionArmed = false
+        blendUnavailable = false
         position = 0
         duration = queue[next.index].durationSeconds
         let item = queue[next.index]

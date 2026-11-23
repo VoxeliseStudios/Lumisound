@@ -87,34 +87,6 @@ final class ArtworkService {
     /// the cooperative pool at the same time. A bare dictionary mutated from
     /// concurrent reads/inserts is a data race (unlike `memoryCache`/`mediaQueryCache`,
     /// which are `NSCache` and already thread-safe) — guard it with a lock.
-    private var noArtworkKeys: [String: Date] = [:]
-    private let noArtworkLock = NSLock()
-    private static let noArtworkCooldown: TimeInterval = 5 * 60  // 5 minutes
-
-    private func isKnownNoArtwork(_ key: String) -> Bool {
-        noArtworkLock.lock()
-        defer { noArtworkLock.unlock() }
-        guard let markedAt = noArtworkKeys[key] else { return false }
-        guard Date().timeIntervalSince(markedAt) < Self.noArtworkCooldown else {
-            noArtworkKeys.removeValue(forKey: key)
-            appLog("Artwork: no-artwork cooldown expired for key=\(key) — will retry", category: "artwork")
-            return false
-        }
-        return true
-    }
-
-    private func markNoArtwork(_ key: String) {
-        noArtworkLock.lock()
-        defer { noArtworkLock.unlock() }
-        noArtworkKeys[key] = Date()
-    }
-
-    private func clearNoArtworkKeys() {
-        noArtworkLock.lock()
-        defer { noArtworkLock.unlock() }
-        noArtworkKeys.removeAll()
-    }
-
     /// Sentinel image stored in `mediaQueryCache` to signal "already checked, no artwork".
     private let noArtworkSentinel = UIImage()
 
@@ -151,6 +123,7 @@ final class ArtworkService {
         try? FileManager.default.createDirectory(at: diskCacheURL, withIntermediateDirectories: true)
         purgeStaleArtworkCacheIfNeeded()
         Self.configureBlobCache()
+        StreamCache.configure()
 
         // LRU eviction: cap at 200 images. NSCache evicts least-recently-used entries
         // automatically under memory pressure and when countLimit is exceeded.
@@ -322,148 +295,69 @@ final class ArtworkService {
             return onDisk
         }
 
-        // Negative cache: skip all network/API sources for keys we already know
-        // have no artwork. Previously silent — a track short-circuiting here
-        // looked identical to one that was simply never asked for, which made
-        // "why didn't this even try to load" impossible to tell apart from
-        // "this hasn't been requested yet" purely from the log stream.
-        if isKnownNoArtwork(key) {
-            appLog("Artwork: skipping \"\(song.displayName)\" — still within no-artwork cooldown (key=\(key))", category: "artwork")
+        // Negative cache (core): a track with no art anywhere isn't asked
+        // for again for 5 minutes.
+        if artworkNoArtCheck(key: key) {
             return nil
         }
 
-        // Streaming tracks store their thumbnail URL as the artworkCacheKey.
-        if let cacheKeyStr = song.artworkCacheKey,
-           cacheKeyStr.hasPrefix("http"),
-           let thumbnailURL = URL(string: cacheKeyStr) {
-            appLog("Artwork: fetching remote thumbnail for \"\(song.displayName)\"", category: "artwork")
-            if let image = await fetchRemoteImage(url: thumbnailURL, headers: song.httpHeaders) {
-                appLog("Artwork: remote thumbnail found for \"\(song.displayName)\"", category: "artwork")
-                return persistFullArtwork(image, forKey: key)
-            }
-            appWarn("Artwork: remote fetch failed for \"\(song.displayName)\"", category: "artwork")
-        }
-
+        // Apple Music items: only MediaPlayer can read their artwork.
         if let persistentID = song.persistentID {
             if let image = await fetchMediaLibraryArtwork(persistentID: persistentID) {
-                appLog("Artwork: media library hit for \"\(song.displayName)\"", category: "artwork")
                 return persistFullArtwork(image, forKey: key)
             }
-            appLog("Artwork: media library miss for \"\(song.displayName)\"", category: "artwork")
             return nil
         }
 
-        if let url = song.url {
-            // Reads embedded tags/artwork below need `playableURL` — a
-            // `.lms`-locked track's on-disk bytes are XOR-masked (see
-            // LumisoundLockFormat's header comment) and are NOT a valid
-            // audio container to AVFoundation at all, so every embedded-
-            // metadata read against the raw `url` silently failed for any
-            // track that had gone through the exclusive-lock pipeline —
-            // this was the "metadata and artwork data is bugged, nothing
-            // is showing" report. A no-op for anything not `.lms`-marked.
-            // The Rust reader takes locked `.lms` files as they are (unmasked
-            // on the fly), so embedded art no longer waits on a full decrypt
-            // to a temp copy (which iOS also purges, so it kept recurring —
-            // the "thumbnail never shows up" report). The decrypted copy is
-            // only made for the AVFoundation fallbacks below, and only if
-            // they're reached.
+        let maxShort = UInt32(Self.artworkCacheDimension)
+        let remote = song.artworkCacheKey.flatMap { $0.hasPrefix("http") ? $0 : nil }
+        let localPath = song.url.flatMap { $0.isFileURL ? $0.path : StreamCache.localURL(for: $0)?.path }
+        // The track's own sources, in the core: remote thumbnail, embedded
+        // cover (locked files read in place), LUMISOUND_THUMBNAIL tag,
+        // YouTube hqdefault. Returned processed (bars trimmed, sized, JPEG).
+        let query = ArtworkQuery(remoteUrl: remote,
+                                 headers: (song.httpHeaders ?? [:]).map { HttpHeader(name: $0.key, value: $0.value) },
+                                 path: localPath, unlockDir: CoreAudio.unlockDir,
+                                 sourceTrackId: song.sourceTrackID, maxShort: maxShort)
+        if let found = await artworkResolveLocal(q: query), let image = persistProcessed(found.data, forKey: key) {
+            appLog("Artwork: \(found.source) for \"\(song.displayName)\"", category: "artwork")
+            return image
+        }
+
+        if let url = song.url, url.isFileURL {
+            // Files lofty can't parse: AVFoundation's metadata reader.
             let readableURL = LumisoundExclusiveExtensionService.playableURL(for: url)
-
-            // Try embedded asset artwork (works for m4a, mp3, flac with embedded tags).
-            if let image = await fetchAssetArtwork(url: url, fallbackURL: readableURL) {
-                appLog("Artwork: embedded tag found for \"\(song.displayName)\"", category: "artwork")
+            if let image = await fetchAVFoundationArtwork(url: readableURL) {
                 return persistFullArtwork(image, forKey: key)
             }
-            appLog("Artwork: no embedded tag artwork for \"\(song.displayName)\" (ext=\(readableURL.pathExtension))", category: "artwork")
-
-            // Tracks downloaded via the bridge are tagged with the original
-            // YouTube/SoundCloud thumbnail URL (LUMISOUND_THUMBNAIL) since
-            // --embed-thumbnail isn't available. If the disk cache entry seeded
-            // at download time was ever cleared, recover the same thumbnail here
-            // instead of falling through to a guess-based iTunes Search lookup.
-            if let thumbnailURL = await fetchEmbeddedThumbnailURL(url: readableURL, original: url),
-               let image = await fetchRemoteImage(url: thumbnailURL) {
-                appLog("Artwork: recovered embedded LUMISOUND_THUMBNAIL for \"\(song.displayName)\"", category: "artwork")
+            // Local video files: the first frame (AVAssetImageGenerator).
+            if Self.videoExtensions.contains(LumisoundExclusiveExtensionService.effectiveExtension(for: url)),
+               let image = await extractVideoFrame(url: readableURL) {
                 return persistFullArtwork(image, forKey: key)
             }
-
-            // Both branches above read embedded file metadata via
-            // AVFoundation — which, for Ogg/Opus's vorbis-comment-based
-            // picture/tag blocks, is far less reliable than for MP4/ID3
-            // (confirmed: several Opus tracks downloaded through this
-            // exact pipeline show no artwork despite yt-dlp's
-            // --embed-thumbnail having run at download time). For a
-            // YouTube-sourced track this doesn't need to depend on reading
-            // the file at all: YouTube's hqdefault.jpg is deterministic
-            // from the video ID alone and virtually always exists — the
-            // same guaranteed fallback the download-time prefetch
-            // (StreamingService+DownloadToLibrary's
-            // prefetchArtworkWithFallback) already reaches for when a
-            // track's *actual* thumbnail URL 404s. Tried before iTunes
-            // Search since a real (if lower-resolution) match beats a
-            // guess-based text search that a niche fan remix/game-rip
-            // upload was never going to match in iTunes's commercial
-            // catalog anyway.
-            if let sourceTrackID = song.sourceTrackID, sourceTrackID.hasPrefix("youtube:") {
-                let videoID = String(sourceTrackID.dropFirst("youtube:".count))
-                if let thumbnailURL = URL(string: "https://i.ytimg.com/vi/\(videoID)/hqdefault.jpg"),
-                   let image = await fetchRemoteImage(url: thumbnailURL) {
-                    appLog("Artwork: recovered via YouTube hqdefault fallback for \"\(song.displayName)\"", category: "artwork")
-                    return persistFullArtwork(image, forKey: key)
-                }
-                appWarn("Artwork: hqdefault fallback fetch failed for \"\(song.displayName)\" (videoID=\(videoID))", category: "artwork")
-            } else {
-                // No embedded tag AND no sourceTrackID to fall back on — this
-                // is the single most useful line for diagnosing "metadata's
-                // there but artwork never loads": it tells us the file's own
-                // tags never carried a recoverable trackID at all (import-time
-                // tag read failed, or the file predates tagging), so the only
-                // paths left are the two fuzzy text-search fallbacks below.
-                appLog("Artwork: no sourceTrackID for \"\(song.displayName)\" — skipping deterministic hqdefault fallback", category: "artwork")
-            }
-
-            // For local video files, extract the first frame as artwork.
-            if Self.videoExtensions.contains(LumisoundExclusiveExtensionService.effectiveExtension(for: url)) {
-                appLog("Artwork: extracting video frame for \"\(song.displayName)\"", category: "artwork")
-                if let image = await extractVideoFrame(url: readableURL) {
-                    return persistFullArtwork(image, forKey: key)
-                }
-                appWarn("Artwork: video frame extraction failed for \"\(song.displayName)\"", category: "artwork")
-            }
         }
 
-        // Last resort #1: search the bridge (YouTube) by title + artist and
-        // use the top result's thumbnail. Tried before iTunes Search since
-        // this app's library skews toward fan remixes/game-rips/niche
-        // content that YouTube actually hosts and iTunes's commercial
-        // catalog never will — and unlike iTunes, this device may not have
-        // any iTunes/Apple Music account or usage at all, so that fallback
-        // alone left plenty of tracks with no recoverable artwork.
-        appLog("Artwork: searching YouTube for \"\(song.displayName)\" by \(song.artistName)", category: "artwork")
-        if let image = await fetchYouTubeSearchArtwork(title: song.title, artist: song.artist) {
-            appLog("Artwork: YouTube search match found for \"\(song.displayName)\"", category: "artwork")
-            return persistFullArtwork(image, forKey: key)
+        // Last resorts (core): YouTube search through the bridge (title must
+        // overlap), then iTunes Search.
+        if let found = await artworkSearch(title: song.title, artist: song.artist, maxShort: maxShort),
+           let image = persistProcessed(found.data, forKey: key) {
+            appLog("Artwork: \(found.source) match for \"\(song.displayName)\"", category: "artwork")
+            return image
         }
 
-        // Last resort #2: iTunes Search API — still worth trying for
-        // legitimately commercial tracks the YouTube search above didn't
-        // resolve a usable thumbnail for.
-        appLog("Artwork: querying iTunes for \"\(song.displayName)\" by \(song.artistName)", category: "artwork")
-        if let image = await fetchITunesArtwork(title: song.title, artist: song.artist) {
-            appLog("Artwork: iTunes match found for \"\(song.displayName)\"", category: "artwork")
-            return persistFullArtwork(image, forKey: key)
-        }
-
-        markNoArtwork(key)
-        appWarn(
-            "Artwork: no source found for \"\(song.displayName)\" — exhausted all fallbacks "
-            + "(key=\(key), hasURL=\(song.url != nil), hasPersistentID=\(song.persistentID != nil), "
-            + "sourceTrackID=\(song.sourceTrackID ?? "nil"), ext=\(song.url.map { LumisoundExclusiveExtensionService.effectiveExtension(for: $0) } ?? "n/a"), "
-            + "blacklisting for \(Int(Self.noArtworkCooldown))s",
-            category: "artwork"
-        )
+        artworkNoArtMark(key: key)
+        appWarn("Artwork: no source found for \"\(song.displayName)\" (key=\(key), sourceTrackID=\(song.sourceTrackID ?? "nil")) — retrying in 5 min",
+                category: "artwork")
         return nil
+    }
+
+    /// Caches artwork the core already processed (JPEG at the cache size).
+    private func persistProcessed(_ data: Data, forKey key: String) -> UIImage? {
+        guard let image = UIImage(data: data) else { return nil }
+        setMemoryCache(image, forKey: key)
+        _ = blobCachePut(namespace: Self.artNS, key: key, data: data)
+        invalidateThumbnails(forKey: key)
+        return image
     }
 
     /// Resizes, memory-caches, disk-caches, and invalidates any stale bucketed
@@ -491,7 +385,7 @@ final class ArtworkService {
         memoryCache.removeAllObjects()
         mediaQueryCache.removeAllObjects()
         thumbnailCache.removeAllObjects()
-        clearNoArtworkKeys()
+        artworkNoArtClear()
     }
 
     /// Warms the thumbnail cache — and, for songs with no disk entry yet, the
@@ -905,77 +799,24 @@ final class ArtworkService {
         return image
     }
 
-    /// Reads embedded artwork from the file's metadata — checks both commonMetadata
-    /// and all format-specific metadata items to maximise coverage across m4a, mp3, flac, etc.
-    private func fetchAssetArtwork(url: URL, fallbackURL: URL? = nil) async -> UIImage? {
-        // Embedded pictures via the Rust core (lofty, every container; locked
-        // files read in place).
-        if url.isFileURL,
-           let data = await Task.detached(priority: .utility, operation: { artworkEmbedded(path: url.path, cacheDir: CoreAudio.unlockDir) }).value,
-           let image = UIImage(data: data) {
-            return image
-        }
-        // Never over the network: for a streamed song this used to open the
-        // bridge's stream proxy and set off a yt-dlp run per range request.
-        guard let avURL = StreamCache.localURL(for: fallbackURL ?? url) else { return nil }
-        return await Task.detached(priority: .utility) {
-            let asset = AVURLAsset(url: avURL)
-
-            // Pass 1: commonMetadata (works for most formats, fastest path)
+    /// Embedded artwork through AVFoundation, for the few files the core's
+    /// tag reader (lofty) can't parse. Local files only.
+    private func fetchAVFoundationArtwork(url: URL) async -> UIImage? {
+        await Task.detached(priority: .utility) {
+            let asset = AVURLAsset(url: url)
             if let commonMetadata = try? await asset.load(.commonMetadata) {
                 for item in commonMetadata where item.commonKey == .commonKeyArtwork {
-                    if let data = try? await item.load(.dataValue),
-                       let image = UIImage(data: data) { return image }
-                    if let value = try? await item.load(.value) as? Data,
-                       let image = UIImage(data: value) { return image }
+                    if let data = try? await item.load(.dataValue), let image = UIImage(data: data) { return image }
                 }
             }
-
-            // Pass 2: all metadata items — catches artwork in format-specific tags
-            // that AVFoundation doesn't surface via commonMetadata (e.g. some FLAC files).
             if let allMeta = try? await asset.load(.metadata) {
                 for item in allMeta {
-                    guard let identifierRaw = item.identifier?.rawValue else { continue }
-                    let id = identifierRaw.lowercased()
-                    guard id.contains("artwork") || id.contains("covr") ||
-                          id.contains("apic") || id.contains("picture") else { continue }
-                    if let data = try? await item.load(.dataValue),
-                       data.count > 500,
-                       let image = UIImage(data: data) { return image }
-                    if let value = try? await item.load(.value) as? Data,
-                       value.count > 500,
-                       let image = UIImage(data: value) { return image }
+                    guard let id = item.identifier?.rawValue.lowercased(),
+                          id.contains("artwork") || id.contains("covr") || id.contains("apic") || id.contains("picture") else { continue }
+                    if let data = try? await item.load(.dataValue), data.count > 500, let image = UIImage(data: data) { return image }
                 }
             }
-
             return nil as UIImage?
-        }.value
-    }
-
-    /// Reads the `LUMISOUND_THUMBNAIL` metadata tag (embedded by the bridge at
-    /// download time — see `_do_download_job`'s `tag_cmd`) and returns it as a URL.
-    private func fetchEmbeddedThumbnailURL(url: URL, original: URL? = nil) async -> URL? {
-        if let original, original.isFileURL,
-           let s = await Task.detached(priority: .utility, operation: { tagsReadLumisound(path: original.path).thumbnailUrl }).value,
-           let u = URL(string: s) {
-            return u
-        }
-        guard let url = StreamCache.localURL(for: url) else { return nil }
-        return await Task.detached(priority: .utility) {
-            let asset = AVURLAsset(url: url)
-            guard let allMeta = try? await asset.load(.metadata) else { return nil as URL? }
-            // Surfaces under different identifier forms depending on container —
-            // check both the identifier and key, matching the LUMISOUND_ID lookup
-            // in DocumentImportService.
-            for item in allMeta {
-                let idRaw = item.identifier?.rawValue.lowercased() ?? ""
-                let keyRaw = (item.key as? String)?.lowercased() ?? ""
-                guard idRaw.contains("lumisound_thumbnail") || keyRaw.contains("lumisound_thumbnail") else { continue }
-                if let value = try? await item.load(.stringValue), let url = URL(string: value) {
-                    return url
-                }
-            }
-            return nil as URL?
         }.value
     }
 
@@ -1003,106 +844,4 @@ final class ArtworkService {
         }.value
     }
 
-    /// Searches the bridge (YouTube, via `StreamingService.searchSilently` —
-    /// the same silent/non-UI-disturbing search `DeadLinkHealingService`
-    /// uses) for `title` + `artist` and fetches the top result's thumbnail.
-    /// `StreamingService` is `@MainActor`-isolated; this function isn't, so
-    /// the call hops there explicitly rather than requiring every caller of
-    /// `loadArtwork` to already be on the main actor.
-    private func fetchYouTubeSearchArtwork(title: String, artist: String) async -> UIImage? {
-        let query = [title, artist]
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-            .joined(separator: " ")
-        guard !query.isEmpty else { return nil }
-
-        guard let streaming = await MainActor.run(body: { StreamingService.shared }) else {
-            appWarn("Artwork: YouTube search skipped — StreamingService unavailable (query=\"\(query)\")", category: "artwork")
-            return nil
-        }
-        let results = await streaming.searchSilently(query: query)
-        guard !results.isEmpty else {
-            appLog("Artwork: YouTube search returned zero results (query=\"\(query)\")", category: "artwork")
-            return nil
-        }
-        // The first hit for an unrestricted "title artist" YouTube search is
-        // NOT necessarily the actual track — unlike the iTunes Search API
-        // just below (which at least scopes to entity=song and tends to be
-        // reliable for catalogued music), a plain YouTube search can easily
-        // top-rank a cover, a reaction video, a completely different song
-        // that happens to share words, or a same-titled track by another
-        // artist. This is a last-resort artwork fallback specifically for
-        // tracks the more targeted sources couldn't find anything for, so
-        // blindly trusting result #1 here is exactly the kind of thing that
-        // produces "wrong/unrelated thumbnail" reports. Reject anything
-        // whose own reported title doesn't at least textually overlap with
-        // what was actually searched for — same normalization
-        // DuplicateFinderService already uses to decide "is this the same
-        // song" elsewhere in this app.
-        guard let match = results.first(where: { candidate in
-            let normalizedQueryTitle = DuplicateFinderService.normalize(title)
-            let normalizedResultTitle = DuplicateFinderService.normalize(candidate.title)
-            guard !normalizedQueryTitle.isEmpty, !normalizedResultTitle.isEmpty else { return false }
-            return normalizedResultTitle.contains(normalizedQueryTitle)
-                || normalizedQueryTitle.contains(normalizedResultTitle)
-        }) else {
-            appLog(
-                "Artwork: YouTube search got \(results.count) result(s) but none passed the title-overlap "
-                + "guard (query=\"\(query)\", topResultTitle=\"\(results.first?.title ?? "")\")",
-                category: "artwork"
-            )
-            return nil
-        }
-        guard !match.thumbnailURL.isEmpty, let thumbnailURL = URL(string: match.thumbnailURL) else {
-            appWarn("Artwork: YouTube search matched \"\(match.title)\" but it has no usable thumbnail URL", category: "artwork")
-            return nil
-        }
-        return await fetchRemoteImage(url: thumbnailURL)
-    }
-
-    /// Queries the iTunes Search API for artwork matching `title` + `artist`.
-    /// Used as a last resort for tracks that have no embedded art and are not video files.
-    private func fetchITunesArtwork(title: String, artist: String) async -> UIImage? {
-        let query = [title, artist]
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-            .joined(separator: " ")
-        guard !query.isEmpty,
-              let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-              let apiURL = URL(string: "https://itunes.apple.com/search?term=\(encoded)&entity=song&limit=1&country=US")
-        else {
-            appWarn("Artwork: iTunes lookup skipped — empty query or malformed URL (title=\"\(title)\", artist=\"\(artist)\")", category: "artwork")
-            return nil
-        }
-
-        do {
-            let (data, response) = try await Core.data(from: apiURL)
-            guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-                appWarn(
-                    "Artwork: iTunes lookup got HTTP \((response as? HTTPURLResponse)?.statusCode ?? -1) (query=\"\(query)\")",
-                    category: "artwork"
-                )
-                return nil
-            }
-            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let results = json["results"] as? [[String: Any]],
-                  let first = results.first
-            else {
-                appLog("Artwork: iTunes lookup returned zero results (query=\"\(query)\")", category: "artwork")
-                return nil
-            }
-
-            // Prefer 600×600 artwork; fall back to 100×100 upscaled.
-            let artStr = (first["artworkUrl600"] as? String)
-                ?? (first["artworkUrl100"] as? String ?? "").replacingOccurrences(of: "100x100bb", with: "600x600bb")
-            guard let artURL = URL(string: artStr) else {
-                appWarn("Artwork: iTunes matched a result for \"\(query)\" but it has no usable artwork URL", category: "artwork")
-                return nil
-            }
-            return await fetchRemoteImage(url: artURL)
-        } catch {
-            appWarn("Artwork: iTunes lookup request failed for \"\(query)\": \(error.localizedDescription)", category: "artwork")
-            return nil
-        }
-    }
 }

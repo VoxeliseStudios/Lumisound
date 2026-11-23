@@ -20,8 +20,8 @@ const MEMORY_FLOOR_MB: f64 = 900.0;
 const COOKIE_CACHE_TTL: Duration = Duration::from_secs(300);
 const MIN_ACCOUNT_AGE_DAYS_FOR_GLOBAL_COOKIES: i64 = 15;
 const RATE_LIMIT_MARKERS: &[&str] = &[
-    "sign in to confirm you're not a bot",
-    "sign in to confirm that you're not a bot",
+    // yt-dlp prints "you’re" with a typographic apostrophe; match the tail.
+    "not a bot",
     "http error 429",
     "too many requests",
     "this content isn't available, try again later",
@@ -192,6 +192,37 @@ pub struct Ytdlp {
     /// YouTube rate-limited the session that a cookie owner (user id, or
     /// "global") downloads with: hold that owner's downloads until then.
     rate_hold: dashmap::DashMap<String, Instant>,
+    /// Per cookie jar ("global", "pool:<name>", "user:<id>"): last success,
+    /// bot-wall history and a bench after YouTube's "not a bot" wall.
+    pub jar_health: dashmap::DashMap<String, JarHealth>,
+    pool_copies: dashmap::DashMap<String, (std::time::SystemTime, u64)>,
+}
+
+/// How a cookie jar is doing (admin card, rotation order, alerts).
+#[derive(Clone, Debug, Default)]
+pub struct JarHealth {
+    pub last_ok: Option<chrono::DateTime<chrono::Utc>>,
+    pub last_botwall: Option<chrono::DateTime<chrono::Utc>>,
+    /// Bot walls since the last success.
+    pub botwalls: u32,
+    pub benched_until: Option<Instant>,
+}
+
+/// One cookie jar to try: who owns it and the yt-dlp arguments for it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CookieChoice {
+    /// "global", "pool:<name>", "user:<id>" or "none".
+    pub owner: String,
+    pub args: Vec<String>,
+}
+
+/// How long a jar sits out after a bot wall before it is tried first again.
+const BOTWALL_BENCH: Duration = Duration::from_secs(20 * 60);
+
+/// YouTube's "Sign in to confirm you're not a bot" wall.
+pub fn is_bot_wall(stderr: &[u8]) -> bool {
+    let t = String::from_utf8_lossy(stderr).to_lowercase();
+    t.contains("not a bot") || t.contains("sign in to confirm")
 }
 
 impl Ytdlp {
@@ -216,6 +247,8 @@ impl Ytdlp {
             written_cookie_hash: dashmap::DashMap::new(),
             global_copy: Mutex::new(None),
             rate_hold: dashmap::DashMap::new(),
+            jar_health: dashmap::DashMap::new(),
+            pool_copies: dashmap::DashMap::new(),
             cfg: cfg.clone(),
             db,
         }
@@ -274,6 +307,8 @@ impl Ytdlp {
     }
 
     pub fn invalidate_user_cookies(&self, user_id: &str) {
+        // New jar: its predecessor's bot-wall bench doesn't apply.
+        self.jar_health.remove(&format!("user:{user_id}"));
         self.user_cookies.remove(&user_id.to_string());
         self.cookie_pref.remove(&user_id.to_string());
         self.written_cookie_hash.remove(user_id);
@@ -360,38 +395,183 @@ impl Ytdlp {
         self.cookie_fallback_preference(uid).await != "own_only"
     }
 
-    /// Cookie arguments for a request on behalf of `user_id`: the user's own
-    /// uploaded jar, else the shared one (accounts 15+ days old that allow it).
-    pub async fn cookie_args(&self, user_id: Option<&str>, force_global: bool) -> Vec<String> {
+    /// Extra shared jars (`YTDLP_COOKIES_POOL_DIR/*.txt`), as writable copies
+    /// (yt-dlp rewrites its jar on exit), refreshed when the source changes.
+    fn pool_jars(&self) -> Vec<(String, String)> {
+        let Some(dir) = self.cfg.ytdlp_cookies_pool_dir.as_deref() else { return Vec::new() };
+        let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
+        let copies = Path::new(&self.cfg.ytdlp_cache_dir).join("pool-cookies");
+        let mut out = Vec::new();
+        let mut entries: Vec<_> = rd.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "txt")).collect();
+        entries.sort();
+        for src in entries {
+            let Some(name) = src.file_stem().and_then(|n| n.to_str()).map(str::to_string) else { continue };
+            let Ok(meta) = std::fs::metadata(&src) else { continue };
+            if meta.len() == 0 {
+                continue;
+            }
+            let copy = copies.join(format!("{name}.txt"));
+            let sig = (meta.modified().unwrap_or(std::time::UNIX_EPOCH), meta.len());
+            let fresh = self.pool_copies.get(&name).is_some_and(|s| *s == sig) && copy.exists();
+            if !fresh {
+                let r = std::fs::create_dir_all(&copies).and_then(|_| std::fs::copy(&src, &copy).map(|_| ()));
+                if let Err(e) = r {
+                    tracing::warn!("cookie pool: could not copy {name}: {e}");
+                    continue;
+                }
+                self.pool_copies.insert(name.clone(), sig);
+            }
+            out.push((format!("pool:{name}"), copy.to_string_lossy().into_owned()));
+        }
+        out
+    }
+
+    fn benched(&self, owner: &str) -> bool {
+        self.jar_health.get(owner).and_then(|h| h.benched_until).is_some_and(|t| t > Instant::now())
+    }
+
+    /// Every jar this request may use, best first: the user's own jar, the
+    /// shared one and the pool (by the user's preference and account age),
+    /// with jars benched after a bot wall moved to the back. Never empty: a
+    /// request with no usable jar gets one cookieless choice.
+    pub async fn cookie_candidates(&self, user_id: Option<&str>, force_global: bool) -> Vec<CookieChoice> {
         // skip=authcheck too: with cookies + skip=webpage, yt-dlp 2026.10+
         // refuses every playlist ("Playlists that require authentication may
         // not extract correctly without a successful webpage download"), so
         // playlist imports and library downloads stopped on 2026-11-09.
-        let mut args = vec!["--extractor-args".to_string(), "youtubetab:skip=webpage,authcheck".to_string()];
-        let eligible = self.global_available() && self.may_use_global_cookies(user_id).await;
-        let path = if force_global && eligible {
-            self.writable_global_cookies_path()
-        } else {
-            let own = self.user_cookies_file(user_id).await;
-            let pref = match user_id {
-                Some(u) if eligible => self.cookie_fallback_preference(u).await,
-                _ => "auto".to_string(),
-            };
-            if eligible && pref == "global_only" {
-                self.writable_global_cookies_path()
-            } else if own.is_some() {
-                own
-            } else if eligible {
-                self.writable_global_cookies_path()
-            } else {
-                None
+        let base = vec!["--extractor-args".to_string(), "youtubetab:skip=webpage,authcheck".to_string()];
+        let eligible = self.may_use_global_cookies(user_id).await;
+        let shared = |out: &mut Vec<(String, String)>| {
+            if self.global_available() {
+                if let Some(p) = self.writable_global_cookies_path() {
+                    out.push(("global".into(), p));
+                }
             }
+            out.extend(self.pool_jars());
         };
-        if let Some(p) = path {
-            args.push("--cookies".into());
-            args.push(p);
+        let mut jars: Vec<(String, String)> = Vec::new();
+        let pref = match user_id {
+            Some(u) => self.cookie_fallback_preference(u).await,
+            None => "auto".to_string(),
+        };
+        if (force_global || pref == "global_only") && eligible {
+            shared(&mut jars);
+        } else {
+            if let (Some(u), Some(own)) = (user_id, self.user_cookies_file(user_id).await) {
+                jars.push((format!("user:{u}"), own));
+            }
+            if eligible {
+                shared(&mut jars);
+            }
         }
-        args
+        let (mut ready, rested): (Vec<_>, Vec<_>) = jars.into_iter().partition(|(o, _)| !self.benched(o));
+        ready.extend(rested);
+        if ready.is_empty() {
+            return vec![CookieChoice { owner: "none".into(), args: base }];
+        }
+        ready
+            .into_iter()
+            .map(|(owner, path)| {
+                let mut args = base.clone();
+                args.extend(["--cookies".to_string(), path]);
+                CookieChoice { owner, args }
+            })
+            .collect()
+    }
+
+    /// Cookie arguments for a request on behalf of `user_id`: the best jar
+    /// from `cookie_candidates`.
+    pub async fn cookie_args(&self, user_id: Option<&str>, force_global: bool) -> Vec<String> {
+        self.cookie_candidates(user_id, force_global).await.swap_remove(0).args
+    }
+
+    /// A yt-dlp run with this jar got through.
+    pub fn note_jar_ok(&self, owner: &str) {
+        if owner == "none" {
+            return;
+        }
+        let mut h = self.jar_health.entry(owner.to_string()).or_default();
+        h.last_ok = Some(chrono::Utc::now());
+        h.botwalls = 0;
+        h.benched_until = None;
+    }
+
+    /// YouTube showed this jar the bot wall: bench it so the next requests
+    /// start with another jar, and flag the shared jar stale so the host's
+    /// refresher (`lumisound-refresh-cookies`) installs a fresh export.
+    pub fn note_jar_botwall(&self, owner: &str) {
+        if owner == "none" {
+            return;
+        }
+        {
+            let mut h = self.jar_health.entry(owner.to_string()).or_default();
+            h.last_botwall = Some(chrono::Utc::now());
+            h.botwalls = h.botwalls.saturating_add(1);
+            h.benched_until = Some(Instant::now() + BOTWALL_BENCH);
+        }
+        tracing::warn!("cookie jar {owner} hit YouTube's bot wall; benched for {} min", BOTWALL_BENCH.as_secs() / 60);
+        if owner == "global" {
+            self.write_stale_sentinel("bot wall");
+        }
+    }
+
+    fn write_stale_sentinel(&self, why: &str) {
+        let p = Path::new(&self.cfg.ytdlp_cache_dir).join(".cookies_stale");
+        let _ = std::fs::create_dir_all(Path::new(&self.cfg.ytdlp_cache_dir));
+        if let Err(e) = std::fs::write(&p, format!("{} {why}", chrono::Utc::now().to_rfc3339())) {
+            tracing::warn!("failed to write cookies-stale sentinel: {e}");
+        }
+    }
+
+    /// Bot wall → bench the jar; a clean exit → mark it healthy.
+    pub fn note_jar_result(&self, owner: &str, ok: bool, stderr: &[u8]) {
+        if ok {
+            self.note_jar_ok(owner);
+        } else if is_bot_wall(stderr) {
+            self.note_jar_botwall(owner);
+        }
+    }
+
+    /// Admin view of every jar the bridge has used or could use.
+    pub fn jar_report(&self) -> Vec<Value> {
+        let mut owners: Vec<String> = Vec::new();
+        if self.global_available() {
+            owners.push("global".into());
+        }
+        owners.extend(self.pool_jars().into_iter().map(|(o, _)| o));
+        for e in self.jar_health.iter() {
+            if !owners.contains(e.key()) {
+                owners.push(e.key().clone());
+            }
+        }
+        let now = Instant::now();
+        owners
+            .into_iter()
+            .map(|o| {
+                let h = self.jar_health.get(&o).map(|h| h.clone()).unwrap_or_default();
+                json!({
+                    "owner": if o.starts_with("user:") { "user" } else { o.as_str() },
+                    "last_ok": h.last_ok.map(|t| t.to_rfc3339()),
+                    "last_botwall": h.last_botwall.map(|t| t.to_rfc3339()),
+                    "botwalls_since_ok": h.botwalls,
+                    "benched_secs": h.benched_until.map(|t| t.saturating_duration_since(now).as_secs()).unwrap_or(0),
+                })
+            })
+            .collect()
+    }
+
+    /// Modification time of the shared jar and whether the refresher's
+    /// stale sentinel is set.
+    pub fn global_jar_status(&self) -> Value {
+        let m = std::fs::metadata(&self.cfg.ytdlp_cookies_file).ok();
+        let age_h = m.as_ref().and_then(|m| m.modified().ok()).and_then(|t| t.elapsed().ok()).map(|d| d.as_secs() / 3600);
+        let sentinel = std::fs::read_to_string(Path::new(&self.cfg.ytdlp_cache_dir).join(".cookies_stale")).ok();
+        json!({
+            "present": m.is_some_and(|m| m.len() > 0),
+            "age_hours": age_h,
+            "stale_flag": sentinel.map(|s| s.trim().to_string()),
+            "pool_size": self.pool_jars().len(),
+        })
     }
 
     pub async fn listing_args(&self, target: &str, source: &str, user_id: Option<&str>) -> Vec<String> {
@@ -487,11 +667,7 @@ impl Ytdlp {
         if !t.contains("no longer valid") || !t.contains("cookie") {
             return;
         }
-        let p = Path::new(&self.cfg.ytdlp_cache_dir).join(".cookies_stale");
-        let _ = std::fs::create_dir_all(Path::new(&self.cfg.ytdlp_cache_dir));
-        if let Err(e) = std::fs::write(&p, chrono::Utc::now().to_rfc3339()) {
-            tracing::warn!("failed to write cookies-stale sentinel: {e}");
-        }
+        self.write_stale_sentinel("cookies no longer valid");
     }
 
     /// Seconds left on a rate-limit hold for this cookie owner.
@@ -563,9 +739,16 @@ impl Ytdlp {
 
     /// Direct media URL for `target_url`. One yt-dlp run with the preferred
     /// format and its fallbacks chained (`a/b/c`), instead of one run per
-    /// format; a second run only if the first produced nothing for a
-    /// non-permanent reason.
+    /// format. A bot wall moves on to the next cookie jar (own → shared →
+    /// pool) and finally to `client_fallback` (the age-gate client, which
+    /// YouTube walls less); other misses get one plain retry.
+    /// `client` overrides the player client of the first attempt (a CDN 403
+    /// on the URL the web client handed out retries through another).
     pub async fn raw_url(&self, target_url: &str, format_flag: &str, user_id: Option<&str>) -> Result<(Option<String>, Option<String>), RunError> {
+        self.raw_url_via(target_url, format_flag, user_id, None).await
+    }
+
+    pub async fn raw_url_via(&self, target_url: &str, format_flag: &str, user_id: Option<&str>, client: Option<&str>) -> Result<(Option<String>, Option<String>), RunError> {
         let mut chain: Vec<&str> = Vec::new();
         for f in format_flag.split('/').chain(["bestaudio", "best"]) {
             if !chain.contains(&f) {
@@ -573,16 +756,23 @@ impl Ytdlp {
             }
         }
         let selector = chain.join("/");
-        let cookies = self.cookie_args(user_id, false).await;
+        let jars = self.cookie_candidates(user_id, false).await;
+        let mut jar = 0usize;
+        let mut client: Option<String> = client.map(str::to_string);
+        let mut plain_retries = 1;
         let start = Instant::now();
         let mut last_stderr = Vec::new();
-        for attempt in 1..=2 {
+        for attempt in 1..=(jars.len() + 3) {
+            let choice = &jars[jar.min(jars.len() - 1)];
             let mut args: Vec<String> = self.network_args.clone();
-            args.extend(STREAM_CLIENT_ARGS.iter().map(|s| s.to_string()));
+            match &client {
+                Some(c) => args.extend(["--extractor-args".to_string(), format!("youtube:player_client={c}")]),
+                None => args.extend(STREAM_CLIENT_ARGS.iter().map(|s| s.to_string())),
+            }
             args.extend(["-f".into(), selector.clone(), "--get-url".into(), "--no-playlist".into()]);
-            args.extend(cookies.iter().cloned());
+            args.extend(choice.args.iter().cloned());
             args.push(target_url.into());
-            tracing::info!("Running (raw): yt-dlp {}", redact(&args));
+            tracing::info!("Running (raw, jar {}): yt-dlp {}", choice.owner, redact(&args));
             let out = {
                 let _slot = self.limiter.slot().await;
                 match self.run("yt-dlp", &args, Duration::from_secs(15)).await {
@@ -594,13 +784,30 @@ impl Ytdlp {
                 }
             };
             if let Some(url) = String::from_utf8_lossy(&out.stdout).lines().map(str::trim).find(|l| l.starts_with("http")) {
-                tracing::info!("raw_url: resolved in {:.2}s (attempt {attempt}) for {target_url}", start.elapsed().as_secs_f64());
+                self.note_jar_ok(&choice.owner);
+                tracing::info!("raw_url: resolved in {:.2}s (attempt {attempt}, jar {}) for {target_url}", start.elapsed().as_secs_f64(), choice.owner);
                 return Ok((Some(url.to_string()), None));
             }
             last_stderr = out.stderr;
-            if is_permanent_failure(&last_stderr) || self.auth_failure_reason(&last_stderr).is_some() {
+            if is_bot_wall(&last_stderr) {
+                self.note_jar_botwall(&choice.owner);
+                self.penalise_if_rate_limited(&last_stderr);
+                if jar + 1 < jars.len() {
+                    jar += 1;
+                    continue;
+                }
+                let fb = self.cfg.ytdlp_fallback_client.clone();
+                if client.as_deref() != Some(fb.as_str()) {
+                    tracing::info!("raw_url: every cookie jar walled; trying the {fb} client for {target_url}");
+                    client = Some(fb);
+                    continue;
+                }
                 break;
             }
+            if is_permanent_failure(&last_stderr) || self.auth_failure_reason(&last_stderr).is_some() || plain_retries == 0 {
+                break;
+            }
+            plain_retries -= 1;
         }
         tracing::error!(
             "raw_url: no stream URL for {target_url} in {:.2}s — stderr: {}",
@@ -610,6 +817,12 @@ impl Ytdlp {
         let reason = self.auth_failure_reason(&last_stderr).or_else(|| is_permanent_failure(&last_stderr).then(|| generic_failure_summary(&last_stderr)));
         Ok((None, reason))
     }
+}
+
+/// When a googlevideo URL stops working (`expire=` query, Unix seconds).
+pub fn url_expiry(url: &str) -> Option<i64> {
+    let q = url.split_once('?')?.1;
+    q.split('&').find_map(|kv| kv.strip_prefix("expire=")).and_then(|v| v.parse().ok())
 }
 
 /// YouTube is throttling, not refusing this video: its message ("Video
@@ -670,6 +883,8 @@ fn redact(args: &[String]) -> String {
 pub fn format_flag(format: &str) -> &'static str {
     match format {
         "lumi" => "251/bestaudio[acodec=opus]/bestaudio/best",
+        // Premium accounts streaming through the engine: Premium Opus first.
+        "premium" => "774/251/bestaudio[acodec=opus]/bestaudio/best",
         "mp3" | "flac" | "wav" | "best" => "bestaudio/best",
         "opus" => "bestaudio[ext=webm]/bestaudio/best",
         _ => "bestaudio[ext=m4a]/bestaudio/best",

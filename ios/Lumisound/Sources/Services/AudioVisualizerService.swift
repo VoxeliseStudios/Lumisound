@@ -51,19 +51,34 @@ final class AudioVisualizerService: ObservableObject {
 
     static let barCount = 24
 
+    /// Everything the views read, published as ONE value: five separate
+    /// @Published properties fired objectWillChange five times per analysed
+    /// buffer, re-evaluating every observing view (aura backdrop, artwork
+    /// styles) each time — main-thread render work that showed up in
+    /// 2.0.0.66's main-thread stack samples.
+    struct Levels: Equatable {
+        var magnitudes: [Float] = Array(repeating: 0, count: AudioVisualizerService.barCount)
+        var bass: Float = 0
+        var mid: Float = 0
+        var treble: Float = 0
+        var overall: Float = 0
+    }
+
+    @Published private(set) var levels = Levels()
+
     /// Smoothed per-bar magnitude, 0...1.
-    @Published private(set) var magnitudes: [Float] = Array(repeating: 0, count: barCount)
+    var magnitudes: [Float] { levels.magnitudes }
 
     /// Coarse smoothed band energy, 0...1 (relative/self-referential, not
     /// calibrated to an absolute loudness reference) — derived from the same
     /// `fftMagnitudes` the 24-bar spectrum uses, just summed into 3 broad
     /// ranges instead of 24 log-spaced ones. Bass ~20-250Hz, mid
     /// ~250Hz-4kHz, treble ~4-16kHz.
-    @Published private(set) var bassLevel: Float = 0
-    @Published private(set) var midLevel: Float = 0
-    @Published private(set) var trebleLevel: Float = 0
+    var bassLevel: Float { levels.bass }
+    var midLevel: Float { levels.mid }
+    var trebleLevel: Float { levels.treble }
     /// Smoothed overall level across the full spectrum, 0...1.
-    @Published private(set) var overallLevel: Float = 0
+    var overallLevel: Float { levels.overall }
 
     private let fftSize = 2048
 
@@ -101,11 +116,7 @@ final class AudioVisualizerService: ObservableObject {
         guard activeReasons.isEmpty else { return }
         appLog("AudioVisualizerService: removing analyzer tap — no reasons remain active", category: "audio")
         AudioPlayerManager.shared?.stopVisualizerTap()
-        magnitudes = Array(repeating: 0, count: Self.barCount)
-        bassLevel = 0
-        midLevel = 0
-        trebleLevel = 0
-        overallLevel = 0
+        levels = Levels()
     }
 
     /// Throttle for the periodic band-level trace below — `applySmoothed`
@@ -135,21 +146,23 @@ final class AudioVisualizerService: ObservableObject {
     }
 
     private func applySmoothed(_ new: [Float], bands: (bass: Float, mid: Float, treble: Float, overall: Float)) {
-        if new.count == magnitudes.count {
-            // Built off to the side and published once: writing the @Published
-            // array element by element fired objectWillChange 24 times per
-            // analysed buffer, re-invalidating every observing view each time.
-            var next = magnitudes
-            for i in 0..<next.count {
-                next[i] = next[i] * 0.55 + new[i] * 0.45
+        // Built off to the side and published once (see `Levels`).
+        var next = levels
+        if new.count == next.magnitudes.count {
+            for i in 0..<next.magnitudes.count {
+                next.magnitudes[i] = next.magnitudes[i] * 0.55 + new[i] * 0.45
             }
-            magnitudes = next
         }
         let smoothing: Float = 0.7
-        bassLevel = bassLevel * smoothing + bands.bass * (1 - smoothing)
-        midLevel = midLevel * smoothing + bands.mid * (1 - smoothing)
-        trebleLevel = trebleLevel * smoothing + bands.treble * (1 - smoothing)
-        overallLevel = overallLevel * smoothing + bands.overall * (1 - smoothing)
+        next.bass = next.bass * smoothing + bands.bass * (1 - smoothing)
+        next.mid = next.mid * smoothing + bands.mid * (1 - smoothing)
+        next.treble = next.treble * smoothing + bands.treble * (1 - smoothing)
+        next.overall = next.overall * smoothing + bands.overall * (1 - smoothing)
+        // Below what any view can show (silence, a held note): don't redraw.
+        let moved = zip(next.magnitudes, levels.magnitudes).contains { abs($0 - $1) > 0.004 }
+            || abs(next.bass - levels.bass) > 0.004 || abs(next.overall - levels.overall) > 0.004
+            || abs(next.mid - levels.mid) > 0.004 || abs(next.treble - levels.treble) > 0.004
+        if moved { levels = next }
 
         // Proof-of-life trace: confirms the analyzer is actually reading
         // live signal (levels tracking what's playing) rather than silently

@@ -63,3 +63,4 @@ rust/target/
 rust/.cargo-cache/
 ios/RustCore/
 rust/models/
+ios-bridge/cookie-pool/

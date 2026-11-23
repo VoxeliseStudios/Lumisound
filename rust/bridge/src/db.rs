@@ -5,7 +5,7 @@
 use crate::config::Config;
 use serde_json::Value;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
-use sqlx::PgPool;
+use sqlx::{ConnectOptions, PgPool};
 use std::time::Duration;
 
 pub async fn connect(cfg: &Config) -> anyhow::Result<PgPool> {
@@ -15,7 +15,10 @@ pub async fn connect(cfg: &Config) -> anyhow::Result<PgPool> {
         .username(&cfg.db_user)
         .password(&cfg.db_password)
         .database(&cfg.db_name)
-        .application_name("lumisound-bridge");
+        .application_name("lumisound-bridge")
+        // Slow queries land in the log (and so in front of whoever reads it).
+        .log_slow_statements(log::LevelFilter::Warn, Duration::from_millis(300))
+        .log_statements(log::LevelFilter::Trace);
     let pool = PgPoolOptions::new()
         .max_connections(cfg.db_pool_max)
         .min_connections(1)
@@ -25,12 +28,62 @@ pub async fn connect(cfg: &Config) -> anyhow::Result<PgPool> {
     Ok(pool)
 }
 
-/// Runs schema.sql (idempotent CREATE ... IF NOT EXISTS / ALTER ... IF NOT
-/// EXISTS statements) in one transaction, like db.init_db did.
+/// Versioned migrations, applied once each in file order (`migrations/`).
+/// New schema goes here, not into schema.sql.
+pub const MIGRATIONS: &[(&str, &str)] = &[
+    ("0002_stream_tickets", include_str!("../migrations/0002_stream_tickets.sql")),
+    ("0003_download_retry", include_str!("../migrations/0003_download_retry.sql")),
+    ("0004_track_profiles", include_str!("../migrations/0004_track_profiles.sql")),
+    ("0006_metadata_since", include_str!("../migrations/0006_metadata_since.sql")),
+];
+
+/// Brings the database up to date in one transaction under an advisory lock:
+/// schema.sql (the idempotent baseline) runs only when its checksum differs
+/// from the one recorded last time, then every migration not yet applied.
+/// An unchanged start is a single SELECT instead of ~2,000 lines of DDL
+/// (and ~150 "already exists, skipping" notices in the log).
 pub async fn migrate(pool: &PgPool, schema_sql: &str) -> anyhow::Result<()> {
+    use sha2::Digest;
     let mut tx = pool.begin().await?;
-    sqlx::raw_sql(schema_sql).execute(&mut *tx).await?;
+    sqlx::raw_sql(
+        "SET LOCAL client_min_messages = warning; \
+         SELECT pg_advisory_xact_lock(7742001); \
+         CREATE TABLE IF NOT EXISTS lumi_schema_migrations ( \
+             name TEXT PRIMARY KEY, checksum TEXT NOT NULL, applied_at TIMESTAMP NOT NULL DEFAULT (NOW() AT TIME ZONE 'UTC'))",
+    )
+    .execute(&mut *tx)
+    .await?;
+    let applied: Vec<(String, String)> = sqlx::query_as("SELECT name, checksum FROM lumi_schema_migrations").fetch_all(&mut *tx).await?;
+    let known = |name: &str| applied.iter().find(|(n, _)| n == name).map(|(_, c)| c.clone());
+    let sum = |sql: &str| hex::encode(sha2::Sha256::digest(sql.as_bytes()));
+    let mut ran: Vec<&str> = Vec::new();
+    let base_sum = sum(schema_sql);
+    if known("0001_schema.sql").as_deref() != Some(base_sum.as_str()) {
+        sqlx::raw_sql(schema_sql).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO lumi_schema_migrations (name, checksum) VALUES ('0001_schema.sql', $1) \
+                     ON CONFLICT (name) DO UPDATE SET checksum = EXCLUDED.checksum, applied_at = NOW() AT TIME ZONE 'UTC'")
+            .bind(&base_sum)
+            .execute(&mut *tx)
+            .await?;
+        ran.push("0001_schema.sql");
+    }
+    for (name, sql) in MIGRATIONS {
+        match known(name) {
+            Some(c) if c == sum(sql) => continue,
+            Some(_) => tracing::warn!("migration {name} changed after it was applied; leaving it (add a new migration instead)"),
+            None => {
+                sqlx::raw_sql(sql).execute(&mut *tx).await?;
+                sqlx::query("INSERT INTO lumi_schema_migrations (name, checksum) VALUES ($1, $2)").bind(name).bind(sum(sql)).execute(&mut *tx).await?;
+                ran.push(name);
+            }
+        }
+    }
     tx.commit().await?;
+    if ran.is_empty() {
+        tracing::info!("schema up to date (no migrations to run)");
+    } else {
+        tracing::info!("schema migrated: {}", ran.join(", "));
+    }
     Ok(())
 }
 

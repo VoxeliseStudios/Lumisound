@@ -170,11 +170,24 @@ enum AppTheme {
     static var dynamicAccent: Color {
         // A style with its own accent (Minimal Mono) wins in both editions.
         if let forced = Appearance.current.accentOverride { return forced.color }
-        if let data = UserDefaults.standard.data(forKey: accentKey),
-           let uiColor = try? NSKeyedUnarchiver.unarchivedObject(ofClass: UIColor.self, from: data) {
-            return Color(uiColor)
+        if let data = UserDefaults.standard.data(forKey: accentKey), let color = decodedColor(data) {
+            return color
         }
         return accent
+    }
+
+    /// Saved accent colors, decoded once per distinct value. These getters run
+    /// inside view bodies many times a frame; unarchiving a UIColor each time
+    /// showed up in main-thread telemetry.
+    nonisolated(unsafe) private static var colorMemo: [Data: Color] = [:]
+
+    private static func decodedColor(_ data: Data) -> Color? {
+        if let hit = colorMemo[data] { return hit }
+        guard let uiColor = try? NSKeyedUnarchiver.unarchivedObject(ofClass: UIColor.self, from: data) else { return nil }
+        let color = Color(uiColor)
+        if colorMemo.count > 32 { colorMemo.removeAll() }
+        colorMemo[data] = color
+        return color
     }
 
     /// Persists a new accent color selection to UserDefaults.
@@ -201,9 +214,8 @@ enum AppTheme {
     /// `accentSoft` — the exact color those gradients already used — so
     /// nothing changes visually until a user picks a custom secondary color.
     static var dynamicAccentSecondary: Color {
-        if let data = UserDefaults.standard.data(forKey: accentSecondaryKey),
-           let uiColor = try? NSKeyedUnarchiver.unarchivedObject(ofClass: UIColor.self, from: data) {
-            return Color(uiColor)
+        if let data = UserDefaults.standard.data(forKey: accentSecondaryKey), let color = decodedColor(data) {
+            return color
         }
         return accentSoft
     }

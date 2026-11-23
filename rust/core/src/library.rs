@@ -444,6 +444,21 @@ pub fn m3u_match(data: Vec<u8>, library: Vec<M3uCandidate>) -> M3uResult {
     M3uResult { matched_song_ids: ids, total_entries: total }
 }
 
+// ---- ReplayGain ---------------------------------------------------------------------------------
+
+/// Gain (dB) to play a track at: its `REPLAYGAIN_TRACK_GAIN` tag, else the
+/// core's loudness normalization (-18 LUFS, cached). None when neither is
+/// known (undecodable file). Replaces the Swift AVFoundation tag scan + RMS
+/// fallback in `analyzeReplayGain`.
+#[uniffi::export]
+pub fn replaygain_db(path: String, cache_dir: String) -> Option<f32> {
+    if let Some(g) = crate::lock::read_tags_with(&path, &cache_dir, lumisound_media::tags::read_replaygain_db) {
+        return Some(g);
+    }
+    let g = crate::analysis::normalization_gain(path, cache_dir);
+    (g != 0.0).then_some(g)
+}
+
 // ---- artwork ------------------------------------------------------------------------------------
 
 /// Embedded cover art of a library file (front cover preferred).

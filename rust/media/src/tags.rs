@@ -141,6 +141,29 @@ pub fn read_custom(path: &Path, name: &str) -> Option<String> {
 
 pub const QUALITY_KEY: &str = "LUMISOUND_QUALITY";
 
+/// `"+1.23 dB"` / `"-4.5"` -> dB.
+pub fn parse_gain_db(text: &str) -> Option<f32> {
+    let num: String = text.trim().chars().take_while(|c| c.is_ascii_digit() || matches!(c, '+' | '-' | '.')).collect();
+    num.parse::<f32>().ok().filter(|g| g.is_finite() && g.abs() <= 60.0)
+}
+
+/// The file's ReplayGain track gain (dB), from whichever tag carries it
+/// (ID3 TXXX, Vorbis comment, MP4 freeform, APE; LMS3 keeps unknown keys).
+pub fn read_replaygain_db(path: &Path) -> Option<f32> {
+    if let Some(m) = crate::lms3::read_meta(path) {
+        return m.extra.iter().find(|(k, _)| k.to_ascii_uppercase().contains("REPLAYGAIN_TRACK_GAIN")).and_then(|(_, v)| parse_gain_db(&String::from_utf8_lossy(v)));
+    }
+    let file = open_tagged(path)?;
+    file.tags().iter().find_map(|tag| {
+        tag.get_string(&ItemKey::ReplayGainTrackGain).and_then(parse_gain_db).or_else(|| {
+            tag.items()
+                .find(|i| matches!(i.key(), ItemKey::Unknown(k) if k.to_ascii_uppercase().contains("REPLAYGAIN_TRACK_GAIN")))
+                .and_then(|i| i.value().text())
+                .and_then(parse_gain_db)
+        })
+    })
+}
+
 pub fn read_lumisound(path: &Path) -> (Option<String>, Option<String>) {
     if let Some(m) = crate::lms3::read_meta(path) {
         return (m.source_id, m.thumbnail);
@@ -245,4 +268,14 @@ pub fn read_bpm(path: &Path) -> Option<f64> {
     }
     let file = open_tagged(path)?;
     file.tags().iter().find_map(|t| t.get_string(&ItemKey::Bpm).or(t.get_string(&ItemKey::IntegerBpm)).and_then(|v| v.trim().parse::<f64>().ok()).filter(|b| *b > 0.0))
+}
+
+#[cfg(test)]
+mod replaygain_tests {
+    #[test]
+    fn parses_gain_text() {
+        assert_eq!(super::parse_gain_db("+1.23 dB"), Some(1.23));
+        assert_eq!(super::parse_gain_db("-7.5 dB"), Some(-7.5));
+        assert_eq!(super::parse_gain_db("loud"), None);
+    }
 }

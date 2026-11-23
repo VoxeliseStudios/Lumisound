@@ -250,6 +250,17 @@ pub fn blocked_record(source_track_id: String) {
     store::save(BLOCKED, &m);
 }
 
+/// One track is clear to try again (the bridge says its bot wall / rate
+/// limit has passed).
+#[uniffi::export]
+pub fn blocked_clear(source_track_id: String) {
+    let _g = LOCK.lock().unwrap();
+    let mut m: HashMap<String, Failure> = store::load(BLOCKED);
+    if m.remove(&source_track_id).is_some() {
+        store::save(BLOCKED, &m);
+    }
+}
+
 /// New cookies change what YouTube lets through: give every blocked track a fresh try.
 #[uniffi::export]
 pub fn blocked_clear_all() {

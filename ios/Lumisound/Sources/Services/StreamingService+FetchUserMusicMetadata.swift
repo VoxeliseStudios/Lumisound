@@ -33,17 +33,17 @@ extension StreamingService {
         isLoadingUserMusicMetadata = true
         defer { isLoadingUserMusicMetadata = false }
 
-        // No artificial 500-item cap on a user's cloud-backed library — request
-        // the full set (server allows up to 100k).
-        guard var request = makeRequest("/user/music/metadata?limit=100000") else {
-            throw StreamingError.invalidURL
-        }
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.timeoutInterval = 20
-
-        let (data, response) = try await Core.data(for: request)
-        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            throw StreamingError.httpError(http.statusCode)
+        // The core keeps the list current incrementally (`?since=`: only rows
+        // changed since the last answer, plus deletions), so after the first
+        // fetch a large cloud library no longer downloads in full each time.
+        _ = makeRequest("/user/music/metadata")  // keeps the core's bridge session current
+        let data: Data
+        do {
+            data = try await cloudMetadataFetch(accountToken: token)
+        } catch CoreError.Http(let status, _) {
+            throw StreamingError.httpError(Int(status))
+        } catch CoreError.Unauthorized {
+            throw StreamingError.httpError(401)
         }
 
         let tracks = try await Task.detached(priority: .userInitiated) {

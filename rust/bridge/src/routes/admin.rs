@@ -25,6 +25,15 @@ pub fn routes() -> Router<AppState> {
         .route("/admin/logout", post(super::admin_page::logout))
         .route("/admin/api/overview", get(overview))
         .route("/admin/api/lms3", get(lms3_status).post(lms3_run))
+        .route("/admin/storage", get(super::admin_page::storage_page))
+        .route("/admin/storage/restore", post(super::admin_page::storage_restore))
+        .route("/admin/storage/delete-lms3-backup", post(super::admin_page::storage_delete_backup))
+        .route("/admin/api/cookies", get(cookies_status))
+        .route("/admin/api/routes", get(route_stats))
+        .route("/admin/api/storage", get(storage))
+        .route("/admin/api/storage/lms3-backup", axum::routing::delete(delete_lms3_backup))
+        .route("/admin/api/trash", get(trash))
+        .route("/admin/api/trash/restore", post(trash_restore))
         .route("/admin/api/download-jobs", get(download_jobs).delete(clear_download_jobs))
         .route("/admin/api/perf", get(perf))
         .route("/admin/api/errors", get(errors).delete(clear_errors))
@@ -85,6 +94,64 @@ async fn lms3_run(State(st): State<AppState>, _a: Admin) -> Json<Value> {
         crate::lms3_cloud::upgrade_all(&st).await;
     });
     Json(json!({"status": "started"}))
+}
+
+/// Shared YouTube cookie jars: age, stale flag, per-jar bot-wall history.
+async fn cookies_status(State(st): State<AppState>, _a: Admin) -> Json<Value> {
+    Json(cookies_data(&st))
+}
+
+pub(crate) fn cookies_data(st: &AppState) -> Value {
+    json!({"global": st.ytdlp.global_jar_status(), "jars": st.ytdlp.jar_report()})
+}
+
+/// Per-route response times (last hour and since start).
+async fn route_stats(_a: Admin) -> Json<Value> {
+    Json(crate::routestats::report(60))
+}
+
+async fn storage(State(st): State<AppState>, _a: Admin) -> ApiResult<Json<Value>> {
+    let v = tokio::task::spawn_blocking(move || crate::housekeeping::storage_report(&st)).await.map_err(|e| AppError::internal(e.to_string()))?;
+    Ok(Json(v))
+}
+
+#[derive(Deserialize)]
+struct ConfirmQ {
+    confirm: Option<String>,
+}
+
+/// Erase the LMS3 migration backup. Needs `?confirm=delete-lms3-backup`.
+async fn delete_lms3_backup(State(st): State<AppState>, _a: Admin, Q(q): Q<ConfirmQ>) -> ApiResult<Json<Value>> {
+    if q.confirm.as_deref() != Some("delete-lms3-backup") {
+        return Err(AppError::bad_request("add ?confirm=delete-lms3-backup"));
+    }
+    let (files, bytes) = tokio::task::spawn_blocking(move || crate::housekeeping::delete_lms3_backup(&st)).await.map_err(|e| AppError::internal(e.to_string()))?;
+    Ok(Json(json!({"deleted_files": files, "freed_bytes": bytes})))
+}
+
+#[derive(Deserialize)]
+struct TrashQ {
+    limit: Option<i64>,
+}
+
+async fn trash(State(st): State<AppState>, _a: Admin, Q(q): Q<TrashQ>) -> ApiResult<Json<Value>> {
+    let limit = q.limit.unwrap_or(500).clamp(1, 20_000) as usize;
+    let v = tokio::task::spawn_blocking(move || crate::housekeeping::trash_list(&st, limit)).await.map_err(|e| AppError::internal(e.to_string()))?;
+    Ok(Json(Value::Array(v)))
+}
+
+#[derive(Deserialize)]
+struct RestoreBody {
+    user: String,
+    day: String,
+    path: String,
+}
+
+async fn trash_restore(State(st): State<AppState>, _a: Admin, Json(b): Json<RestoreBody>) -> ApiResult<Json<Value>> {
+    match crate::housekeeping::trash_restore(&st, &b.user, &b.day, &b.path).await {
+        Ok(m) => Ok(Json(json!({"status": m}))),
+        Err(e) => Err(AppError::bad_request(e)),
+    }
 }
 
 async fn overview(State(st): State<AppState>, _a: Admin) -> ApiResult<Json<Value>> {

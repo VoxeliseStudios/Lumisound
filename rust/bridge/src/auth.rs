@@ -1,6 +1,7 @@
 //! Tokens and request authentication (port of auth.py + main.py's
 //! check_auth / get_current_user / check_admin_or_operator).
 
+use sha2::Digest as _;
 use crate::error::AppError;
 use crate::state::AppState;
 use axum::extract::FromRequestParts;
@@ -156,6 +157,7 @@ impl FromRequestParts<AppState> for User {
                 return Err(AppError::unauthorized("Session has been revoked"));
             }
         }
+        state.note_session_ip(&parts.headers, &id);
         Ok(User { id, token_id: claims.jti.clone(), claims })
     }
 }
@@ -190,6 +192,12 @@ impl AppState {
 
     /// Session from `X-Account-Token`, or a user JWT in `Authorization`.
     pub async fn header_session_user(&self, headers: &axum::http::HeaderMap) -> Option<String> {
+        let u = self.header_session_user_inner(headers).await?;
+        self.note_session_ip(headers, &u);
+        Some(u)
+    }
+
+    async fn header_session_user_inner(&self, headers: &axum::http::HeaderMap) -> Option<String> {
         if let Some(t) = headers.get("x-account-token").and_then(|v| v.to_str().ok()).filter(|t| !t.is_empty()) {
             if let Some(u) = self.session_user(t).await {
                 return Some(u);
@@ -200,6 +208,54 @@ impl AppState {
             return None;
         }
         self.session_user(b).await
+    }
+
+    /// The account a stream ticket belongs to. Tickets are kept in memory
+    /// and in `ios_stream_tickets` (by SHA-256), so a bridge restart no
+    /// longer turns every playing track's ticket into a 401.
+    pub async fn ticket_user(&self, ticket: &str) -> Option<String> {
+        if ticket.is_empty() || ticket.len() > 64 {
+            return None;
+        }
+        if let Some(u) = self.stream_tickets.get(&ticket.to_string()) {
+            return Some(u);
+        }
+        let hash = hex::encode(sha2::Sha256::digest(ticket.as_bytes()));
+        let row: Option<(String, chrono::NaiveDateTime)> =
+            sqlx::query_as("SELECT user_id, expires_at FROM ios_stream_tickets WHERE ticket_hash = $1 AND expires_at > NOW() AT TIME ZONE 'UTC'")
+                .bind(&hash)
+                .fetch_optional(&self.db)
+                .await
+                .ok()
+                .flatten();
+        let (user, expires) = row?;
+        let left = (expires - chrono::Utc::now().naive_utc()).num_seconds().max(1) as u64;
+        self.stream_tickets.set_ttl(ticket.to_string(), user.clone(), std::time::Duration::from_secs(left));
+        Some(user)
+    }
+
+    /// Remember which account is signed in from this client IP (see
+    /// `session_ips`). Only forwarded addresses count: without
+    /// X-Forwarded-For every client would share one key.
+    pub fn note_session_ip(&self, headers: &axum::http::HeaderMap, user: &str) {
+        let ip = client_ip(headers, None);
+        if ip != "unknown" {
+            self.session_ips.set(ip, user.to_string());
+        }
+    }
+
+    /// The account signed in from this IP recently, for a request that
+    /// carries the shared app key as its bearer (old app builds).
+    pub fn ip_grace_user(&self, headers: &axum::http::HeaderMap) -> Option<String> {
+        let b = headers.get("authorization")?.to_str().ok()?.strip_prefix("Bearer ")?;
+        if self.cfg.api_key.is_empty() || !ct_eq(b, &self.cfg.api_key) {
+            return None;
+        }
+        let ip = client_ip(headers, None);
+        if ip == "unknown" {
+            return None;
+        }
+        self.session_ips.get(&ip)
     }
 }
 
@@ -235,8 +291,10 @@ impl FromRequestParts<AppState> for SessionOrTicket {
             return Ok(SessionOrTicket { user });
         }
         let ticket = parts.uri.query().unwrap_or("").split('&').find_map(|kv| kv.strip_prefix("ticket=")).filter(|t| !t.is_empty());
-        if let Some(user) = ticket.and_then(|t| state.stream_tickets.get(&t.to_string())) {
-            return Ok(SessionOrTicket { user });
+        if let Some(t) = ticket {
+            if let Some(user) = state.ticket_user(t).await {
+                return Ok(SessionOrTicket { user });
+            }
         }
         Err(AppError::unauthorized("Sign in to use this feature"))
     }

@@ -57,7 +57,7 @@ final class TVAudioSettings: ObservableObject {
     }
 
     /// Picks the crossfade length per transition rather than using a fixed six
-    /// seconds — see `TVAutoCrossfade`. Only has an effect while `crossfadeEnabled`.
+    /// seconds — Smart Crossfade (core blend.rs). Only has an effect while `crossfadeEnabled`.
     @Published var autoCrossfade: Bool {
         didSet { UserDefaults.standard.set(autoCrossfade, forKey: Key.autoCrossfade) }
     }

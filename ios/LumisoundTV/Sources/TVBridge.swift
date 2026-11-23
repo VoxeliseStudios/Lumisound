@@ -53,25 +53,12 @@ struct UserMusicTrack: Identifiable, Codable, Hashable {
     /// has no steady beat the estimator would commit to.
     let bpm: Double?
     /// How the track ends and begins — measured server-side so both apps decide
-    /// crossfades from identical data. See TVTransitionProfile.
+    /// crossfades from identical data (decoded, unused since Smart Crossfade).
     let trailingSilenceS: Double?
     let outroSlopeDB: Double?
     let outroColdStop: Bool?
     let introLeadInS: Double?
     let introOnsetHardness: Double?
-
-    /// Nil until the server has profiled this track, in which case the player
-    /// falls back to measuring the tail itself.
-    var transitionProfile: TVTransitionProfile? {
-        guard trailingSilenceS != nil || outroSlopeDB != nil || introLeadInS != nil else { return nil }
-        return TVTransitionProfile(
-            trailingSilence: trailingSilenceS ?? 0,
-            outroSlopeDB: outroSlopeDB ?? 0,
-            outroColdStop: outroColdStop ?? false,
-            introLeadIn: introLeadInS ?? 0,
-            introOnsetHardness: introOnsetHardness ?? 0
-        )
-    }
 
     /// What to actually show for this track, never a raw filename.
     ///
@@ -477,11 +464,9 @@ struct TVPlayable: Identifiable, Hashable {
     /// `isLocked` — needed to name the unlocked temp file correctly. See
     /// `TVPlayerModel.resolvedAsset(for:)`.
     var ext: String = ""
-    /// Server-measured tempo, used to beat-snap Auto Crossfade. Nil when
-    /// unknown, in which case the fade simply is not snapped.
+    /// Server-measured tempo (display / stats). Smart Crossfade measures the
+    /// beat grid itself (core blend.rs).
     var bpm: Double? = nil
-    /// How this track ends and begins — see TVAutoCrossfade.
-    var transitionProfile: TVTransitionProfile? = nil
     /// Real duration, so a fade can be capped against the track's own length.
     var durationSeconds: Double = 0
 }
@@ -551,6 +536,9 @@ final class TVBridgeClient: ObservableObject {
     /// TTL, same policy as the iOS app's `streamTicket()`.
     @discardableResult
     func refreshStreamTicketIfNeeded(token: String) async -> String? {
+        // Core-side bridge calls (shared Smart Crossfade profiles) use the
+        // same session as this app's requests.
+        bridgeSessionSet(baseUrl: baseURL, apiKey: Self.officialBridgeAPIKey, accountToken: token)
         if let ticket = cachedStreamTicket, Date() < cachedStreamTicketExpiry {
             return ticket
         }
@@ -1282,6 +1270,10 @@ final class TVBridgeClient: ObservableObject {
             URLQueryItem(name: "id", value: track.id),
             URLQueryItem(name: "source", value: track.source),
             URLQueryItem(name: "format", value: "m4a"),
+            // Played by the Lumisound engine (WebM/Opus decode): the bridge
+            // sends YouTube's best audio instead of AAC. TVTrackFiles names
+            // the file from Content-Type.
+            URLQueryItem(name: "engine", value: "1"),
         ]
         if track.source == "soundcloud" {
             comps.queryItems?.append(URLQueryItem(name: "url", value: track.youtubeURL))
@@ -1338,7 +1330,6 @@ final class TVBridgeClient: ObservableObject {
             isLocked: track.isLocked,
             ext: track.ext,
             bpm: track.bpm,
-            transitionProfile: track.transitionProfile,
             durationSeconds: track.duration
         )
     }

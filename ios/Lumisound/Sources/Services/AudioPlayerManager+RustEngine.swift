@@ -160,7 +160,31 @@ extension AudioPlayerManager {
 
     func queueRustGaplessNext() {
         guard isUsingRustEngine, rustNextDeckID == nil,
-              let next = peekNextSong(), let url = next.url, url.isFileURL else { return }
+              let next = peekNextSong(), let nextURL = next.url else { return }
+        // A streamed next track plays from its cached download (core stream
+        // cache). Not fetched yet: fetch it now and come back, so streamed
+        // queues get gapless and Smart Crossfade like local files.
+        let url: URL
+        if nextURL.isFileURL {
+            url = nextURL
+        } else if ["http", "https"].contains(nextURL.scheme?.lowercased() ?? "") {
+            if let cached = StreamCache.cachedFile(for: nextURL) {
+                url = cached
+            } else {
+                let gen = scheduleGeneration, nextID = next.id
+                let key = StreamCache.key(for: nextURL), headers = StreamCache.headers(for: next)
+                Task { [weak self] in
+                    guard (try? await streamCacheFetch(sourceKey: key, url: nextURL.absoluteString, headers: headers, timeoutSecs: 180)) != nil else { return }
+                    await MainActor.run { [weak self] in
+                        guard let self, self.scheduleGeneration == gen, self.peekNextSong()?.id == nextID else { return }
+                        self.queueRustGaplessNext()
+                    }
+                }
+                return
+            }
+        } else {
+            return
+        }
         if audioSettings.smartCrossfadeEnabled {
             queueRustBlendNext(next: next, url: url)
             return
@@ -182,7 +206,13 @@ extension AudioPlayerManager {
     /// the engine runs it sample-accurately. `rustTrackStarted` fires when
     /// the fade begins.
     func queueRustBlendNext(next: Song, url: URL) {
-        guard let outPath = currentSong?.url?.path else { return }
+        // The outgoing track's local file (a stream plays from its cache).
+        guard let curURL = currentSong?.url,
+              let outPath = (curURL.isFileURL ? curURL : StreamCache.cachedFile(for: curURL))?.path else { return }
+        // Streamed tracks share their profile through the bridge by source id,
+        // so a track another device already measured isn't decoded again.
+        let outKey = curURL.isFileURL ? nil : currentSong?.sourceTrackID
+        let inKey = next.url?.isFileURL == false ? next.sourceTrackID : nil
         let inPath = url.path
         guard CoreAudio.canDecode(path: inPath) else { return }
         let gen = scheduleGeneration
@@ -192,11 +222,13 @@ extension AudioPlayerManager {
         let nextID = next.id
         rustBlendTask?.cancel()
         rustBlendTask = Task.detached(priority: .utility) { [weak self] in
-            guard let a = blendProfile(path: outPath), let b = blendProfile(path: inPath), !Task.isCancelled else { return }
+            let a = if let outKey { await blendProfileForStream(path: outPath, sourceKey: outKey) } else { blendProfile(path: outPath) }
+            let b = if let inKey { await blendProfileForStream(path: inPath, sourceKey: inKey) } else { blendProfile(path: inPath) }
+            guard let a, let b, !Task.isCancelled else { return }
             let plan = blendPlan(out: a, inc: b, settings: BlendSettings(baseSecs: base, beatMatch: beatMatch, bassSwap: true))
             await MainActor.run { [weak self] in
                 guard let self, self.scheduleGeneration == gen, self.rustNextDeckID == nil,
-                      self.peekNextSong()?.id == nextID, self.currentSong?.url?.path == outPath else { return }
+                      self.peekNextSong()?.id == nextID, self.currentSong?.url == curURL else { return }
                 guard let id = try? Self.rust.queueBlend(path: inPath, plan: plan, gainDb: 0, equalPower: equalPower) else { return }
                 self.rustNextDeckID = id
                 self.rustNextPath = inPath
@@ -464,6 +496,7 @@ extension AudioPlayerManager {
         }
         updateNowPlaying()
         prewarmBPM(for: peekNextSong())
+        prefetchUpcomingStreamIfNeeded()
         queueRustGaplessNext()
         appLog("Rust engine: gapless → \(currentSong?.displayName ?? "?")", category: "audio")
     }
@@ -479,6 +512,8 @@ extension AudioPlayerManager {
             refuseSystemEngine(for: song, reason: "decode_failed")
             return
         }
+        // A cached stream that doesn't decode must not be served again.
+        if let u = currentSong?.url, !u.isFileURL { streamCacheRemove(sourceKey: StreamCache.key(for: u)) }
         appWarn("Rust engine failed to decode \(currentSong?.displayName ?? "?") — using AVAudioEngine", category: "audio")
         reportEngineFallback(reason: "decode_failed", url: currentSong?.url,
                              error: Self.rust.incidents().last(where: { $0.kind == .deckFailed })?.message)

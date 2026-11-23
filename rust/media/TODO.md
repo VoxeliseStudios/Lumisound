@@ -2,6 +2,9 @@
 
 Shared media primitives (lock format, artwork, decode). History: [`RUST-PORT.md`](../../RUST-PORT.md).
 
+## Done (2026-11-23)
+- `tags::read_replaygain_db` (any container, LMS3 extra keys) + `parse_gain_db`.
+
 ## Done (2026-11-15) — LMS3 follow-ups
 - MP3 export writes a LAME "Info" frame (encoder delay/padding, CRC-16) so exported MP3s stay gapless.
 - LMS3 takes tags the container reader saw when the tag library has none (Matroska TITLE/ARTIST…, RIFF

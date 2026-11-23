@@ -5,7 +5,7 @@
 //! every 15 s with a meta refresh, and each render fetches its four data
 //! sets concurrently.
 
-use super::admin::{download_jobs_data, errors_data, overview_data, perf_data};
+use super::admin::{cookies_data, download_jobs_data, errors_data, overview_data, perf_data};
 use crate::auth::admin_check;
 use crate::state::AppState;
 use axum::extract::State;
@@ -13,7 +13,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::Form;
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::fmt::Write;
 
 const COOKIE: &str = "lumi_admin";
@@ -78,8 +78,9 @@ pub async fn page(State(st): State<AppState>, headers: HeaderMap) -> Response {
         return no_store(r);
     }
     let (o, jobs, errs, perf) = tokio::join!(overview_data(&st), download_jobs_data(&st, 50), errors_data(&st, 50), perf_data(&st, 48));
+    let extra = json!({"cookies": cookies_data(&st), "routes": crate::routestats::report(25)});
     let html = match (o, jobs, errs, perf) {
-        (Ok(o), Ok(j), Ok(e), Ok(p)) => dashboard(&o, &j, &e, &p),
+        (Ok(o), Ok(j), Ok(e), Ok(p)) => dashboard(&o, &j, &e, &p, &extra),
         (o, j, e, p) => {
             let err = [o.err(), j.err(), e.err(), p.err()].into_iter().flatten().map(|e| msg(&e)).collect::<Vec<_>>().join("; ");
             shell(&format!("<p class=\"err\">Couldn't load the dashboard: {}</p>", esc(&err)), true)
@@ -255,7 +256,7 @@ fn arr(v: &Value) -> &[Value] {
     v.as_array().map(Vec::as_slice).unwrap_or(&[])
 }
 
-fn dashboard(o: &Value, jobs: &Value, errors: &Value, perf: &Value) -> String {
+fn dashboard(o: &Value, jobs: &Value, errors: &Value, perf: &Value, extra: &Value) -> String {
     let mut b = String::with_capacity(32 * 1024);
     b.push_str(
         "<h1><span>ios-bridge Admin <span class=\"muted\">· refreshes every 15 s</span></span>\
@@ -280,6 +281,52 @@ fn dashboard(o: &Value, jobs: &Value, errors: &Value, perf: &Value) -> String {
         let _ = write!(b, "<div class=\"card\"><div class=\"label\">{label}</div><div class=\"value\">{}</div></div>", esc(&value));
     }
     b.push_str("</div>");
+
+    // Shared YouTube cookies: the first thing to check when streams fail.
+    let g = &extra["cookies"]["global"];
+    let stale = g.get("stale_flag").and_then(Value::as_str);
+    let _ = write!(
+        b,
+        "<h2>YouTube cookies <span class=\"muted\">· <a href=\"/admin/storage\">storage &amp; trash</a></span></h2><p>{} · jar age {} h · pool {} · {}</p>",
+        if g.get("present").and_then(Value::as_bool) == Some(true) { "shared jar present" } else { "<span class=\"err\">no shared jar</span>" },
+        txt(g, "age_hours", 10),
+        txt(g, "pool_size", 10),
+        match stale {
+            Some(s) => format!("<span class=\"err\">marked stale: {}</span>", esc(s)),
+            None => "not marked stale".into(),
+        }
+    );
+    b.push_str(&table(
+        &["Jar", "Last success", "Last bot wall", "Walls since success", "Benched"],
+        arr(&extra["cookies"]["jars"]).iter().map(|j| {
+            format!(
+                "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{} s</td></tr>",
+                txt(j, "owner", 40),
+                txt(j, "last_ok", 40),
+                txt(j, "last_botwall", 40),
+                txt(j, "botwalls_since_ok", 10),
+                txt(j, "benched_secs", 10)
+            )
+        }),
+    ));
+
+    b.push_str("<h2>Bridge response times (last hour, by total time)</h2>");
+    b.push_str(&table(
+        &["Route", "Requests", "5xx", "avg", "p50", "p95", "p99", "max"],
+        arr(&extra["routes"]["last_hour"]).iter().map(|r| {
+            format!(
+                "<tr><td>{}</td><td>{}</td><td>{}</td><td>{} ms</td><td>≤{} ms</td><td>≤{} ms</td><td>≤{} ms</td><td>{} ms</td></tr>",
+                txt(r, "route", 80),
+                txt(r, "n", 12),
+                txt(r, "errors", 12),
+                txt(r, "avg_ms", 12),
+                txt(r, "p50_ms", 12),
+                txt(r, "p95_ms", 12),
+                txt(r, "p99_ms", 12),
+                txt(r, "max_ms", 12)
+            )
+        }),
+    ));
 
     let hourly = arr(perf.get("hourly").unwrap_or(&Value::Null));
     b.push_str("<h2>App performance (last 48 h, hourly)</h2><div class=\"charts\">");
@@ -352,6 +399,120 @@ fn dashboard(o: &Value, jobs: &Value, errors: &Value, perf: &Value) -> String {
     shell(&b, true)
 }
 
+// MARK: - Storage & trash page (no auto refresh: it has forms)
+
+async fn signed_in(st: &AppState, headers: &HeaderMap) -> Result<(), Response> {
+    let token = cookie_token(headers);
+    if token.is_none() {
+        return Err(Redirect::to("/admin").into_response());
+    }
+    admin_check(st, token.as_deref()).await.map(|_| ()).map_err(|_| Redirect::to("/admin").into_response())
+}
+
+#[derive(Deserialize, Default)]
+pub struct StorageQ {
+    msg: Option<String>,
+}
+
+pub async fn storage_page(State(st): State<AppState>, headers: HeaderMap, axum::extract::Query(q): axum::extract::Query<StorageQ>) -> Response {
+    if let Err(r) = signed_in(&st, &headers).await {
+        return r;
+    }
+    let st2 = st.clone();
+    let (report, trash) = tokio::task::spawn_blocking(move || (crate::housekeeping::storage_report(&st2), crate::housekeeping::trash_list(&st2, 300)))
+        .await
+        .unwrap_or((Value::Null, Vec::new()));
+    no_store(Html(storage_html(&report, &trash, q.msg.as_deref())).into_response())
+}
+
+fn storage_html(report: &Value, trash: &[Value], msg: Option<&str>) -> String {
+    let mut b = String::with_capacity(32 * 1024);
+    b.push_str("<h1><span>Storage &amp; trash <span class=\"muted\">· <a href=\"/admin\">dashboard</a></span></span></h1>");
+    if let Some(m) = msg {
+        let _ = write!(b, "<p>{}</p>", esc(m));
+    }
+    b.push_str("<h2>Caches (trimmed hourly, least recently used first)</h2>");
+    b.push_str(&table(
+        &["Cache", "Files", "Size", "Cap"],
+        arr(&report["caches"]).iter().map(|c| {
+            format!("<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>", txt(c, "name", 60), txt(c, "files", 12), esc(&fmt_bytes(num(c, "bytes"))), esc(&fmt_bytes(num(c, "cap_bytes"))))
+        }),
+    ));
+    b.push_str("<h2>LMS3 migration backup</h2>");
+    let backups = arr(&report["lms3_backup"]);
+    if backups.is_empty() {
+        b.push_str("<p class=\"muted\">No backup folder (already deleted).</p>");
+    } else {
+        b.push_str(&table(
+            &["Drive", "Files", "Size"],
+            backups.iter().map(|c| format!("<tr><td>{}</td><td>{}</td><td>{}</td></tr>", txt(c, "root", 80), txt(c, "files", 12), esc(&fmt_bytes(num(c, "bytes"))))),
+        ));
+        b.push_str(
+            "<form method=\"post\" action=\"/admin/storage/delete-lms3-backup\"><p>The original files the cloud library was converted from. \
+             Type <b>DELETE</b> to erase them for good.</p><input name=\"confirm\" autocomplete=\"off\" placeholder=\"DELETE\">\
+             <button type=\"submit\">Delete the LMS3 backup</button></form>",
+        );
+    }
+    let _ = write!(b, "<h2>Trash <span class=\"muted\">· deleted cloud tracks, kept 30 days · {} shown</span></h2>", trash.len());
+    b.push_str(&table(
+        &["Deleted", "User", "Track", "Size", ""],
+        trash.iter().map(|t| {
+            let title = t.get("title").and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string).unwrap_or_else(|| t["path"].as_str().unwrap_or("").to_string());
+            format!(
+                "<tr><td>{}</td><td>{}</td><td>{}<div class=\"muted\">{}</div></td><td>{}</td><td><form method=\"post\" action=\"/admin/storage/restore\">\
+                 <input type=\"hidden\" name=\"user\" value=\"{}\"><input type=\"hidden\" name=\"day\" value=\"{}\"><input type=\"hidden\" name=\"path\" value=\"{}\">\
+                 <button class=\"ghost\" type=\"submit\">Restore</button></form></td></tr>",
+                txt(t, "day", 10),
+                esc(&t["user"].as_str().unwrap_or("").chars().take(8).collect::<String>()),
+                esc(&title),
+                txt(t, "path", 120),
+                esc(&fmt_bytes(num(t, "bytes"))),
+                esc(t["user"].as_str().unwrap_or("")),
+                esc(t["day"].as_str().unwrap_or("")),
+                esc(t["path"].as_str().unwrap_or(""))
+            )
+        }),
+    ));
+    shell(&b, false)
+}
+
+#[derive(Deserialize)]
+pub struct RestoreForm {
+    user: String,
+    day: String,
+    path: String,
+}
+
+pub async fn storage_restore(State(st): State<AppState>, headers: HeaderMap, Form(f): Form<RestoreForm>) -> Response {
+    if let Err(r) = signed_in(&st, &headers).await {
+        return r;
+    }
+    let m = match crate::housekeeping::trash_restore(&st, &f.user, &f.day, &f.path).await {
+        Ok(m) => format!("{}: {m}", f.path),
+        Err(e) => format!("{}: not restored — {e}", f.path),
+    };
+    no_store(Redirect::to(&format!("/admin/storage?msg={}", urlencoding::encode(&m))).into_response())
+}
+
+#[derive(Deserialize)]
+pub struct ConfirmForm {
+    confirm: String,
+}
+
+pub async fn storage_delete_backup(State(st): State<AppState>, headers: HeaderMap, Form(f): Form<ConfirmForm>) -> Response {
+    if let Err(r) = signed_in(&st, &headers).await {
+        return r;
+    }
+    let m = if f.confirm.trim() == "DELETE" {
+        let st2 = st.clone();
+        let (files, bytes) = tokio::task::spawn_blocking(move || crate::housekeeping::delete_lms3_backup(&st2)).await.unwrap_or((0, 0));
+        format!("Deleted the LMS3 backup: {files} files, {}", fmt_bytes(Some(bytes as f64)))
+    } else {
+        "Not deleted: type DELETE to confirm.".to_string()
+    };
+    no_store(Redirect::to(&format!("/admin/storage?msg={}", urlencoding::encode(&m))).into_response())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -366,7 +527,7 @@ mod tests {
         let errs = json!([{"timestamp": "t", "category": "c", "message": "m & \"q\"", "app_version": "2.0"}]);
         let perf = json!({"hourly": [{"cpu": 12.5, "mw": null, "hitch": 1.0, "mem": 300}, {"cpu": 20, "hitch": 2.0, "mem": 310}],
                           "screens": [{"screen": "Home", "hitch": 1.2, "worst_ms": 40, "seconds": 60, "n": 2}], "versions": []});
-        let html = dashboard(&o, &jobs, &errs, &perf);
+        let html = dashboard(&o, &jobs, &errs, &perf, &json!({}));
         assert!(!html.contains("<script"));
         assert!(html.contains("&lt;script&gt;x&lt;/script&gt;"));
         assert!(html.contains("m &amp; &quot;q&quot;"));

@@ -8,26 +8,10 @@ extension AudioPlayerManager {
 
     // MARK: - Gapless Playback
 
-    /// Deterministic local cache path(s) for a streamed (http/https) track URL,
-    /// matching the naming `downloadAndSchedule`/`prefetchUpcomingStreamIfNeeded`
-    /// use — checked across every extension either of those could have landed
-    /// on, since the final extension is only "refined" from a default m4a
-    /// guess to the real container once a download's Content-Type response is
-    /// known. Returns `nil` if nothing's been downloaded/prefetched yet.
+    /// The cached download of a streamed (http/https) track, if prefetch or
+    /// playback already fetched it (core stream cache, by source id).
     static func cachedStreamFileURL(for url: URL) -> URL? {
-        let cacheKey: String = url.absoluteString.data(using: .utf8).map { bytes in
-            var hash: UInt64 = 5381
-            for byte in bytes { hash = hash &* 31 &+ UInt64(byte) }
-            return String(hash, radix: 16)
-        } ?? UUID().uuidString
-        let tempDir = FileManager.default.temporaryDirectory
-        for ext in ["m4a", "webm", "opus", "mp3"] {
-            let candidate = tempDir.appendingPathComponent("stream_\(cacheKey).\(ext)")
-            if FileManager.default.fileExists(atPath: candidate.path) {
-                return candidate
-            }
-        }
-        return nil
+        StreamCache.cachedFile(for: url)
     }
 
     /// Pre-schedules the next track on primaryNode immediately after the current segment,

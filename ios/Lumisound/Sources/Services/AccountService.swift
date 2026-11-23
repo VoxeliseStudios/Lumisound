@@ -166,7 +166,15 @@ final class AccountService: ObservableObject {
         live.onPresenceEvent = { presence in
             PresenceService.shared.applyLivePresence(presence)
         }
+        live.onDownloadsRetry = { [weak self, weak library] tracks in
+            guard let self, let library else { return }
+            self.retryBlockedDownloads(tracks, library: library)
+        }
         live.start(bridgeURL: bridgeURL, token: token)
+        Task { @MainActor [weak self, weak library] in
+            guard let self, let library else { return }
+            await self.fetchPendingDownloadRetries(library: library)
+        }
     }
 
     func stopAutoPushTimer() {

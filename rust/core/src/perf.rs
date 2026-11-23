@@ -118,6 +118,8 @@ pub struct PerfWindow {
     /// and the most common stacks among them.
     pub main_busy_samples: u32,
     pub main_stacks: Vec<HotStack>,
+    /// Frame gaps that were the display link paused, not slow frames.
+    pub suspended_gaps: u32,
 }
 
 /// One main-thread stack and how often the sampler caught it.
@@ -474,6 +476,8 @@ struct Window {
     thermal_changes: u32,
     battery_start: Option<(f64, Instant)>,
     overhead_us_sum: f64,
+    /// Display-link pauses (>= SUSPENDED_GAP_MS) left out of the frame stats.
+    suspended_gaps: u32,
     /// Main-thread stacks (top frames, raw addresses) -> times sampled.
     main_hot: HashMap<Vec<u64>, u32>,
     main_busy: u32,
@@ -506,6 +510,7 @@ impl Window {
             thermal_changes: 0,
             battery_start: None,
             overhead_us_sum: 0.0,
+            suspended_gaps: 0,
             main_hot: HashMap::new(),
             main_busy: 0,
         }
@@ -788,6 +793,9 @@ pub fn perf_set_state(foreground: bool, screen: String) {
     }
 }
 
+/// Frame intervals at or above this are display-link pauses, not frames.
+const SUSPENDED_GAP_MS: f64 = 4000.0;
+
 /// Display-link frame intervals (ms) since the last call, and the frame
 /// budget (ms). Attributed to the current screen.
 #[uniffi::export]
@@ -798,6 +806,14 @@ pub fn perf_record_frames(intervals_ms: Vec<f32>, expected_ms: f32) {
     let mut acc = ScreenAcc::default();
     for &ms in &intervals_ms {
         let ms = ms as f64;
+        // A gap this long is the display link paused (app suspended, screen
+        // locked, a system sheet over the app), not a frame the app took to
+        // draw: 2.0.0.66 windows carried "frames" of up to 28 minutes that
+        // turned Library's hitch ratio into 470 ms/s (31 ms/s without them).
+        if ms >= SUSPENDED_GAP_MS {
+            st.window.suspended_gaps += 1;
+            continue;
+        }
         st.window.frames.add(ms, e);
         st.recent.add(ms, e);
         if ms.is_finite() && ms > 0.0 {
@@ -910,6 +926,7 @@ pub fn perf_take_window() -> PerfWindow {
         reasons: Vec::new(),
         main_busy_samples: w.main_busy,
         main_stacks,
+        suspended_gaps: w.suspended_gaps,
     };
     judge(&mut out);
     out
@@ -972,6 +989,7 @@ pub fn perf_window_json(w: PerfWindow) -> String {
         "screens": w.screens.iter().map(|s| serde_json::json!({"screen": s.screen, "seconds": r1(s.seconds), "hitchRatio": r1(s.hitch_ratio), "worstMs": r1(s.worst_frame_ms)})).collect::<Vec<_>>(),
         "thermal": {"now": w.thermal_now, "max": w.thermal_max, "changes": w.thermal_changes, "fairS": r1(w.thermal_fair_s), "seriousS": r1(w.thermal_serious_s), "criticalS": r1(w.thermal_critical_s)},
         "samplerOverheadUs": r1(w.sampler_overhead_us),
+        "suspendedGaps": w.suspended_gaps,
         "reasons": w.reasons,
         "mainThread": {"busySamples": w.main_busy_samples,
                        "stacks": w.main_stacks.iter().map(|h| serde_json::json!({"samples": h.samples, "sharePct": r1(h.share_pct), "frames": h.frames})).collect::<Vec<_>>()},

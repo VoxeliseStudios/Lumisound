@@ -177,35 +177,11 @@ extension AudioPlayerManager {
         // A streamed track is read from its downloaded copy, never over the
         // network (see StreamCache).
         guard let localURL = StreamCache.localURL(for: url) else { return }
-        // See LumisoundExclusiveExtensionService.playableURL's doc comment --
-        // a downloaded track's on-disk `.lms` bytes are XOR-masked and
-        // unreadable by AVURLAsset until unlocked; without this the
-        // embedded-tag read AND the RMS fallback both silently no-op for
-        // every locked track.
-        let capturedURL = LumisoundExclusiveExtensionService.playableURL(for: localURL)
-        let asset = AVURLAsset(url: capturedURL)
+        // Tag read (REPLAYGAIN_TRACK_GAIN, any container, locked files in
+        // place) and the loudness fallback both run in the core.
+        let path = localURL.path
         Task.detached(priority: .utility) { [weak self] in
-            let metadata = (try? await asset.load(.metadata)) ?? []
-            var gainDB: Float? = nil
-            for item in metadata {
-                let id = item.identifier?.rawValue.lowercased() ?? ""
-                if id.contains("replaygain_track_gain") || id.contains("replaygain") {
-                    if let str = item.stringValue {
-                        // Tag format: "+1.23 dB" or "-1.23 dB"
-                        let numeric = str.components(
-                            separatedBy: CharacterSet(
-                                charactersIn: "-+0123456789."
-                            ).inverted
-                        ).joined()
-                        gainDB = Float(numeric)
-                    }
-                }
-            }
-            // No embedded tag: compute RMS gain (returns 0 for unsupported formats).
-            if gainDB == nil {
-                let rms = await NormalizationService.shared.gain(for: capturedURL)
-                if rms != 0 { gainDB = rms }
-            }
+            let gainDB = replaygainDb(path: path, cacheDir: CoreAudio.unlockDir)
             if let gain = gainDB {
                 await MainActor.run { [weak self] in
                     guard let self else { return }
@@ -690,174 +666,30 @@ extension AudioPlayerManager {
         var localFile: URL? = nil
 
         do {
-            // Derive a stable cache filename from the URL string.
-            let cacheKey = StreamCache.key(for: url)
-
-            // Detect the actual audio container from the URL path before choosing an extension.
-            // YouTube CDN URLs often include the itag/mime in the path or may serve webm/opus
-            // even when we requested m4a. AVAudioFile reads magic bytes but uses the file
-            // extension for format hints — a mismatch causes silent failure.
-            // This app's own `/api/stream/proxy` URL (see StreamingService+
-            // StreamURL.swift) carries the requested format as a QUERY
-            // PARAM ("format=flac"/"opus"/"mp3"/...), not anywhere in the
-            // path — so none of the path-suffix checks below ever matched
-            // it, and every non-m4a stream through this app's own bridge
-            // silently fell through to the "m4a" default regardless of the
-            // user's actual preferred format. That mismatch (real bytes:
-            // flac/opus/mp3; file written and opened as ".m4a") is exactly
-            // what AVAudioFile's `kAudioFileUnsupportedFileTypeError`
-            // ("typ?") failures in the field trace back to — this was the
-            // "streaming doesn't work" report. Checked FIRST, before the
-            // path-suffix heuristics below (which stay for any other
-            // arbitrary/remote stream URL that isn't this app's own proxy).
-            let urlPath = url.path.lowercased()
-            let ext: String
-            if let queryFormat = URLComponents(url: url, resolvingAgainstBaseURL: false)?
-                .queryItems?.first(where: { $0.name == "format" })?.value?.lowercased(),
-                ["m4a", "opus", "mp3", "flac", "wav"].contains(queryFormat) {
-                ext = queryFormat
-            } else if urlPath.contains("audio/webm") || urlPath.hasSuffix(".webm") || urlPath.contains("mime=audio%2fwebm") {
-                ext = "webm"
-            } else if urlPath.hasSuffix(".opus") || urlPath.contains("mime=audio%2fogg") {
-                ext = "opus"
-            } else if urlPath.hasSuffix(".mp3") {
-                ext = "mp3"
-            } else if urlPath.hasSuffix(".flac") {
-                ext = "flac"
-            } else if urlPath.hasSuffix(".wav") {
-                ext = "wav"
-            } else {
-                ext = "m4a"    // default; covers m4a, aac, mp4 audio
+            // The core downloads the stream once into its cache, keyed by the
+            // track's source id, names the file after the container the server
+            // actually sent (Content-Type), and shares one download between
+            // this call and a prefetch already fetching the same track.
+            let fetched: StreamFile
+            do {
+                fetched = try await streamCacheFetch(sourceKey: StreamCache.key(for: url), url: url.absoluteString,
+                                                     headers: StreamCache.headers(for: currentSong), timeoutSecs: 120)
+            } catch CoreError.Http(let status, _) {
+                throw StreamingError.httpError(Int(status))
+            } catch CoreError.Unauthorized {
+                throw StreamingError.httpError(401)
             }
-
-            let tempURL = FileManager.default.temporaryDirectory
-                .appendingPathComponent("stream_\(cacheKey).\(ext)")
-
-            if !FileManager.default.fileExists(atPath: tempURL.path) {
-                // Build a request with a realistic browser UA so CDN servers don't reject it.
-                var req = URLRequest(url: url)
-                req.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148", forHTTPHeaderField: "User-Agent")
-                // This is a full-file fetch (the whole track downloads to a temp
-                // cache file before AVAudioFile can read any of it — see this
-                // function's header comment), same shape as the comparable
-                // full-download paths elsewhere (StreamingService+DownloadToLibrary's
-                // job result fetch and relay download use 120s/180s) — but this one
-                // is the path EVERY direct-play/"streamed" track goes through, not
-                // an occasional background download, so it's hit far more often.
-                // 60s was tight enough to plausibly time out a larger track or a
-                // slow/cellular connection well before the whole file arrived,
-                // failing playback outright with no retry (unlike downloadToLibrary,
-                // which retries transient failures 3x). Raised to match.
-                req.timeoutInterval = 120
-                // Apply any per-song headers (e.g. Authorization for user music / server tracks).
-                if let headers = currentSong?.httpHeaders {
-                    for (field, value) in headers { req.setValue(value, forHTTPHeaderField: field) }
-                }
-                let (downloaded, response) = try await Core.download(for: req)
-                // See entryGen's doc comment above — a seek, skip, or track
-                // change that happened while this download was in flight
-                // already started its OWN downloadAndSchedule (or otherwise
-                // moved the node on), so this one is stale and must not go
-                // on to touch activeNode/scheduleSegment at all.
-                guard scheduleGeneration == entryGen else {
-                    try? FileManager.default.removeItem(at: downloaded)
-                    appLog("downloadAndSchedule: discarding stale download (superseded) for \(playbackURL)", category: "audio")
-                    return
-                }
-                guard let http = response as? HTTPURLResponse,
-                      (200..<300).contains(http.statusCode) else {
-                    let status = (response as? HTTPURLResponse)?.statusCode ?? -1
-                    throw StreamingError.httpError(status)
-                }
-                appLog("downloadAndSchedule: stream response \(http.statusCode) for \(playbackURL) in \(String(format: "%.2f", Date().timeIntervalSince(playbackStartedAt)))s", category: "audio")
-                // Trust the response's Content-Type over what we ASKED for.
-                //
-                // This used to run only when `ext == "m4a"`, i.e. only when the
-                // request hadn't already committed to a format — which meant the
-                // one case that actually matters was skipped. The bridge
-                // deliberately serves m4a for stream formats AVFoundation can't
-                // demux (opus resolves to WebM), so a request for opus comes back
-                // as AAC-in-MP4. With the old condition the bytes were still
-                // written to a `.opus` file and AVAudioFile rejected them with
-                // `kAudioFileInvalidFileError` ('dta?', 1685348671) — a valid
-                // file, opened as the wrong type. Seen on every streamed track:
-                // "AVAudioFile open failed ... avfaudio error 1685348671".
-                //
-                // Refining whenever the server disagrees is correct regardless
-                // of what was requested: the server knows what it sent.
-                if let ct = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Type") {
-                    let refinedExt: String
-                    if ct.contains("webm") { refinedExt = "webm" }
-                    else if ct.contains("ogg") || ct.contains("opus") { refinedExt = "opus" }
-                    else if ct.contains("mpeg") { refinedExt = "mp3" }
-                    else if ct.contains("flac") { refinedExt = "flac" }
-                    else if ct.contains("wav") { refinedExt = "wav" }
-                    else if ct.contains("mp4") || ct.contains("m4a") || ct.contains("aac") { refinedExt = "m4a" }
-                    else { refinedExt = ext }   // unrecognised — keep what we assumed
-                    let refinedURL = tempURL.deletingPathExtension().appendingPathExtension(refinedExt)
-                    try? FileManager.default.removeItem(at: refinedURL)
-                    try FileManager.default.moveItem(at: downloaded, to: refinedURL)
-                    localFile = refinedURL
-                    // The Lumisound engine first, as for every other stream.
-                    // (This branch went straight to AVAudioFile, so roughly
-                    // half of all streams — every response carrying a
-                    // Content-Type — played on the system engine without ever
-                    // being offered to the Lumisound engine or counted as a
-                    // fallback; the ones AVAudioFile then rejected ended up on
-                    // AVPlayer.)
-                    if rustEligible(for: refinedURL), scheduleWithRustEngine(url: refinedURL, startTime: startTime) {
-                        if isPlaying {
-                            pendingSeekRampTarget = nil
-                            activeNode.volume = audioSettings.volume
-                            rustPlay()
-                            startTimer()
-                            startSmartCrossfadeAnalysisIfNeeded()
-                        }
-                        updateNowPlaying()
-                        appLog("downloadAndSchedule: Rust engine playback (content-type \(refinedExt)) in \(String(format: "%.2f", Date().timeIntervalSince(playbackStartedAt)))s", category: "audio")
-                        return
-                    }
-                    if Self.rustEngineEnabled { reportEngineFallback(reason: "stream_system_engine", url: refinedURL) }
-                    // Re-enter with the corrected URL
-                    let file2 = try AVAudioFile(forReading: refinedURL)
-                    audioFile = file2
-                    duration = file2.duration
-                    let node = activeNode
-                    let gen = scheduleGeneration &+ 1
-                    scheduleGeneration = gen
-                    node.stop()
-                    let sr = file2.processingFormat.sampleRate
-                    ensureSampleRate(matching: sr)
-                    let sf = max(0, AVAudioFramePosition(startTime * sr))
-                    let fl = max(0, AVAudioFrameCount(file2.length - sf))
-                    fileStartFrame = sf; position = startTime; gaplessScheduled = false; pendingNextIndex = nil
-                    resetReplayGainForNewTrack()
-                    node.scheduleSegment(file2, startingFrame: sf, frameCount: fl, at: nil) { [weak self] in
-                        Task { @MainActor in guard let self, self.scheduleGeneration == gen else { return }; self.handleTrackEnded() }
-                    }
-                    if isPlaying {
-                        startEngineIfNeeded()
-                        node.play()
-                        if let target = pendingSeekRampTarget {
-                            pendingSeekRampTarget = nil
-                            rampNodeVolumeAfterSeek(node, to: target)
-                        }
-                        MusicHapticsService.shared.updatePlayback(
-                            enabled: audioSettings.musicHapticsEnabled ?? false,
-                            isPlaying: true,
-                            engineAvailable: true
-                        )
-                        startTimer()
-                        reapplyActiveEffect()
-                        startSmartCrossfadeAnalysisIfNeeded()
-                    }
-                    updateNowPlaying()
-                    appLog("downloadAndSchedule: playback scheduled after content-type correction in \(String(format: "%.2f", Date().timeIntervalSince(playbackStartedAt)))s", category: "audio")
-                    return
-                }
-                try? FileManager.default.removeItem(at: tempURL)
-                try FileManager.default.moveItem(at: downloaded, to: tempURL)
+            // A seek, skip or track change while this was downloading already
+            // started its own schedule: this one is stale (see entryGen).
+            guard scheduleGeneration == entryGen else {
+                appLog("downloadAndSchedule: discarding stale download (superseded) for \(playbackURL)", category: "audio")
+                return
             }
+            let tempURL = URL(fileURLWithPath: fetched.path)
+            appLog(fetched.cached
+                   ? "downloadAndSchedule: stream from cache for \(playbackURL)"
+                   : "downloadAndSchedule: stream downloaded (\(fetched.bytes) bytes) in \(String(format: "%.2f", fetched.seconds))s for \(playbackURL)",
+                   category: "audio")
             localFile = tempURL
 
             // Downloaded: the Rust engine plays the cached file like a local track.

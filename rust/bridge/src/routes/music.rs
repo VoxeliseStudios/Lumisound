@@ -242,6 +242,15 @@ async fn download_history(State(st): State<AppState>, u: User, Q(q): Q<ServerLib
     Ok(Json(json!({"tracks": v, "total": n})))
 }
 
+/// `since` as the bridge writes it (naive UTC, `py_iso`), or RFC 3339.
+fn parse_since(s: &str) -> Option<chrono::NaiveDateTime> {
+    chrono::DateTime::parse_from_rfc3339(s)
+        .map(|d| d.naive_utc())
+        .ok()
+        .or_else(|| chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f").ok())
+        .or_else(|| chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S").ok())
+}
+
 // ---- listing ---------------------------------------------------------------------------------
 
 type MetaRow = (
@@ -1059,6 +1068,9 @@ struct MetaQ {
     min_bpm: Option<f64>,
     max_bpm: Option<f64>,
     key: Option<String>,
+    /// ISO time from a previous answer's `server_time`: only rows changed
+    /// since then, plus `deleted` ids.
+    since: Option<String>,
 }
 
 /// One `/user/music/metadata` track object (SQL), shared by the list and the
@@ -1099,6 +1111,25 @@ async fn list_metadata(State(st): State<AppState>, u: User, Q(q): Q<MetaQ>) -> A
         }
     }
     let has_dir = st.user_music_dir(&u.id).is_some();
+    let server_time = chrono::Utc::now().naive_utc();
+    if let Some(since) = q.since.as_deref().filter(|s| !s.is_empty()) {
+        let since = parse_since(since).ok_or_else(|| invalid("since", "Input should be an ISO 8601 time"))?;
+        let (changed, deleted): (Value, Value) = sqlx::query_as(&format!(
+            "SELECT \
+               (SELECT COALESCE(json_agg({} ORDER BY uploaded_at DESC), '[]'::json) FROM (SELECT * FROM ios_user_music_metadata \
+                  WHERE user_id = $1 AND updated_at > $2 ORDER BY uploaded_at DESC LIMIT $3) m), \
+               (SELECT COALESCE(json_agg(id), '[]'::json) FROM ios_user_music_deleted WHERE user_id = $1 AND deleted_at > $2)",
+            track_json("$4")
+        ))
+        .bind(&u.id)
+        .bind(since)
+        .bind(limit)
+        .bind(has_dir)
+        .fetch_one(&st.db)
+        .await?;
+        let n = changed.as_array().map_or(0, Vec::len);
+        return Ok(Json(json!({"tracks": changed, "total": n, "deleted": deleted, "incremental": true, "server_time": crate::db::py_iso(&server_time)})));
+    }
     let v: Value = sqlx::query_scalar(
         &format!("SELECT COALESCE(json_agg({} ORDER BY uploaded_at DESC), '[]'::json) \
          FROM (SELECT * FROM ios_user_music_metadata WHERE user_id = $1 AND ($2::float8 IS NULL OR bpm >= $2) AND ($3::float8 IS NULL OR bpm <= $3) \
@@ -1114,7 +1145,7 @@ async fn list_metadata(State(st): State<AppState>, u: User, Q(q): Q<MetaQ>) -> A
     .fetch_one(&st.db)
     .await?;
     let n = v.as_array().map_or(0, Vec::len);
-    Ok(Json(json!({"tracks": v, "total": n})))
+    Ok(Json(json!({"tracks": v, "total": n, "server_time": crate::db::py_iso(&server_time)})))
 }
 
 #[derive(Deserialize)]

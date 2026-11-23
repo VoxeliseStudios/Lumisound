@@ -2,6 +2,27 @@
 
 Full history and decisions: [`../RUST-PORT.md`](../RUST-PORT.md). Swift is views + app shell only.
 
+## Done (2026-11-23) — upgrade pass
+- Streams: core stream cache (by source id; the ticket in the URL no longer changes the cache key),
+  `downloadAndSchedule` / prefetch / gapless use it; streamed next tracks get gapless + Smart Crossfade
+  (shared blend profiles); `engine=1` stream URLs (Opus / Premium 774); bridge URL prefetch for the track
+  after next. Undecodable cached streams are evicted.
+- Download retry queue: `downloads_retry` live event + launch check re-download walled tracks (toast).
+- Incremental cloud metadata (`cloudMetadataFetch`), ETag cache cleared at sign-out.
+- Main thread (2.0.0.66 stacks): library scan no longer lstat()s every file on the main actor
+  (`URL(fileURLWithPath:isDirectory:)`), accent colors decoded once, visualizer publishes one value per buffer
+  (and only when it moved), documents path standardized once.
+- ArtworkService: lookup chain in core `artresolve.rs` (Swift keeps Media Library, AVFoundation fallback,
+  video frames); ReplayGain via core `replaygain_db`.
+- tvOS: Smart Crossfade via core `blend_plan` / `queueBlend` (TVAutoCrossfade.swift and the server
+  transition-profile plumbing removed); `engine=1` streams; core bridge session set from TVBridge.
+
+## Open (2026-11-23)
+- Verify on device: streamed queue gapless + blend, Opus/WebM streams, retry toast, artwork for streamed and
+  locked tracks, tvOS blend timing.
+- Next main-thread target: SwiftUI/Metal render cost on Playing/Library (animated backdrops: LumenBackdrop,
+  ReactiveAura drawingGroup, VHS glitch) — read the next perf_window stacks after this release.
+
 ## Done (2026-11-19) — Live Activity telemetry, main-thread sampling, pitch lock
 - LiveActivityManager: counters via core `live_activity_count` for start, skips (disabled / background /
   cooldown, once per track), updates sent, delivered/not delivered fg/bg, resends, duplicates, orphans,

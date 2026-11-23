@@ -40,7 +40,18 @@ pub fn router(state: AppState) -> Router {
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed)
         .layer(axum::extract::DefaultBodyLimit::max(256 * 1024 * 1024))
-        .layer(CompressionLayer::new().gzip(true).quality(tower_http::CompressionLevel::Precise(4)).compress_when(perf::Compressible))
+        .layer(middleware::from_fn(perf::etag))
+        // zstd/brotli for clients that offer them (smaller JSON for the same
+        // CPU as gzip at these levels), gzip for the rest.
+        .layer(
+            CompressionLayer::new()
+                .zstd(true)
+                .br(true)
+                .gzip(true)
+                .quality(tower_http::CompressionLevel::Precise(4))
+                .compress_when(perf::Compressible),
+        )
+        .route_layer(middleware::from_fn(crate::routestats::track))
         .layer(middleware::from_fn(perf::headers_and_timing))
         .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any))
         .with_state(state)

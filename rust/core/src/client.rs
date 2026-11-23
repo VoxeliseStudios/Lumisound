@@ -228,13 +228,121 @@ async fn exchange(rq: reqwest::RequestBuilder) -> CoreResult<HttpExchange> {
 #[uniffi::export]
 pub async fn http_send(method: String, url: String, headers: Vec<HttpHeader>, body: Option<Vec<u8>>, timeout_secs: f64) -> CoreResult<HttpExchange> {
     on_rt(async move {
+        // Bridge GETs the bridge tags with an ETag (library, playlists,
+        // favorites, settings, ...): revalidate instead of re-downloading.
+        let key = (method.eq_ignore_ascii_case("GET") && body.is_none()).then(|| etag::key(&url, &headers)).flatten();
+        let cached = key.as_deref().and_then(etag::get);
         let mut rq = build(&method, &url, &headers, timeout_secs)?;
+        if let Some(c) = &cached {
+            rq = rq.header("If-None-Match", &c.etag);
+        }
         if let Some(b) = body {
             rq = rq.body(b);
         }
-        exchange(rq).await
+        let mut ex = exchange(rq).await?;
+        if let Some(k) = &key {
+            if ex.status == 304 {
+                if let Some(c) = cached {
+                    // Same answer as last time: hand back the stored one.
+                    ex.status = 200;
+                    ex.body = c.body;
+                    ex.headers = c.headers;
+                }
+            } else if ex.status == 200 {
+                etag::put(k, &ex);
+            }
+        }
+        Ok(ex)
     })
     .await
+}
+
+/// Validator cache for `http_send`: (ETag, body, headers) of the last 200 per
+/// bridge GET URL + credentials, in memory and in the blob cache, so a cold
+/// launch revalidates too. Bodies over 6 MB aren't kept.
+mod etag {
+    use super::{HttpExchange, HttpHeader};
+    use serde::{Deserialize, Serialize};
+    use std::collections::HashMap;
+    use std::sync::{LazyLock, Mutex};
+
+    const NS: &str = "http_etag";
+    const MAX_BODY: usize = 6 * 1024 * 1024;
+    const MEM_CAP: usize = 48 * 1024 * 1024;
+
+    #[derive(Clone, Serialize, Deserialize)]
+    pub struct Entry {
+        pub etag: String,
+        pub body: Vec<u8>,
+        pub headers: Vec<(String, String)>,
+    }
+
+    pub struct Hit {
+        pub etag: String,
+        pub body: Vec<u8>,
+        pub headers: Vec<HttpHeader>,
+    }
+
+    static MEM: LazyLock<Mutex<(HashMap<String, Entry>, usize)>> = LazyLock::new(Default::default);
+
+    /// Cache key for a request to the bridge: URL + who is asking (a
+    /// different account must never get this account's cached body).
+    pub fn key(url: &str, headers: &[HttpHeader]) -> Option<String> {
+        let host = super::host_of(url)?;
+        if !super::BRIDGE_HOSTS.read().unwrap().contains(&host) {
+            return None;
+        }
+        let who: String = headers
+            .iter()
+            .filter(|h| h.name.eq_ignore_ascii_case("authorization") || h.name.eq_ignore_ascii_case("x-account-token"))
+            .map(|h| format!("{}={}", h.name.to_ascii_lowercase(), h.value))
+            .collect::<Vec<_>>()
+            .join("&");
+        Some(crate::sha256_hex(format!("{url}\n{who}")))
+    }
+
+    pub fn get(key: &str) -> Option<Hit> {
+        let e = MEM.lock().unwrap().0.get(key).cloned().or_else(|| {
+            let b = crate::blobcache::blob_cache_get(NS.into(), key.into())?;
+            serde_json::from_slice::<Entry>(&b).ok()
+        })?;
+        Some(Hit { etag: e.etag, body: e.body, headers: e.headers.into_iter().map(|(name, value)| HttpHeader { name, value }).collect() })
+    }
+
+    pub fn put(key: &str, ex: &HttpExchange) {
+        let Some(tag) = ex.headers.iter().find(|h| h.name.eq_ignore_ascii_case("etag")).map(|h| h.value.clone()) else { return };
+        if ex.body.len() > MAX_BODY {
+            return;
+        }
+        let e = Entry { etag: tag, body: ex.body.clone(), headers: ex.headers.iter().map(|h| (h.name.clone(), h.value.clone())).collect() };
+        if let Ok(b) = serde_json::to_vec(&e) {
+            crate::blobcache::blob_cache_put(NS.into(), key.into(), b);
+        }
+        let mut m = MEM.lock().unwrap();
+        let size = e.body.len();
+        if m.1 + size > MEM_CAP {
+            m.0.clear();
+            m.1 = 0;
+        }
+        if let Some(old) = m.0.insert(key.to_string(), e) {
+            m.1 = m.1.saturating_sub(old.body.len());
+        }
+        m.1 += size;
+    }
+
+    /// Forget everything (sign-out).
+    pub fn clear() {
+        let mut m = MEM.lock().unwrap();
+        m.0.clear();
+        m.1 = 0;
+        crate::blobcache::blob_cache_clear(NS.into());
+    }
+}
+
+/// Drop cached bridge answers (call on sign-out).
+#[uniffi::export]
+pub fn http_cache_clear() {
+    etag::clear();
 }
 
 /// Like `http_send`, streaming the body from a file (uploads never load the
@@ -267,7 +375,16 @@ pub struct HttpDownload {
 /// partial file.
 #[uniffi::export]
 pub async fn http_download_file(method: String, url: String, headers: Vec<HttpHeader>, body: Option<Vec<u8>>, dest_path: String, timeout_secs: f64) -> CoreResult<HttpDownload> {
-    on_rt(async move {
+    on_rt(async move { download_to(method, url, headers, body, dest_path, timeout_secs).await }).await
+}
+
+/// GET `url` into `dest_path` on the current runtime (stream cache).
+pub(crate) async fn http_download_to(url: &str, headers: &[HttpHeader], dest_path: &str, timeout_secs: f64) -> CoreResult<HttpDownload> {
+    download_to("GET".into(), url.to_string(), headers.to_vec(), None, dest_path.to_string(), timeout_secs).await
+}
+
+async fn download_to(method: String, url: String, headers: Vec<HttpHeader>, body: Option<Vec<u8>>, dest_path: String, timeout_secs: f64) -> CoreResult<HttpDownload> {
+    {
         use futures_util::StreamExt;
         use tokio::io::AsyncWriteExt;
         let mut rq = build(&method, &url, &headers, timeout_secs)?;
@@ -302,8 +419,7 @@ pub async fn http_download_file(method: String, url: String, headers: Vec<HttpHe
                 Err(e)
             }
         }
-    })
-    .await
+    }
 }
 
 #[cfg(test)]

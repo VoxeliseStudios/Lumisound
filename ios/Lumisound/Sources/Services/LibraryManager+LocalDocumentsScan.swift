@@ -299,13 +299,18 @@ extension LibraryManager {
         if cleanedUpOrphans > 0 {
             appLog("Local scan: cleaned up \(cleanedUpOrphans) pre-conversion leftover file(s) that already had a converted .lms counterpart", category: "library")
         }
-        let cleanedCandidates = scan.candidates.map { URL(fileURLWithPath: $0) }
-        guard !cleanedCandidates.isEmpty else {
+        guard !scan.candidates.isEmpty else {
             if evicted || mergedDuplicates > 0 || cleanedUpOrphans > 0 { rebuildAllSongs() }
             return
         }
 
         if force {
+            // `isDirectory: false`: these are files the core just listed. The
+            // plain initializer lstat()s every path to find out, which on the
+            // main actor was the app's single biggest main-thread cost in
+            // 2.0.0.66 telemetry (perf_window main-thread stacks: 1,626
+            // samples in this map on a large library, every scan).
+            let cleanedCandidates = scan.candidates.map { URL(fileURLWithPath: $0, isDirectory: false) }
             // Refresh-button path: re-resolve EVERY candidate. `resolveSongs`
             // returns cached songs unchanged (cheap stat + dict hit) for files
             // whose (mtime, size) still matches, and re-extracts metadata only
@@ -337,7 +342,7 @@ extension LibraryManager {
         // every background-download completion and foreground return — so
         // on a large library it fired this same multi-second main-thread
         // cost repeatedly during ordinary use, not just once.
-        let newURLs = scan.newPaths.map { URL(fileURLWithPath: $0) }
+        let newURLs = scan.newPaths.map { URL(fileURLWithPath: $0, isDirectory: false) }
         guard !newURLs.isEmpty else { return }
 
         let newSongs = await resolveSongs(for: newURLs)
@@ -413,7 +418,7 @@ extension LibraryManager {
         if r.removed > 0 {
             appLog("Local scan: cleaned up \(r.removed) pre-conversion leftover file(s) that already had a converted .lms counterpart", category: "library")
         }
-        return (r.remaining.map { URL(fileURLWithPath: $0) }, Int(r.removed))
+        return (r.remaining.map { URL(fileURLWithPath: $0, isDirectory: false) }, Int(r.removed))
     }
 
     /// Retroactive counterpart to `cleanUpConversionOrphans` — that one only
@@ -442,7 +447,7 @@ extension LibraryManager {
         let byID = Dictionary(importedSongs.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         let pairs: [(song: Song, survivor: Song, url: URL, target: URL)] = found.compactMap { p in
             guard let song = byID[p.songId], let survivor = byID[p.survivorId] else { return nil }
-            return (song, survivor, URL(fileURLWithPath: p.path), URL(fileURLWithPath: p.convertedPath))
+            return (song, survivor, URL(fileURLWithPath: p.path, isDirectory: false), URL(fileURLWithPath: p.convertedPath, isDirectory: false))
         }
         guard !pairs.isEmpty else { return 0 }
 

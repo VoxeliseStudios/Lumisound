@@ -38,6 +38,9 @@ mod ytdlp;
 mod lms3_cloud;
 mod premium;
 mod ytmusic;
+mod recovery;
+mod housekeeping;
+mod routestats;
 
 use std::net::SocketAddr;
 use tracing_subscriber::EnvFilter;
@@ -97,21 +100,38 @@ async fn main() -> anyhow::Result<()> {
     tokio::task::spawn_blocking(background::cleanup_orphan_temp_dirs);
     state.spawn_background();
     lms3_cloud::spawn(&state);
+    recovery::spawn(&state);
+    housekeeping::spawn(&state);
 
     let app = routes::router(state.clone());
     let addr: SocketAddr = format!("{}:{}", state.cfg.host, state.cfg.port).parse()?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!("lumisound-bridge listening on {addr}");
     axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(shutdown_signal(state.clone()))
         .await?;
     Ok(())
 }
 
-async fn shutdown_signal() {
+/// How long in-flight requests (a track streaming through the proxy, an
+/// upload) get to finish after SIGTERM. Compose's stop_grace_period must be
+/// longer (web-stack: 30 s).
+const DRAIN_SECS: u64 = 20;
+
+/// SIGTERM / Ctrl-C: stop accepting, tell live sockets to reconnect in a few
+/// seconds (the apps back off instead of hammering a restarting server), and
+/// give open requests `DRAIN_SECS` before exiting.
+async fn shutdown_signal(state: state::AppState) {
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("SIGTERM handler");
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {},
         _ = term.recv() => {},
     }
+    tracing::info!("shutting down: draining open requests for up to {DRAIN_SECS}s");
+    state.live.broadcast(&serde_json::json!({"type": "server_restarting", "retry_after": 8}));
+    tokio::spawn(async {
+        tokio::time::sleep(std::time::Duration::from_secs(DRAIN_SECS)).await;
+        tracing::info!("drain window over; exiting");
+        std::process::exit(0);
+    });
 }

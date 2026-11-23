@@ -19,6 +19,7 @@ use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use sha2::Digest as _;
 use std::time::{Duration, Instant};
 
 pub fn routes() -> Router<AppState> {
@@ -27,6 +28,10 @@ pub fn routes() -> Router<AppState> {
         .route("/api/stream", get(stream))
         .route("/api/stream/ticket", get(stream_ticket))
         .route("/api/stream/proxy", get(stream_proxy))
+        .route("/api/stream/prefetch", post(stream_prefetch))
+        .route("/api/track/blend-profile", get(blend_profile_get).put(blend_profile_put))
+        .route("/api/download/retry", get(download_retry_list))
+        .route("/api/download/retry/ack", post(download_retry_ack))
         .route("/api/download/relay", get(download_relay))
         .route("/api/download", get(download))
         .route("/api/download/status", get(download_status))
@@ -165,7 +170,41 @@ impl AppState {
     /// Cached raw URL for (source, id, format), resolving with yt-dlp on a miss.
     /// Returns (url, freshly_resolved).
     async fn resolve_stream_url(&self, source: &str, id: &str, format: &str, target: &str, user_id: Option<&str>) -> ApiResult<(String, bool)> {
+        self.resolve_stream_url_via(source, id, format, target, user_id, None, false).await
+    }
+
+    /// Keep a resolved URL until shortly before googlevideo's own `expire=`
+    /// (capped at the cache's 5 h), so a URL is neither dropped while still
+    /// good nor served after it died.
+    fn remember_stream_url(&self, key: &str, url: &str) {
+        let now = chrono::Utc::now().timestamp();
+        let ttl = match ytdlp::url_expiry(url) {
+            Some(exp) => (exp - now - 600).clamp(60, 5 * 3600) as u64,
+            None => 5 * 3600,
+        };
+        self.stream_resolved_at.set(key.to_string(), Instant::now());
+        self.stream_urls.set_ttl(key.to_string(), url.to_string(), Duration::from_secs(ttl));
+    }
+
+    /// googlevideo 403s a URL fetched within ~3 s of being issued, for every
+    /// request that shares it: wait out what is left of that window.
+    async fn wait_until_usable(&self, key: &str) {
+        if let Some(at) = self.stream_resolved_at.get(&key.to_string()) {
+            let wait = Duration::from_secs(3).saturating_sub(at.elapsed());
+            if !wait.is_zero() {
+                tokio::time::sleep(wait).await;
+            }
+        }
+    }
+
+    /// `resolve_stream_url` with the first attempt's player client forced
+    /// (`client` = Some); `fresh` bypasses the cached URL.
+    #[allow(clippy::too_many_arguments)]
+    async fn resolve_stream_url_via(&self, source: &str, id: &str, format: &str, target: &str, user_id: Option<&str>, client: Option<&str>, fresh: bool) -> ApiResult<(String, bool)> {
         let key = format!("{source}:{id}:{format}");
+        if fresh {
+            self.stream_urls.remove(&key);
+        }
         if let Some(u) = self.stream_urls.get(&key) {
             return Ok((u, false));
         }
@@ -184,7 +223,7 @@ impl AppState {
             return Err(AppError::new(code, d));
         }
         let start = Instant::now();
-        let res = self.ytdlp.raw_url(target, ytdlp::format_flag(format), user_id).await;
+        let res = self.ytdlp.raw_url_via(target, ytdlp::format_flag(format), user_id, client).await;
         let ms = start.elapsed().as_millis();
         let out = match res {
             Err(e) => {
@@ -194,8 +233,7 @@ impl AppState {
                 Err(err)
             }
             Ok((Some(u), _)) => {
-                self.stream_resolved_at.set(key.clone(), Instant::now());
-                self.stream_urls.set(key.clone(), u.clone());
+                self.remember_stream_url(&key, &u);
                 self.spawn_log_stream(user_id.map(str::to_string), source, id, "success", None, ms);
                 Ok((u, true))
             }
@@ -301,6 +339,8 @@ struct StreamQ {
     ticket: Option<String>,
     title: Option<String>,
     existing_ids: Option<String>,
+    /// "1" when the app plays the stream through the Lumisound engine.
+    engine: Option<String>,
 }
 
 async fn stream(State(st): State<AppState>, _k: ApiKey, headers: HeaderMap, Q(p): Q<StreamQ>) -> ApiResult<Json<Value>> {
@@ -313,11 +353,193 @@ async fn stream(State(st): State<AppState>, _k: ApiKey, headers: HeaderMap, Q(p)
     Ok(Json(json!({"url": url, "expires_in": STREAM_URL_TTL_SECS})))
 }
 
+/// (format key, player client) for streaming `format` from `source`. With
+/// the Lumisound engine YouTube streams take the best audio (Premium Opus via
+/// the account's Premium client when it has one); without it, formats
+/// AVFoundation can't demux become m4a.
+async fn stream_format(st: &AppState, user: Option<&str>, source: &str, format: &str, engine: bool) -> (String, Option<String>) {
+    if source != "youtube" {
+        return (format.to_string(), None);
+    }
+    if engine {
+        return match crate::premium::cached(st, user).await.filter(|s| s.premium) {
+            Some(prem) => ("premium".into(), prem.client),
+            None => ("lumi".into(), None),
+        };
+    }
+    if RELAY_INCOMPATIBLE.contains(&format) {
+        return ("m4a".into(), None);
+    }
+    (format.to_string(), None)
+}
+
+#[derive(Deserialize)]
+struct PrefetchTrack {
+    id: String,
+    source: Option<String>,
+    url: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct PrefetchBody {
+    tracks: Vec<PrefetchTrack>,
+    format: Option<String>,
+    /// The app plays streams through the Lumisound engine (`engine=1`).
+    #[serde(default)]
+    engine: bool,
+}
+
+/// Resolve the next queued tracks' stream URLs ahead of time, so pressing
+/// Next (or a gapless switch) skips yt-dlp and googlevideo's 3 s settle.
+/// Answers at once; at most 3 tracks per call, 120 calls an hour per account.
+async fn stream_prefetch(State(st): State<AppState>, k: ApiKey, Json(b): Json<PrefetchBody>) -> ApiResult<Response> {
+    if !st.rate_allow(&format!("prefetch:{}", k.user), 120, Duration::from_secs(3600)) {
+        return Ok(StatusCode::TOO_MANY_REQUESTS.into_response());
+    }
+    let mut queued = 0;
+    for t in b.tracks.into_iter().take(3) {
+        if t.id.is_empty() || t.id.len() > 280 {
+            continue;
+        }
+        let source = lower(&t.source, "youtube");
+        let (format, client) = stream_format(&st, Some(&k.user), &source, &lower(&b.format, "m4a"), b.engine).await;
+        let key = format!("{source}:{}:{format}", t.id);
+        if st.stream_urls.get(&key).is_some() || st.stream_failures.get(&key).is_some() {
+            continue;
+        }
+        let Ok(target) = target_for(&source, &t.id, &t.url).await else { continue };
+        queued += 1;
+        let (st, user) = (st.clone(), k.user.clone());
+        tokio::spawn(async move {
+            let _ = st.resolve_stream_url_via(&source, &t.id, &format, &target, Some(&user), client.as_deref(), false).await;
+        });
+    }
+    Ok((StatusCode::ACCEPTED, Json(json!({"queued": queued}))).into_response())
+}
+
+#[derive(Deserialize)]
+struct BlendQ {
+    source: Option<String>,
+    id: String,
+    /// Profile format version (core `blend::PROFILE_VERSION`).
+    v: Option<i32>,
+}
+
+/// A streamed track's shared Smart Crossfade profile (404 when no device
+/// has measured it yet).
+async fn blend_profile_get(State(st): State<AppState>, _k: ApiKey, Q(q): Q<BlendQ>) -> ApiResult<Response> {
+    let source = lower(&q.source, "youtube");
+    let row: Option<Value> = sqlx::query_scalar("SELECT profile::json FROM ios_track_blend_profiles WHERE source = $1 AND source_id = $2 AND version = $3")
+        .bind(&source)
+        .bind(&q.id)
+        .bind(q.v.unwrap_or(1))
+        .fetch_optional(&st.db)
+        .await?;
+    match row {
+        Some(v) => {
+            let mut r = Json(v).into_response();
+            r.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("private, max-age=86400"));
+            Ok(r)
+        }
+        None => Ok(StatusCode::NOT_FOUND.into_response()),
+    }
+}
+
+/// Plausibility limits for a contributed profile: it only steers crossfade
+/// timing, but a broken one must not reach other devices.
+fn blend_profile_ok(p: &Value) -> bool {
+    let f = |k: &str| p.get(k).and_then(Value::as_f64);
+    let (Some(dur), Some(start), Some(end)) = (f("duration"), f("music_start"), f("music_end")) else { return false };
+    let bpm_ok = |k: &str| f(k).is_some_and(|b| b == 0.0 || (40.0..=260.0).contains(&b));
+    (10.0..=6.0 * 3600.0).contains(&dur)
+        && (0.0..dur).contains(&start)
+        && end > start
+        && end <= dur + 0.5
+        && bpm_ok("bpm_head")
+        && bpm_ok("bpm_tail")
+        && p.get("head").is_some_and(Value::is_object)
+        && p.get("tail").is_some_and(Value::is_object)
+}
+
+async fn blend_profile_put(State(st): State<AppState>, k: ApiKey, Q(q): Q<BlendQ>, body: axum::body::Bytes) -> ApiResult<StatusCode> {
+    if body.len() > 256 * 1024 {
+        return Err(AppError::new(413, "profile too large"));
+    }
+    if !st.rate_allow(&format!("blendput:{}", k.user), 600, Duration::from_secs(3600)) {
+        return Ok(StatusCode::TOO_MANY_REQUESTS);
+    }
+    let p: Value = serde_json::from_slice(&body).map_err(|_| AppError::bad_request("profile must be JSON"))?;
+    if !blend_profile_ok(&p) || q.id.is_empty() || q.id.len() > 280 {
+        return Err(AppError::bad_request("implausible profile"));
+    }
+    let source = lower(&q.source, "youtube");
+    // First measurement wins: one bad device can't overwrite a good profile.
+    sqlx::query(
+        "INSERT INTO ios_track_blend_profiles (source, source_id, version, profile, contributed_by) VALUES ($1, $2, $3, $4, $5) \
+         ON CONFLICT (source, source_id, version) DO NOTHING",
+    )
+    .bind(&source)
+    .bind(&q.id)
+    .bind(q.v.unwrap_or(1))
+    .bind(sqlx::types::Json(&p))
+    .bind(&k.user)
+    .execute(&st.db)
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Downloads that failed on a bot wall / rate limit and can be retried now
+/// (`ready`), plus those still waiting for the cause to clear.
+async fn download_retry_list(State(st): State<AppState>, k: ApiKey) -> ApiResult<Json<Value>> {
+    let v: Value = sqlx::query_scalar(
+        "SELECT COALESCE(json_agg(json_build_object('source', source, 'id', source_id, 'title', title, 'artist', artist, \
+           'format', format, 'reason', reason, 'failures', failures, 'ready', ready_at IS NOT NULL) ORDER BY failed_at), '[]'::json) \
+         FROM ios_download_retry WHERE user_id = $1",
+    )
+    .bind(&k.user)
+    .fetch_one(&st.db)
+    .await?;
+    Ok(Json(json!({"tracks": v})))
+}
+
+#[derive(Deserialize)]
+struct RetryAck {
+    /// "source:id" keys the app has re-queued (or given up on).
+    keys: Vec<String>,
+}
+
+async fn download_retry_ack(State(st): State<AppState>, k: ApiKey, Json(b): Json<RetryAck>) -> ApiResult<StatusCode> {
+    let keys: Vec<String> = b.keys.into_iter().take(2000).collect();
+    sqlx::query("DELETE FROM ios_download_retry WHERE user_id = $1 AND (source || ':' || source_id) = ANY($2)")
+        .bind(&k.user)
+        .bind(&keys)
+        .execute(&st.db)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn stream_ticket(State(st): State<AppState>, user: User) -> Json<Value> {
     use rand::Rng;
     let bytes: [u8; 24] = rand::rng().random();
     let ticket = base64_url(&bytes);
-    st.stream_tickets.set(ticket.clone(), user.id);
+    st.stream_tickets.set(ticket.clone(), user.id.clone());
+    {
+        let (st, hash) = (st.clone(), hex::encode(sha2::Sha256::digest(ticket.as_bytes())));
+        tokio::spawn(async move {
+            let r = sqlx::query(
+                "INSERT INTO ios_stream_tickets (ticket_hash, user_id, expires_at) \
+                 VALUES ($1, $2, NOW() AT TIME ZONE 'UTC' + make_interval(secs => $3)) ON CONFLICT (ticket_hash) DO NOTHING",
+            )
+            .bind(hash)
+            .bind(user.id)
+            .bind(STREAM_URL_TTL_SECS as f64)
+            .execute(&st.db)
+            .await;
+            if let Err(e) = r {
+                tracing::warn!("stream ticket not persisted: {e}");
+            }
+        });
+    }
     Json(json!({"ticket": ticket, "expires_in": STREAM_URL_TTL_SECS}))
 }
 
@@ -350,9 +572,17 @@ async fn stream_proxy(State(st): State<AppState>, headers: HeaderMap, Q(p): Q<St
     let account_token = headers.get("x-account-token").and_then(|v| v.to_str().ok()).unwrap_or("");
     // A live session (header) or a stream ticket (URL). The shared app key
     // alone is not enough: it ships inside the public apps.
-    let ticket_ok = p.ticket.as_deref().filter(|t| !t.is_empty()).is_some_and(|t| st.stream_tickets.get(&t.to_string()).is_some());
+    let ticket_user = match p.ticket.as_deref().filter(|t| !t.is_empty()) {
+        Some(t) => st.ticket_user(t).await,
+        None => None,
+    };
+    let ticket_ok = ticket_user.is_some();
     let token_ok = !ticket_ok && st.header_session_user(&headers).await.is_some();
-    if !token_ok && !ticket_ok {
+    let grace_user = if !token_ok && !ticket_ok { st.ip_grace_user(&headers) } else { None };
+    if let Some(u) = &grace_user {
+        tracing::info!("stream_proxy: shared-key request allowed for {u} (signed in from the same IP; old app build)");
+    }
+    if !token_ok && !ticket_ok && grace_user.is_none() {
         let auth = headers.get("authorization").and_then(|v| v.to_str().ok()).unwrap_or("");
         let (code, msg) = (401, "Sign in to use this feature");
         let detail = json!({
@@ -360,6 +590,9 @@ async fn stream_proxy(State(st): State<AppState>, headers: HeaderMap, Q(p): Q<St
             "had_auth_header": !auth.is_empty(),
             "had_account_token": !account_token.is_empty(),
             "had_ticket": p.ticket.as_deref().is_some_and(|t| !t.is_empty()),
+            // A ticket the bridge no longer knows (restart, 6 h TTL) vs none at all.
+            "ticket_unknown": p.ticket.as_deref().is_some_and(|t| !t.is_empty()) && !ticket_ok,
+            "reason": if !account_token.is_empty() { "session_invalid" } else if p.ticket.as_deref().is_some_and(|t| !t.is_empty()) { "ticket_unknown" } else { "no_credentials" },
             "user_agent": crate::db::truncate(headers.get("user-agent").and_then(|v| v.to_str().ok()).unwrap_or(""), 80),
             "has_range": headers.contains_key("range"),
             "auth_scheme": describe_auth_scheme(auth),
@@ -369,30 +602,54 @@ async fn stream_proxy(State(st): State<AppState>, headers: HeaderMap, Q(p): Q<St
         return Err(AppError::new(code, msg));
     }
     let mut format = lower(&p.format, "m4a");
-    if source == "youtube" && RELAY_INCOMPATIBLE.contains(&format.as_str()) {
-        tracing::info!("stream_proxy: coercing unplayable stream format {format:?} to m4a for {id}");
-        format = "m4a".into();
+    // Whose cookies resolve it: the session, else the ticket's or the
+    // IP-grace account (AVPlayer's range requests carry neither header).
+    let user = uid(&st, &headers).or(ticket_user).or(grace_user);
+    // `engine=1`: the app plays this through the Lumisound engine, which
+    // decodes WebM/Opus, so it gets YouTube's best audio (Opus 251, or
+    // Premium Opus 774 through the client that serves it) instead of AAC.
+    let engine = p.engine.as_deref() == Some("1");
+    let (f, client) = stream_format(&st, user.as_deref(), &source, &format, engine).await;
+    if f != format && !engine {
+        tracing::info!("stream_proxy: coercing unplayable stream format {format:?} to {f} for {id}");
     }
+    format = f;
     source = source.to_string();
     let target = target_for(&source, &id, &p.url).await?;
-    let user = uid(&st, &headers);
-    let (raw_url, _fresh) = st.resolve_stream_url(&source, &id, &format, &target, user.as_deref()).await?;
+    let (mut raw_url, _fresh) = st.resolve_stream_url_via(&source, &id, &format, &target, user.as_deref(), client.as_deref(), false).await?;
     let cache_key = format!("{source}:{id}:{format}");
     // googlevideo 403s a URL fetched the instant it was resolved — that
     // holds for every request sharing the URL, not just the one that ran
     // yt-dlp (the others used to fail with 502 and evict it).
-    if let Some(at) = st.stream_resolved_at.get(&cache_key) {
-        let wait = Duration::from_secs(3).saturating_sub(at.elapsed());
-        if !wait.is_zero() {
-            tokio::time::sleep(wait).await;
+    st.wait_until_usable(&cache_key).await;
+    let open = |url: String| {
+        let mut req = st.cdn.get(url).header("User-Agent", IPHONE_UA);
+        if let Some(r) = headers.get("range") {
+            req = req.header("Range", r.clone());
         }
-    }
-    let mut req = st.cdn.get(&raw_url).header("User-Agent", IPHONE_UA);
-    if let Some(r) = headers.get("range") {
-        req = req.header("Range", r.clone());
-    }
-    let upstream = match req.timeout(Duration::from_secs(30)).send().await.and_then(|r| r.error_for_status()) {
+        async move { req.timeout(Duration::from_secs(30)).send().await.and_then(|r| r.error_for_status()) }
+    };
+    let upstream = match open(raw_url.clone()).await {
         Ok(r) => r,
+        // A 403 on a URL that resolved fine: googlevideo refused that
+        // client's URL (PO token / session). Resolve once more through the
+        // fallback client inside this request instead of failing the play.
+        Err(e) if e.status().is_some_and(|c| c == reqwest::StatusCode::FORBIDDEN) && source == "youtube" => {
+            tracing::warn!("stream_proxy: 403 for {cache_key}; re-resolving with the {} client", st.cfg.ytdlp_fallback_client);
+            let fb = st.cfg.ytdlp_fallback_client.clone();
+            let (u, _) = st.resolve_stream_url_via(&source, &id, &format, &target, user.as_deref(), Some(&fb), true).await?;
+            st.wait_until_usable(&cache_key).await;
+            raw_url = u;
+            match open(raw_url.clone()).await {
+                Ok(r) => r,
+                Err(e) => {
+                    st.stream_urls.remove(&cache_key);
+                    tracing::warn!("stream_proxy upstream open failed twice for {cache_key}: {e}");
+                    st.spawn_log_stream(user, &source, &id, "failed", Some(format!("upstream fetch (after {fb} retry): {e}")), 0);
+                    return Err(AppError::new(502, "Upstream stream fetch failed"));
+                }
+            }
+        }
         Err(e) => {
             st.stream_urls.remove(&cache_key);
             tracing::warn!("stream_proxy upstream open failed for {cache_key}: {e}");
@@ -523,16 +780,8 @@ async fn download_relay(State(st): State<AppState>, _k: ApiKey, headers: HeaderM
         return Ok(StatusCode::NO_CONTENT.into_response());
     }
     let cache_key = format!("{source}:{id}:{format}");
-    let raw_url = match st.stream_urls.get(&cache_key) {
-        Some(u) => u,
-        None => {
-            let (u, reason) = st.ytdlp.raw_url(&target, ytdlp::format_flag(&format), user.as_deref()).await.map_err(|e| timeout_err(e, "Stream URL fetch timed out"))?;
-            let u = u.ok_or_else(|| AppError::not_found(reason.unwrap_or_else(|| "No stream URL found".into())))?;
-            st.stream_urls.set(cache_key.clone(), u.clone());
-            tokio::time::sleep(Duration::from_secs(3)).await;
-            u
-        }
-    };
+    let (raw_url, _) = st.resolve_stream_url(&source, &id, &format, &target, user.as_deref()).await?;
+    st.wait_until_usable(&cache_key).await;
     let upstream = match st.cdn.get(&raw_url).header("User-Agent", IPHONE_UA).timeout(Duration::from_secs(30)).send().await.and_then(|r| r.error_for_status()) {
         Ok(r) => r,
         Err(e) => {
@@ -668,6 +917,20 @@ async fn run_download_job(st: AppState, job_id: String, source: String, id: Stri
     let start = Instant::now();
     let display = p.full_title.clone().filter(|s| !s.is_empty()).or_else(|| p.title.clone().filter(|s| !s.is_empty())).unwrap_or_else(|| id.clone());
     let r = do_download_job(&st, &job_id, &source, &id, &target, &format, &p, user.as_deref(), &display).await;
+    if let Some(u) = user.as_deref() {
+        match &r {
+            Ok(()) => crate::recovery::forget(&st, u, &source, &id).await,
+            Err((_, detail, _)) => {
+                // Failed only because YouTube walled the cookies or rate-limited
+                // the session: keep it, and tell the app when that clears.
+                let d = detail.to_lowercase();
+                let reason = if d.contains("not a bot") { Some("bot_wall") } else if d.contains("rate-limiting") { Some("rate_limit") } else { None };
+                if let Some(reason) = reason {
+                    crate::recovery::remember_failed(&st, u, &source, &id, &display, p.artist.as_deref(), &format, reason).await;
+                }
+            }
+        }
+    }
     if let Err((code, detail, permanent)) = r {
         if let Some(mut j) = st.download_jobs.get_mut(&job_id) {
             j.state = JobState::Error { code, detail: Value::String(detail.clone()), permanent };
@@ -692,7 +955,11 @@ async fn do_download_job(
     display: &str,
 ) -> Result<(), JobErr> {
     let yt = &st.ytdlp;
-    let max_attempts = 3;
+    // Cookie jars to rotate through when YouTube shows the bot wall.
+    let jars = yt.cookie_candidates(user, false).await;
+    let mut jar = 0usize;
+    // A bot wall on one jar moves to the next without spending an attempt.
+    let max_attempts = 3 + jars.len().saturating_sub(1).min(3);
     // Swapped for a matching YouTube Music release when this id is delisted.
     let mut target = target.to_string();
     let mut alternate_tried = false;
@@ -706,7 +973,7 @@ async fn do_download_job(
     let throttle = p.throttle_seconds.unwrap_or(5);
     let fragments = p.concurrent_fragments.unwrap_or(8);
     let expected_duration = p.duration.filter(|d| *d > 0).map(|d| d as f64);
-    let mut cookies = yt.cookie_args(user, false).await;
+    let mut cookies = jars[0].args.clone();
     let mut forced_global = false;
     // Set when YouTube asked for age verification: the remaining attempts use
     // the fallback client, which still serves these, instead of failing twice more.
@@ -766,6 +1033,16 @@ async fn do_download_job(
         if out.status != Some(0) {
             yt.flag_cookies_stale_if_needed(&out.stderr);
             yt.penalise_if_rate_limited(&out.stderr);
+            if ytdlp::is_bot_wall(&out.stderr) {
+                yt.note_jar_botwall(&jars[jar].owner);
+                if jar + 1 < jars.len() && attempt < max_attempts {
+                    jar += 1;
+                    cookies = jars[jar].args.clone();
+                    let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
+                    tracing::info!("Bot wall on attempt {attempt}/{max_attempts} for {safe}; retrying with cookie jar {}", jars[jar].owner);
+                    continue;
+                }
+            }
             if ytdlp::is_rate_limited(&out.stderr) {
                 yt.hold_if_rate_limited(user, &out.stderr);
                 let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
@@ -806,6 +1083,7 @@ async fn do_download_job(
             }
             continue;
         }
+        yt.note_jar_ok(&jars[jar].owner);
         tracing::info!(
             "yt-dlp download succeeded (attempt {attempt}/{max_attempts}, downloader={downloader}, elapsed={elapsed:.1}s, paced={:.1}s, spacing={:.1}s): {safe}",
             paced.as_secs_f64(),

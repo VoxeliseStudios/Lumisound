@@ -41,6 +41,9 @@ pub struct Config {
 
     pub ytdlp_cache_dir: String,
     pub ytdlp_cookies_file: String,
+    /// Extra shared cookie jars (`*.txt`), rotated in when the main jar
+    /// hits YouTube's bot wall.
+    pub ytdlp_cookies_pool_dir: Option<String>,
     pub ytdlp_user_cookies_dir: String,
     pub ytdlp_pot_provider_url: Option<String>,
     pub ytdlp_fallback_client: String,
@@ -106,6 +109,7 @@ impl Config {
             admin_token: s("ADMIN_TOKEN", ""),
             ytdlp_cache_dir: s("YTDLP_CACHE_DIR", "/app/.cache/yt-dlp"),
             ytdlp_cookies_file: s("YTDLP_COOKIES_FILE", "/app/cookies.txt"),
+            ytdlp_cookies_pool_dir: opt("YTDLP_COOKIES_POOL_DIR"),
             ytdlp_user_cookies_dir: s("YTDLP_USER_COOKIES_DIR", "/app/.cache/yt-dlp/user-cookies"),
             ytdlp_pot_provider_url: opt("YTDLP_POT_PROVIDER_URL"),
             ytdlp_fallback_client: s("YTDLP_FALLBACK_CLIENT", "mweb"),

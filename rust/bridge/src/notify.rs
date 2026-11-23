@@ -32,6 +32,14 @@ impl LiveHub {
         self.conns.contains_key(user_id)
     }
 
+    /// Every open socket, every account (shutdown notice).
+    pub fn broadcast(&self, event: &Value) {
+        let text = event.to_string();
+        for mut e in self.conns.iter_mut() {
+            e.value_mut().retain(|(_, tx)| tx.send(text.clone()).is_ok());
+        }
+    }
+
     pub fn push(&self, user_id: &str, event: &Value) {
         let Some(mut v) = self.conns.get_mut(user_id) else { return };
         let text = event.to_string();

@@ -375,7 +375,24 @@ Still not Rust, on purpose:
 Open:
 - [ ] Verify on device: theme/effect/visualizer pickers, Share as JSON → import round trip,
       smart playlist condition groups, Auto EQ pick unchanged.
-- [ ] LumiMusic (Android) `core-rs/` snapshot still carries lua.rs + mlua: run `scripts/sync-core.sh`
-      at its next release (its Kotlin never called Lua).
-- [ ] Further Swift audit: big services (ArtworkService, AudioPlayerManager+Scheduling,
-      StreamingService+DownloadToLibrary, TVBridge) still mix glue with some logic.
+- [x] LumiMusic (Android) `core-rs/` snapshot re-synced 2026-11-23 (lua.rs + mlua gone).
+- [ ] Further Swift audit: StreamingService+DownloadToLibrary and TVBridge still mix glue with logic
+      (ArtworkService chain and the Scheduling stream path moved 2026-11-23).
+
+## 2026-11-23 upgrade pass (15 items)
+
+Bridge: cookie pool + health + alerts, stream auth fixes (persistent tickets, IP grace, reasons), expiry-aware
+URL cache + prefetch + 403 re-resolve, Opus/774 engine streams, ETag/zstd/brotli, incremental metadata, route
+timings, download retry queue, versioned migrations + drain, trash restore, cache caps, shared blend
+profiles, Demucs vocals cache. Details: rust/bridge/TODO.md.
+
+Core: stream cache, bridge session (prefetch, retry queue, shared profiles, incremental metadata), ETag
+cache, artwork chain (`artresolve.rs`), ReplayGain, PlaySession Smart Crossfade, perf suspension gaps.
+
+Swift moved to the core in this pass: stream download/naming/prefetch (Scheduling, Queue, Gapless,
+StreamCache), ArtworkService lookup chain, ReplayGain tag read, tvOS TVAutoCrossfade (deleted).
+Still Swift by necessity: the AVAudioEngine/AVPlayer fallback (Apple Music items), Media Library artwork,
+video first frames.
+
+LumiMusic (Android): core snapshot re-synced (Lua gone), engine playback default, Smart Crossfade setting,
+engine streams through the core stream cache, cloud downloads through the core transport.

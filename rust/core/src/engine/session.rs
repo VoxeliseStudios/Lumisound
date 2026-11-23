@@ -70,7 +70,13 @@ enum Out {
     Current(u32, String, bool),
     State(SessionState),
     Failed(String, String),
+    /// Work out a Smart Crossfade from the playing file into the next one
+    /// (off the session lock; `apply_plan` queues it).
+    Plan { next: usize, deck: u64, out_path: String, in_path: String, base: f64, beat_match: bool },
 }
+
+/// Smart Crossfade plans this long before the end of a track.
+const PLAN_LEAD_SECS: f64 = 45.0;
 
 struct Inner {
     items: Vec<SessionItem>,
@@ -91,6 +97,14 @@ struct Inner {
     crossfade: f64,
     fail_streak: usize,
     rng: u64,
+    /// Smart Crossfade (Lumisound Blend): a planned, beat-aligned transition
+    /// instead of a fixed fade.
+    smart: bool,
+    beat_match: bool,
+    /// (next index, playing deck) a plan was started for.
+    planning: Option<(usize, u64)>,
+    /// The playing deck couldn't be planned: it ends with the fixed fade.
+    smart_off_for: Option<u64>,
 }
 
 impl Inner {
@@ -242,6 +256,7 @@ impl Inner {
     /// The successor changed (queue edit, shuffle, repeat): drop what was
     /// opened for the old one.
     fn renext(&mut self, eng: &AudioEngine, out: &mut Vec<Out>) {
+        self.planning = None;
         let want = self.current.and_then(|c| self.after(c, true));
         if self.next.as_ref().map(|p| p.index) != want || self.crossfade > 0.0 {
             if self.next.take().is_some() {
@@ -263,7 +278,22 @@ impl Inner {
             return;
         }
         let (dur, pos) = (eng.duration(), eng.position());
-        if dur <= 0.0 || pos <= 0.0 || dur - pos > self.crossfade {
+        if dur <= 0.0 || pos <= 0.0 {
+            return;
+        }
+        if self.smart && self.smart_off_for != Some(self.deck) {
+            // One plan per (successor, playing deck); the plan queues the
+            // blend itself, which the engine starts on the planned downbeat.
+            if dur - pos <= PLAN_LEAD_SECS && self.planning != Some((n, self.deck)) {
+                let out_path = self.sources.get(&self.items[cur].key).cloned();
+                if let Some(out_path) = out_path {
+                    self.planning = Some((n, self.deck));
+                    out.push(Out::Plan { next: n, deck: self.deck, out_path, in_path: path, base: self.crossfade, beat_match: self.beat_match });
+                }
+            }
+            return;
+        }
+        if dur - pos > self.crossfade {
             return;
         }
         // A track shorter than two fades just hands over.
@@ -375,6 +405,7 @@ impl EngineListener for Hook {
                 if let Some(path) = i.sources.get(&item.key) {
                     eng.adopt_current(path.clone(), item.gain_db);
                 }
+                i.planning = None;
                 out.push(Out::Current(p.index as u32, item.key, true));
                 i.prepare(eng, out);
             });
@@ -402,6 +433,7 @@ pub struct PlaySession {
     engine: Arc<AudioEngine>,
     listener: Arc<dyn SessionListener>,
     inner: Mutex<Inner>,
+    me: Weak<PlaySession>,
 }
 
 impl PlaySession {
@@ -418,9 +450,47 @@ impl PlaySession {
                 Out::Current(i, k, a) => self.listener.on_current_changed(i, k, a),
                 Out::State(s) => self.listener.on_state_changed(s),
                 Out::Failed(k, m) => self.listener.on_item_failed(k, m),
+                Out::Plan { next, deck, out_path, in_path, base, beat_match } => self.spawn_plan(next, deck, out_path, in_path, base, beat_match),
             }
         }
         r
+    }
+
+    /// Profile both ends (decodes ~80 s of audio each, cached per file) and
+    /// plan the transition on a worker thread, then queue it.
+    fn spawn_plan(&self, next: usize, deck: u64, out_path: String, in_path: String, base: f64, beat_match: bool) {
+        let Some(me) = self.me.upgrade() else { return };
+        let _ = std::thread::Builder::new().name("lumisound-blend".into()).spawn(move || {
+            let plan = match (crate::blend::blend_profile(out_path), crate::blend::blend_profile(in_path)) {
+                (Some(a), Some(b)) => Some(crate::blend::blend_plan(a, b, crate::blend::BlendSettings { base_secs: base.max(1.0), beat_match, bass_swap: true })),
+                _ => None,
+            };
+            me.apply_plan(next, deck, plan);
+        });
+    }
+
+    fn apply_plan(&self, next: usize, deck: u64, plan: Option<crate::blend::BlendPlan>) {
+        self.with(|i, eng, out| {
+            if i.planning != Some((next, deck)) || i.deck != deck || i.next.is_some() {
+                return;
+            }
+            let Some(plan) = plan else {
+                i.smart_off_for = Some(deck);
+                return;
+            };
+            if i.current.and_then(|c| i.after(c, true)) != Some(next) {
+                return;
+            }
+            let item = i.items[next].clone();
+            let Some(path) = i.sources.get(&item.key).cloned() else { return };
+            match eng.queue_blend(path, plan, item.gain_db, true) {
+                Ok(id) => i.next = Some(Prepared { index: next, deck: id }),
+                Err(e) => {
+                    i.failed.insert(item.key.clone());
+                    out.push(Out::Failed(item.key, e.to_string()));
+                }
+            }
+        });
     }
 }
 
@@ -431,6 +501,7 @@ impl PlaySession {
         let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(1) | 1;
         let s = Arc::new_cyclic(|weak: &Weak<PlaySession>| PlaySession {
             engine: AudioEngine::new(Arc::new(Hook(weak.clone()))),
+            me: weak.clone(),
             listener,
             inner: Mutex::new(Inner {
                 items: Vec::new(),
@@ -449,6 +520,10 @@ impl PlaySession {
                 crossfade: 0.0,
                 fail_streak: 0,
                 rng: seed,
+                smart: false,
+                beat_match: true,
+                planning: None,
+                smart_off_for: None,
             }),
         });
         let weak = Arc::downgrade(&s);
@@ -623,6 +698,18 @@ impl PlaySession {
     pub fn set_crossfade(&self, secs: f64) {
         self.with(|i, eng, out| {
             i.crossfade = secs.clamp(0.0, 30.0);
+            i.renext(eng, out);
+        });
+    }
+
+    /// Smart Crossfade (Lumisound Blend): with a crossfade length set, plan
+    /// each transition from both tracks' profiles (downbeat-aligned start,
+    /// whole bars, bass swap, optional beat-match) instead of a fixed fade.
+    pub fn set_smart_crossfade(&self, enabled: bool, beat_match: bool) {
+        self.with(|i, eng, out| {
+            i.smart = enabled;
+            i.beat_match = beat_match;
+            i.smart_off_for = None;
             i.renext(eng, out);
         });
     }
@@ -930,5 +1017,28 @@ mod tests {
         let played = audio.len() as f64 / 2.0 / rate as f64;
         assert!(played < 2.9, "second track only started after {played} s");
         assert!(played > 1.5, "second track started too early ({played} s)");
+    }
+
+    #[test]
+    fn smart_crossfade_plans_and_hands_over_before_the_end() {
+        let (s, log) = setup("smart", &[("a.wav", 12.0, 440.0), ("b.wav", 12.0, 1760.0)]);
+        s.set_crossfade(2.0);
+        s.set_smart_crossfade(true, true);
+        s.set_play(true);
+        s.set_queue(items(&["a.wav", "b.wav"]), 0, 0.0);
+        wait(&log, "state Ready");
+        let rate = s.engine().output_rate();
+        // Start near the end so the test doesn't play the whole track.
+        s.seek(5.0);
+        let mut audio = Vec::new();
+        let t = std::time::Instant::now();
+        while !has(&log, "current 1 b.wav auto") && t.elapsed() < Duration::from_secs(15) {
+            audio.extend(s.engine().render_offline(960));
+            std::thread::sleep(Duration::from_millis(6));
+        }
+        assert!(has(&log, "current 1 b.wav auto"), "{:?}", log.events.lock().unwrap());
+        let played = 5.0 + audio.len() as f64 / 2.0 / rate as f64;
+        assert!(played < 11.95, "the blend only started at {played} s of a 12 s track");
+        assert!(!has(&log, "failed b.wav could not be decoded"));
     }
 }

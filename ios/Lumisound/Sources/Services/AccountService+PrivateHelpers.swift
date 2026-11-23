@@ -62,6 +62,10 @@ extension AccountService {
         // than in logout() because every path that ends a session comes through
         // this function — account deletion and session revocation included.
         StreamingService.clearStreamTicket()
+        // Cached bridge answers belong to this account too (core ETag cache).
+        httpCacheClear()
+        cloudMetadataReset()
+        bridgeSessionSet(baseUrl: "", apiKey: "", accountToken: nil)
         syncInventoryReset()
         skipSyncReset()
         avatarImage = nil

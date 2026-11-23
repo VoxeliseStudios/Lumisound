@@ -41,6 +41,12 @@ extension StreamingService {
         if track.source == "soundcloud" || track.source == "bandcamp" {
             queryItems.append(URLQueryItem(name: "url", value: track.youtubeURL))
         }
+        // The Lumisound engine decodes WebM/Opus, so the bridge sends YouTube's
+        // best audio (Opus 251, Premium Opus 774 for Premium cookies) instead
+        // of AAC 140. The file's real container comes from Content-Type.
+        if AudioPlayerManager.rustEngineEnabled {
+            queryItems.append(URLQueryItem(name: "engine", value: "1"))
+        }
         // Carried in the URL because AVPlayer's byte-range requests do not carry
         // our headers — see StreamingService+StreamTicket. The header auth stays
         // on as well; this is the credential that survives the requests the

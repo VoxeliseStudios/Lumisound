@@ -8,6 +8,8 @@ The bridge server itself is Rust: `../rust/bridge` (axum + sqlx), built from
 - `.env` — secrets (gitignored): `IOS_JWT_SECRET`, `IOS_BRIDGE_API_KEY`,
   `ADMIN_TOKEN`, `GEMINI_API_KEY`, `YOUTUBE_API_KEY`, `BUG_REPORT_WEBHOOK_URL`, …
 - `cookies.txt` — YouTube cookie jar mounted read-only into the container.
+- `cookie-pool/*.txt` (git-ignored) — extra shared jars (`YTDLP_COOKIES_POOL_DIR`): when the main jar hits
+  YouTube's bot wall it is benched for 20 min and the next jar is used. `/admin` shows each jar's health.
 - `lumisound-youtube-cookies-refresh.*` — host systemd user units that keep
   `cookies.txt` fresh with `lumisound-refresh-cookies` (Rust, `../rust/tools/cookies`;
   install with `cargo install --path ../rust/tools/cookies --root ~/.local`).

@@ -2,6 +2,21 @@
 
 Full history and decisions: [`RUST-PORT.md`](../../RUST-PORT.md).
 
+## Done (2026-11-23) — upgrade pass
+- `streamcache.rs`: played-stream cache by source id (`stream_source_key` drops the ticket), shared
+  downloads, Content-Type naming, `.lms` kept for locked bytes, LRU cap; `stream_cache_prefetch`.
+- `bridge.rs`: core bridge session (`bridge_session_set`), `stream_prefetch_urls`, download retry queue
+  (`download_retry_pending/ack`, live `DownloadsRetry`), `blend_profile_for_stream` (shared profiles),
+  `cloud_metadata_fetch` (incremental `?since=`), bridge search for artwork.
+- `client.rs`: ETag revalidation cache for bridge GETs (memory + blob cache, `http_cache_clear`), gzip/brotli.
+- `live.rs`: `server_restarting` waits out the restart; `downloads_retry` clears the back-off.
+- `artresolve.rs`: the artwork chain (remote, embedded, LUMISOUND_THUMBNAIL, hqdefault, YouTube search with
+  title guard, iTunes) + 5-minute no-art cache. `library::replaygain_db` (tag, else loudness).
+- `engine/session.rs`: Smart Crossfade in `PlaySession` (`set_smart_crossfade`; plans 45 s ahead on a worker,
+  fixed fade if a track can't be profiled).
+- `perf.rs`: frame gaps ≥ 4 s are display-link pauses (`suspendedGaps`), not hitches (2.0.0.66 windows had
+  "frames" of 28 min).
+
 ## Done (2026-11-19) — stacks, Live Activity counters
 - `stack.rs`: frame-pointer walks of other threads (suspend → registers → vm_read_overwrite chain →
   resume, nothing allocated while suspended), `main_thread_stack`, `other_thread_stacks`,

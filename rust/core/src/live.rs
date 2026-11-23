@@ -28,6 +28,9 @@ pub enum LiveEvent {
     /// room_state / room_chat / room_queue / room_members / room_closed (raw JSON).
     Room { kind: String, json: String },
     Appearance { style: String, density: String },
+    /// Downloads that failed on YouTube's bot wall / a rate limit can be
+    /// retried now (the bridge saw the cause clear).
+    DownloadsRetry { tracks: Vec<crate::bridge::RetryTrack> },
     Other { kind: String, json: String },
 }
 
@@ -56,6 +59,13 @@ pub fn parse_event(text: &str) -> Option<LiveEvent> {
         "sync_changed" => LiveEvent::SyncChanged,
         "room_state" | "room_chat" | "room_queue" | "room_members" | "room_closed" => LiveEvent::Room { kind, json: text.to_string() },
         "appearance_changed" => LiveEvent::Appearance { style: s("style")?, density: s("density").unwrap_or_else(|| "regular".into()) },
+        "downloads_retry" => {
+            let tracks = crate::bridge::parse_retry_event(&v);
+            for t in &tracks {
+                crate::downloads::blocked_clear(t.key());
+            }
+            LiveEvent::DownloadsRetry { tracks }
+        }
         _ => LiveEvent::Other { kind, json: text.to_string() },
     })
 }
@@ -113,6 +123,12 @@ async fn run(url: String, listener: Arc<dyn LiveEventListener>) {
                         }
                         m = rx.next() => match m {
                             Some(Ok(Message::Text(t))) => {
+                                // The bridge is restarting: wait out its restart instead
+                                // of reconnecting into a server that isn't up yet.
+                                if let Some(secs) = restart_notice(&t) {
+                                    delay = secs;
+                                    continue;
+                                }
                                 if let Some(ev) = parse_event(&t) { listener.on_event(ev); }
                             }
                             Some(Ok(Message::Ping(p))) => { let _ = tx.send(Message::Pong(p)).await; }
@@ -130,6 +146,15 @@ async fn run(url: String, listener: Arc<dyn LiveEventListener>) {
     }
 }
 
+/// `{"type":"server_restarting","retry_after":8}` -> seconds to wait.
+fn restart_notice(text: &str) -> Option<f64> {
+    if !text.contains("server_restarting") {
+        return None;
+    }
+    let v: Value = serde_json::from_str(text).ok()?;
+    (v["type"] == "server_restarting").then(|| v["retry_after"].as_f64().unwrap_or(8.0).clamp(1.0, 60.0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -141,5 +166,11 @@ mod tests {
             e => panic!("{e:?}"),
         }
         assert_eq!(ws_url("https://x.example", "a b").unwrap(), "wss://x.example/ws/live?token=a+b");
+        assert_eq!(restart_notice(r#"{"type":"server_restarting","retry_after":8}"#), Some(8.0));
+        assert_eq!(restart_notice(r#"{"type":"sync_changed"}"#), None);
+        match parse_event(r#"{"type":"downloads_retry","tracks":[{"source":"youtube","id":"a","reason":"bot_wall"}]}"#) {
+            Some(LiveEvent::DownloadsRetry { tracks }) => assert_eq!(tracks[0].key(), "youtube:a"),
+            e => panic!("{e:?}"),
+        }
     }
 }

@@ -6,6 +6,7 @@
 | `branding` | `lumisound-branding` | `ios/Branding/make_icon.py` + `render.sh` | `cargo run --release -p lumisound-branding` (`--svg-only` for just the SVGs) |
 
 ## To do
-- [ ] Install the cookie refresher + units on the host if YouTube cookies need automatic refresh
-      (not installed as of 2026-11-16).
+- [x] Cookie refresher installed 2026-11-23 (~/.local/bin, user units enabled, env
+      ~/.config/lumisound-youtube-cookies.env). Drop a fresh `cookies.txt` export in ~/Downloads when the
+      admin page or the alert says the shared jar is walled.
 - [ ] Re-render the icons only when the design changes (the committed PNGs are current).
