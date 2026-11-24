@@ -14,6 +14,14 @@
       "screenshotURLs": [],
       "versions": [
         {
+          "version": "2.0.0.70",
+          "date": "2026-11-24T02:41:29Z",
+          "downloadURL": "https://github.com/VoxeliseStudios/Lumisound/releases/download/ios%2Fv2.0.0.70/Lumisound-2.0.0.70.ipa",
+          "localizedDescription": "See release notes on GitHub.",
+          "size": 17993604,
+          "minOSVersion": "26.0"
+        },
+        {
           "version": "2.0.0.69",
           "date": "2026-11-24T01:55:00Z",
           "downloadURL": "https://github.com/VoxeliseStudios/Lumisound/releases/download/ios%2Fv2.0.0.69/Lumisound-2.0.0.69.ipa",
