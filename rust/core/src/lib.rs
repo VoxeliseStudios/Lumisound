@@ -6,6 +6,7 @@
 uniffi::setup_scaffolding!();
 
 pub mod aidj;
+pub mod aria_lyrics;
 pub mod blend;
 pub mod analysis;
 pub mod artresolve;
@@ -52,6 +53,7 @@ pub mod stack;
 pub mod sync;
 pub mod syncmerge;
 pub mod thermal;
+pub mod urlenc;
 pub mod together;
 pub mod stores;
 

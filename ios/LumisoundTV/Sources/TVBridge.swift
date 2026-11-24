@@ -997,8 +997,7 @@ final class TVBridgeClient: ObservableObject {
 
     /// One path segment, slashes included ("local:Imported Music/A/Song.opus.lms").
     private static func favoritePathSegment(_ id: String) -> String {
-        let allowed = CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/?#%;"))
-        return id.addingPercentEncoding(withAllowedCharacters: allowed) ?? id
+        urlComponent(s: id)
     }
 
     /// Optimistically flips local state, then reconciles with the server —
@@ -1322,7 +1321,9 @@ final class TVBridgeClient: ObservableObject {
     }
 
     private func encodedPath(_ path: String) -> String? {
-        path.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)
+        // Core url_component: `.urlQueryAllowed` left "&", "+", "#" and "="
+        // unescaped, so 9% of a real library ("L&L | …") got no art or stream.
+        urlComponent(s: path)
     }
 
     func userMusicStreamURL(for track: UserMusicTrack) -> URL? {

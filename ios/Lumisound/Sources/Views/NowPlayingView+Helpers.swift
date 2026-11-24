@@ -260,85 +260,21 @@ extension NowPlayingView {
         }
     }
 
-    /// Has Aria Lumi listen to the current track and generate (or, if
-    /// `lyricsLines` already has something from a remote fetch/import,
-    /// correct and re-time) synced lyrics for it — see
-    /// `StreamingService.transcribeLyrics`. The result is written to the
-    /// exact same file the manual Sync Editor saves to
-    /// (`syncedLyricsURL(for:)`), so once generated it behaves identically
-    /// to a user's own hand-synced lyrics: it wins over any future remote
-    /// fetch, and remains editable in the Sync Editor if a line or two
-    /// needs a manual nudge afterward.
-    func generateLyricsWithAria() {
-        guard let song = player.currentSong else {
-            lyricsImportError = "No track is currently playing."
-            return
-        }
-        guard let streaming = StreamingService.shared, let token = account.token else {
-            lyricsImportError = "Sign in to use Aria's lyrics transcription."
-            return
-        }
-        guard !isGeneratingLyrics else { return }
-        isGeneratingLyrics = true
-
-        // Whatever untimed text is already on screen becomes Aria's
-        // starting point — the actual "cross-check the words against what's
-        // playing" step, not a fresh blind transcription every time.
-        let hint = lyricsLines.isEmpty ? nil : lyricsLines.map(\.text).joined(separator: "\n")
-        let songID = song.id
-
-        Task { @MainActor in
-            defer { isGeneratingLyrics = false }
-            do {
-                let result = try await streaming.transcribeLyrics(for: song, token: token, hintLyrics: hint)
-                // The user may have skipped tracks while this was in flight —
-                // don't clobber whatever's now showing with a stale result.
-                guard player.currentSong?.id == songID else { return }
-
-                if result.instrumental || (result.lrc.isEmpty && result.plain.isEmpty) {
-                    ToastCenter.shared.show(
-                        result.instrumental ? "Aria didn't find any lyrics — looks instrumental" : "Aria couldn't make out clear lyrics for this track",
-                        category: .info, icon: "waveform"
-                    )
-                    return
-                }
-
-                let lyricsDir = syncedLyricsURL(for: song).deletingLastPathComponent()
-                if !FileManager.default.fileExists(atPath: lyricsDir.path) {
-                    try FileManager.default.createDirectory(at: lyricsDir, withIntermediateDirectories: true)
-                }
-
-                // Aria heard the words but couldn't time them to the track (her
-                // timestamps landed outside its real length — see
-                // `lyrics_ai.timings_are_plausible` on the bridge). Written as
-                // PLAIN lyrics, deliberately not to `syncedLyricsURL`.
-                //
-                // That distinction is the whole point. `loadLyrics()` reads
-                // `syncedLyricsURL` FIRST, as the user's own deliberate timing
-                // work, ahead of any database — so storing untrustworthy timings
-                // there made them permanently authoritative for the track and
-                // locked out a genuinely-synced version from LRCLIB. Bad timing
-                // is worse than none: untimed words display honestly as a static
-                // block (see `LyricsView.isSynced`), whereas wrong ones scroll
-                // confidently out of step with the music.
-                if !result.synced || result.lrc.isEmpty {
-                    try result.plain.write(to: importedPlainLyricsURL(for: song), atomically: true, encoding: .utf8)
-                    loadLyrics()
-                    ToastCenter.shared.show(
-                        "Aria transcribed the words, but couldn't time them to this track",
-                        category: .warning, icon: "sparkles"
-                    )
-                    return
-                }
-
-                try result.lrc.write(to: syncedLyricsURL(for: song), atomically: true, encoding: .utf8)
-                try? FileManager.default.removeItem(at: importedPlainLyricsURL(for: song))
-                loadLyrics()
-                ToastCenter.shared.show("Aria generated synced lyrics for this track", category: .success, icon: "sparkles")
-            } catch {
-                guard player.currentSong?.id == songID else { return }
-                lyricsImportError = "Aria couldn't transcribe this track: \(error.localizedDescription)"
-            }
+    /// "Use these lyrics" from AriaLyricsSheet: the core writes synced lyrics
+    /// to the user-synced file (untimed ones to the plain file only, so bad
+    /// timing never outranks a real synced version), then the panel reloads.
+    func useAriaLyrics(_ result: AriaLyricsResult, for song: Song) -> Bool {
+        do {
+            let synced = try ariaLyricsSave(result: result,
+                                            syncedPath: syncedLyricsURL(for: song).path,
+                                            plainPath: importedPlainLyricsURL(for: song).path)
+            if player.currentSong?.id == song.id { loadLyrics() }
+            ToastCenter.shared.show(synced ? "Aria's synced lyrics are in" : "Aria's lyrics are in (untimed)",
+                                    category: .success, icon: "sparkles")
+            return true
+        } catch {
+            lyricsImportError = "Couldn't save Aria's lyrics: \(error.localizedDescription)"
+            return false
         }
     }
 }

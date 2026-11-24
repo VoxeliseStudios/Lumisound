@@ -217,8 +217,8 @@ extension AccountService {
     /// isn't recognized/confident enough, or the request fails.
     func fetchLinerNotes(artist: String, album: String) async -> String? {
         guard isLoggedIn,
-              let encodedArtist = artist.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-              let encodedAlbum = album.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)
+              let encodedArtist = (urlComponent(s: artist) as String?),
+              let encodedAlbum = (urlComponent(s: album) as String?)
         else { return nil }
         do {
             let data = try await makeRequest("/music/liner-notes?artist=\(encodedArtist)&album=\(encodedAlbum)")

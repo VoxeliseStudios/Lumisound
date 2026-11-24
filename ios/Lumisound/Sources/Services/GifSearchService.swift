@@ -38,7 +38,7 @@ enum GifSearchService {
 
     static func search(query: String, limit: Int = 30, offset: Int = 0) async -> [GifSearchResult] {
         guard let account = AccountService.shared,
-              let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)
+              let encoded = (urlComponent(s: query) as String?)
         else { return [] }
         let startedAt = Date()
         let results = await fetch(path: "/api/gif-search?q=\(encoded)&limit=\(limit)&offset=\(offset)", account: account)

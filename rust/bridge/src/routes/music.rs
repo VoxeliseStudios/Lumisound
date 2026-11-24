@@ -704,7 +704,7 @@ async fn get_waveform(State(st): State<AppState>, u: User, Q(q): Q<IdQ>) -> ApiR
     Ok(Json(json!({"metadata_id": id, "peaks": peaks})))
 }
 
-fn user_file(st: &AppState, uid: &str, rel: Option<String>) -> ApiResult<(PathBuf, PathBuf)> {
+pub(crate) fn user_file(st: &AppState, uid: &str, rel: Option<String>) -> ApiResult<(PathBuf, PathBuf)> {
     let rel = rel.ok_or_else(|| invalid("path", "Field required"))?;
     let dir = user_dir(st, uid, "User music storage not configured")?;
     let p = safe_join(&dir, &rel).ok_or_else(|| AppError::forbidden("Access denied"))?;

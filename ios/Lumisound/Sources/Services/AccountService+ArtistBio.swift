@@ -37,7 +37,7 @@ extension AccountService {
     /// supplementary panel.
     func fetchArtistBio(name: String) async -> ArtistBio? {
         guard isLoggedIn else { return nil }
-        guard let encoded = name.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else { return nil }
+        guard let encoded = (urlComponent(s: name) as String?) else { return nil }
         do {
             let data = try await makeRequest("/api/artist/bio?name=\(encoded)")
             return try JSONDecoder().decode(ArtistBio.self, from: data)

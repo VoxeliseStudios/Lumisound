@@ -88,7 +88,7 @@ async fn main() -> anyhow::Result<()> {
         let truth = std::fs::read_to_string(g(5)).ok().map(|t| lyricsgen::parse_lrc(&t));
         let reference = (g(6) == "aligned").then(|| truth.as_ref().map(|t| t.iter().map(|l| l.text.clone()).collect::<Vec<_>>().join("\n"))).flatten();
         let t = std::time::Instant::now();
-        let o = lyricsgen::generate(&state, std::path::Path::new(&g(2)), &g(3), &g(4), reference.as_deref(), |s| eprintln!("stage: {s}")).await.map_err(|e| anyhow::anyhow!(e))?;
+        let o = lyricsgen::generate(&state, std::path::Path::new(&g(2)), &g(3), &g(4), reference.as_deref(), std::sync::Arc::new(|s: &str, f: f64, h: Option<String>| eprintln!("stage: {s} {:.0}% {}", f * 100.0, h.unwrap_or_default())), Default::default()).await.map_err(|e| anyhow::anyhow!(e))?;
         let secs = t.elapsed().as_secs_f64();
         for l in &o.lines {
             println!("[{:02}:{:05.2}] {}", (l.time / 60.0) as i64, l.time % 60.0, l.text);

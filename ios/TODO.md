@@ -2,6 +2,23 @@
 
 Full history and decisions: [`../RUST-PORT.md`](../RUST-PORT.md). Swift is views + app shell only.
 
+## Done (2026-11-23) — Aria Lyrics revamp + artwork/URL encoding
+- Generate with Aria never worked: the Swift client treated the job's "running" status as an error
+  ("unknown error" ~3 s in). The client is now the core `AriaLyricsJob` (core aria_lyrics.rs): upload, or
+  `run_cloud` for a cloud-library track (nothing uploaded), progress callbacks, cancel, result preview,
+  `aria_lyrics_save` (synced → .lrc, untimed → .txt only), `share` (POST /user/lyrics replace=true).
+- iOS: new AriaLyricsSheet (orb, 3-step checklist, live "Aria hears" caption, line preview, Use / Discard /
+  Try again). The Swift transcription client (StreamingService+LyricsTranscription.swift) is gone.
+- Bridge: job reports stage + overall progress + recently heard words, `DELETE …/status` cancels, `path=`
+  source for cloud files, status is owner-checked, real failure reasons, results cached only when the user
+  accepts them. Dead Gemini lyrics path + prompts removed.
+- tvOS artwork: `.urlQueryAllowed` left `&`, `+`, `#`, `=` raw, so 533/5792 cloud tracks ("L&L | …")
+  404'd for artwork AND stream. Core `url_component` now encodes every bridge URL value on tvOS and iOS
+  (also artist/album/search/admin queries, TV lyrics path segments).
+
+## Open
+- tvOS / Android: a "Generate with Aria" button (core `AriaLyricsJob.run_cloud` already supports them).
+
 ## Done (2026-11-23) — favourites follow the account across iPhone, Apple TV and Android
 - Cause 1 (bridge): `DELETE /user/favorites/{song_id}` was a single-segment route; the iPhone's ids are
   library paths with slashes, so every un-favourite from the phone 404'd and came back. Now a catch-all

@@ -64,7 +64,7 @@ pub fn syllables(line: &str) -> usize {
 }
 
 /// `[mm:ss.xx]` timestamps at line start (LRC). Returns (time, text) pairs.
-fn parse_lrc(text: &str) -> Vec<SyncedLine> {
+pub(crate) fn parse_lrc(text: &str) -> Vec<SyncedLine> {
     let mut out = Vec::new();
     for raw in text.lines() {
         let mut rest = raw.trim();

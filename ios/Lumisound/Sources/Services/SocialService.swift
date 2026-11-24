@@ -212,7 +212,7 @@ final class SocialService: ObservableObject {
             return
         }
         do {
-            let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
+            let encoded = (urlComponent(s: query) as String?) ?? query
             let data = try await account.makeRequest("/api/social/users/search?q=\(encoded)")
             struct Response: Decodable { let users: [SocialUserRef] }
             let users = try JSONDecoder().decode(Response.self, from: data).users

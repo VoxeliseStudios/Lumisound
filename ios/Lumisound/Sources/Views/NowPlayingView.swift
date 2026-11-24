@@ -127,10 +127,9 @@ struct NowPlayingView: View {
     /// `importLyricsFile(from:)` in NowPlayingView+Helpers.swift.
     @State var showLyricsFileImporter = false
     @State var lyricsImportError: String?
-    /// True while `generateLyricsWithAria()` (NowPlayingView+Helpers.swift)
-    /// has an in-flight request — drives the "Generate with Aria" button's
-    /// spinner/disabled state in NowPlayingView+Lyrics.swift.
-    @State var isGeneratingLyrics = false
+    /// The "Generate with Aria" sheet (AriaLyricsSheet.swift), and the song it
+    /// was opened for (the player may move on while Aria works).
+    @State var ariaLyricsSong: Song?
     // Bumped after add/remove so the view re-reads BookmarkStore (which
     // isn't an ObservableObject — it's a plain persisted store, same shape
     // as DownloadLedgerStore/PlayHistoryStore).
@@ -386,6 +385,13 @@ struct NowPlayingView: View {
             TransferPlaybackSheet()
                 .environmentObject(account)
                 .environmentObject(player)
+        }
+        .lumiSheet(item: $ariaLyricsSong) { song in
+            AriaLyricsSheet(song: song,
+                            hint: player.currentSong?.id == song.id && !lyricsLines.isEmpty
+                                ? lyricsLines.map(\.text).joined(separator: "\n") : nil,
+                            onUse: { useAriaLyrics($0, for: song) })
+                .environmentObject(account)
         }
         .lumiSheet(isPresented: $showLyricsSyncEditor) {
             LyricsSyncEditorView(initialLines: lyricsLines)

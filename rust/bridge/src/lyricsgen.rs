@@ -55,6 +55,10 @@ pub struct Line {
     pub text: String,
 }
 
+/// Live progress for the job status: stage name, overall fraction 0..1,
+/// and the words just recognized (shown as "Aria hears: …").
+pub type Progress = std::sync::Arc<dyn Fn(&str, f64, Option<String>) + Send + Sync>;
+
 #[derive(Debug, Clone)]
 pub struct Outcome {
     pub lines: Vec<Line>,
@@ -453,7 +457,7 @@ pub fn model_path() -> PathBuf {
 }
 
 /// Run whisper over `windows` of `pcm` (16 kHz mono vocals).
-pub fn recognize(pcm: &[f32], wins: &[(f64, f64)], prompt: &str, threads: i32) -> Result<Asr, String> {
+pub fn recognize(pcm: &[f32], wins: &[(f64, f64)], prompt: &str, threads: i32, cancel: &std::sync::atomic::AtomicBool, on_window: &dyn Fn(usize, usize, &[Word])) -> Result<Asr, String> {
     use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
     let model = model_path();
     if !model.exists() {
@@ -491,9 +495,14 @@ pub fn recognize(pcm: &[f32], wins: &[(f64, f64)], prompt: &str, threads: i32) -
     let lang = language.clone().unwrap_or_else(|| "en".into());
     let mut words: Vec<Word> = Vec::new();
     let mut seg_index = 0usize;
-    for &(a, b) in wins {
+    for (wi, &(a, b)) in wins.iter().enumerate() {
+        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(CANCELLED.into());
+        }
+        let before = words.len();
         let audio = slice(a, b);
         if audio.len() < SR / 2 {
+            on_window(wi + 1, wins.len(), &[]);
             continue;
         }
         let mut p = FullParams::new(SamplingStrategy::BeamSearch { beam_size: 3, patience: -1.0 });
@@ -539,6 +548,7 @@ pub fn recognize(pcm: &[f32], wins: &[(f64, f64)], prompt: &str, threads: i32) -
                 }
             }
         }
+        on_window(wi + 1, wins.len(), &words[before..]);
     }
     Ok(Asr { words, language })
 }
@@ -612,20 +622,34 @@ async fn write_cached_vocals(st: &crate::state::AppState, key: &str, v: &[f32]) 
     }
 }
 
-/// Full pipeline on an audio file. `progress` gets stage names.
-pub async fn generate(st: &crate::state::AppState, audio: &Path, title: &str, artist: &str, reference: Option<&str>, progress: impl Fn(&str)) -> Result<Outcome, String> {
+/// Returned when the job was cancelled by the app.
+pub const CANCELLED: &str = "cancelled";
+
+/// Full pipeline on an audio file, reporting `progress` as it goes. One run
+/// at a time (`SEM`); a waiting job reports "queued".
+pub async fn generate(st: &crate::state::AppState, audio: &Path, title: &str, artist: &str, reference: Option<&str>, progress: Progress, cancel: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Result<Outcome, String> {
+    progress("queued", 0.0, None);
     let _permit = SEM.acquire().await.map_err(|e| e.to_string())?;
+    if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err(CANCELLED.into());
+    }
     let work = std::env::temp_dir().join(format!("aria-lyrics-{}", uuid::Uuid::new_v4().simple()));
     tokio::fs::create_dir_all(&work).await.map_err(|e| e.to_string())?;
-    let r = generate_in(st, audio, &work, title, artist, reference, &progress).await;
+    let r = generate_in(st, audio, &work, title, artist, reference, progress, cancel).await;
     let _ = tokio::fs::remove_dir_all(&work).await;
     r
 }
 
-async fn generate_in(st: &crate::state::AppState, audio: &Path, work: &Path, title: &str, artist: &str, reference: Option<&str>, progress: &impl Fn(&str)) -> Result<Outcome, String> {
+// Overall progress: separation is ~45% of a run, recognition ~50%.
+const P_SEPARATE: f64 = 0.03;
+const P_LISTEN: f64 = 0.45;
+const P_ALIGN: f64 = 0.96;
+
+#[allow(clippy::too_many_arguments)]
+async fn generate_in(st: &crate::state::AppState, audio: &Path, work: &Path, title: &str, artist: &str, reference: Option<&str>, progress: Progress, cancel: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Result<Outcome, String> {
     let mut stages = Vec::new();
     let t = Instant::now();
-    progress("separating");
+    progress("separating", P_SEPARATE, None);
     let mix = pcm16k(st, audio, &work.join("mix.raw")).await?;
     let duration = mix.len() as f64 / SR as f64;
     // Separation dominates the run (Demucs on 3 CPUs): its vocals are kept
@@ -647,11 +671,14 @@ async fn generate_in(st: &crate::state::AppState, audio: &Path, work: &Path, tit
             v
         }
     };
+    if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err(CANCELLED.into());
+    }
     let segs = voice_segments(&vocals);
     if is_instrumental(&vocals, &mix, &segs, duration) {
         return Ok(Outcome { lines: vec![], instrumental: true, language: None, aligned: None, mean_p: 0.0, confidence: "high", stages });
     }
-    progress("listening");
+    progress("listening", P_LISTEN, None);
     let t = Instant::now();
     let wins = windows(&segs, 25.0);
     // Only known lyrics prime the recognizer: a title/artist prompt got
@@ -661,11 +688,20 @@ async fn generate_in(st: &crate::state::AppState, audio: &Path, work: &Path, tit
     // The container gets 3 CPUs: whisper takes two, leaving room for requests.
     let threads = std::env::var("ARIA_LYRICS_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or(2);
     let vocals2 = vocals.clone();
-    let asr = tokio::task::spawn_blocking(move || recognize(&vocals2, &wins, &prompt, threads)).await.map_err(|e| e.to_string())??;
+    let (prog2, cancel2) = (progress.clone(), cancel.clone());
+    let asr = tokio::task::spawn_blocking(move || {
+        recognize(&vocals2, &wins, &prompt, threads, &cancel2, &|done, total, heard| {
+            let text = heard.iter().map(|w| w.text.as_str()).collect::<Vec<_>>().join(" ");
+            let heard = (!text.trim().is_empty()).then(|| text.chars().take(160).collect::<String>());
+            prog2("listening", P_LISTEN + (P_ALIGN - P_LISTEN) * done as f64 / total.max(1) as f64, heard);
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())??;
     stages.push(("recognize".into(), t.elapsed().as_secs_f64()));
     let words = clean_words(asr.words, &segs);
     let mean_p = if words.is_empty() { 0.0 } else { words.iter().map(|w| w.p as f64).sum::<f64>() / words.len() as f64 };
-    progress("aligning");
+    progress("aligning", P_ALIGN, None);
     let (lines, aligned) = match reference.filter(|r| r.lines().filter_map(lyric_line).count() >= 3) {
         Some(r) => {
             let (l, a) = align(r, &words, &segs, duration);

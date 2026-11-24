@@ -7,7 +7,7 @@ extension StreamingService {
 
     /// Returns the stream URL for a user music track (requires JWT token).
     func userMusicStreamURL(for track: UserMusicTrack, token: String) -> URL? {
-        guard let encoded = track.serverPath.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else { return nil }
+        guard let encoded = (urlComponent(s: track.serverPath) as String?) else { return nil }
         let base = bridgeURL.trimmingCharacters(in: .init(charactersIn: "/"))
         return URL(string: "\(base)/user/music/stream?path=\(encoded)")
     }
@@ -15,7 +15,7 @@ extension StreamingService {
     /// Returns the artwork URL for a user music track (requires JWT token).
     func userMusicArtworkURL(for track: UserMusicTrack) -> URL? {
         guard track.hasArtwork,
-              let encoded = track.serverPath.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else { return nil }
+              let encoded = (urlComponent(s: track.serverPath) as String?) else { return nil }
         let base = bridgeURL.trimmingCharacters(in: .init(charactersIn: "/"))
         return URL(string: "\(base)/user/music/artwork?path=\(encoded)")
     }
@@ -162,7 +162,7 @@ extension StreamingService {
     /// `/user/music/stream` endpoint takes the same kind of relative path
     /// either way, it just comes from a different source table).
     func weeklyMixStreamURL(for track: WeeklyMixTrack, token: String) -> URL? {
-        guard let encoded = track.relativePath.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else { return nil }
+        guard let encoded = (urlComponent(s: track.relativePath) as String?) else { return nil }
         let base = bridgeURL.trimmingCharacters(in: .init(charactersIn: "/"))
         return URL(string: "\(base)/user/music/stream?path=\(encoded)")
     }
@@ -170,7 +170,7 @@ extension StreamingService {
     /// Returns the artwork URL for a weekly-mix track (requires JWT token).
     func weeklyMixArtworkURL(for track: WeeklyMixTrack) -> URL? {
         guard track.hasArtwork,
-              let encoded = track.relativePath.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else { return nil }
+              let encoded = (urlComponent(s: track.relativePath) as String?) else { return nil }
         let base = bridgeURL.trimmingCharacters(in: .init(charactersIn: "/"))
         return URL(string: "\(base)/user/music/artwork?path=\(encoded)")
     }

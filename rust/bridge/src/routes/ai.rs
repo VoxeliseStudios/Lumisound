@@ -6,7 +6,7 @@
 use crate::auth::{ApiKey, User};
 use crate::error::{ApiResult, AppError};
 use crate::extract::{J, Q, check_range, invalid};
-use crate::gemini::{CallError, prompt, py_dumps, schema};
+use crate::gemini::{prompt, py_dumps, schema};
 use crate::notify::lyrics_cache_id;
 use crate::state::AppState;
 use crate::storage::safe_join;
@@ -17,11 +17,11 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use base64::Engine;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 pub fn routes() -> Router<AppState> {
@@ -33,7 +33,7 @@ pub fn routes() -> Router<AppState> {
         .route("/user/intelligence/actions/{id}/revert", post(revert_action))
         .route("/user/intelligence/cloud-cleanup", post(cloud_cleanup))
         .route("/user/intelligence/lyrics-transcribe", post(start_transcribe).layer(axum::extract::DefaultBodyLimit::max(64 * 1024 * 1024)))
-        .route("/user/intelligence/lyrics-transcribe/status", get(transcribe_status))
+        .route("/user/intelligence/lyrics-transcribe/status", get(transcribe_status).delete(cancel_transcribe))
         .route("/user/ai-dj/transition", post(dj_transition))
         .route("/user/stations/suggestions", post(station_suggestions))
         .route("/user/stations/auto", post(station_auto))
@@ -253,6 +253,16 @@ pub struct LyricsJob {
     pub created: Instant,
     pub user: String,
     pub state: Value,
+    /// Set by `DELETE …/status`; the engine stops at its next window.
+    pub cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// Where the audio comes from: uploaded bytes (a file on the phone), or a
+/// file already in the user's cloud library (`path`: nothing to upload, so
+/// the Apple TV and Android can ask too).
+enum LyricsSource {
+    Upload(Bytes, String),
+    Cloud(PathBuf),
 }
 
 #[derive(Deserialize)]
@@ -262,6 +272,8 @@ struct TranscribeQ {
     artist: String,
     hint_lyrics: Option<String>,
     job_id: Option<String>,
+    /// A cloud-library path instead of an uploaded body.
+    path: Option<String>,
 }
 
 fn sweep_lyrics_jobs(st: &AppState) {
@@ -274,43 +286,71 @@ fn sweep_lyrics_jobs(st: &AppState) {
 }
 
 async fn start_transcribe(State(st): State<AppState>, u: User, headers: HeaderMap, Q(q): Q<TranscribeQ>, body: Bytes) -> ApiResult<Response> {
-    let title = q.title.ok_or_else(|| invalid("title", "Field required"))?;
+    let title = q.title.clone().ok_or_else(|| invalid("title", "Field required"))?;
     if q.hint_lyrics.as_ref().is_some_and(|h| h.chars().count() > 6000) {
         return Err(invalid("hint_lyrics", "String should have at most 6000 characters"));
     }
-    if body.is_empty() {
-        return Err(AppError::bad_request("Empty audio body"));
-    }
-    if body.len() > 20 * 1024 * 1024 {
-        return Err(AppError::new(413, "Audio too large for transcription (max 20 MB)"));
-    }
-    let mime = headers.get("content-type").and_then(|v| v.to_str().ok()).filter(|s| !s.is_empty()).unwrap_or("audio/mpeg").to_string();
+    let source = if let Some(rel) = q.path.clone().filter(|p| !p.is_empty()) {
+        let (_, p) = crate::routes::music::user_file(&st, &u.id, Some(rel))?;
+        LyricsSource::Cloud(p)
+    } else {
+        if body.is_empty() {
+            return Err(AppError::bad_request("Empty audio body"));
+        }
+        if body.len() > 20 * 1024 * 1024 {
+            return Err(AppError::new(413, "Audio too large for transcription (max 20 MB)"));
+        }
+        let mime = headers.get("content-type").and_then(|v| v.to_str().ok()).filter(|s| !s.is_empty()).unwrap_or("audio/mpeg").to_string();
+        LyricsSource::Upload(body, mime)
+    };
     sweep_lyrics_jobs(&st);
     let in_flight = st.lyrics_jobs.iter().filter(|j| j.user == u.id && matches!(j.state["status"].as_str(), Some("pending" | "running"))).count();
     if in_flight >= 3 {
-        let mut r = AppError::new(429, format!("Already transcribing {in_flight} track(s). Let those finish first.")).into_response();
+        let mut r = AppError::new(429, format!("Aria is already writing lyrics for {in_flight} track(s). Let those finish first.")).into_response();
         r.headers_mut().insert("retry-after", HeaderValue::from_static("30"));
         return Ok(r);
     }
     let id = uuid::Uuid::new_v4().simple().to_string();
-    st.lyrics_jobs.insert(id.clone(), LyricsJob { created: Instant::now(), user: u.id.clone(), state: json!({"status": "pending"}) });
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    st.lyrics_jobs.insert(id.clone(), LyricsJob { created: Instant::now(), user: u.id.clone(), state: json!({"status": "pending", "stage": "uploaded", "progress": 0.0}), cancel: cancel.clone() });
     let (st2, jid) = (st.clone(), id.clone());
-    tokio::spawn(async move { run_transcribe(st2, jid, body, mime, title, q.artist, q.hint_lyrics).await });
+    tokio::spawn(async move { run_transcribe(st2, jid, source, title, q.artist, q.hint_lyrics, cancel).await });
     Ok((StatusCode::ACCEPTED, Json(json!({"job_id": id}))).into_response())
+}
+
+async fn cancel_transcribe(State(st): State<AppState>, u: User, Q(q): Q<TranscribeQ>) -> ApiResult<StatusCode> {
+    let id = q.job_id.ok_or_else(|| invalid("job_id", "Field required"))?;
+    let mut j = st.lyrics_jobs.get_mut(&id).filter(|j| j.user == u.id).ok_or_else(|| AppError::not_found("Lyrics job not found"))?;
+    j.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+    if matches!(j.state["status"].as_str(), Some("pending" | "running")) {
+        j.state = json!({"status": "cancelled"});
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// What the app shows when a run fails: the reason in plain words.
+fn lyrics_error_detail(e: &str) -> String {
+    let e_l = e.to_lowercase();
+    if e_l.contains("model missing") {
+        "Aria's lyrics engine isn't installed on the server yet.".into()
+    } else if e_l.starts_with("ffmpeg") {
+        "Aria couldn't decode this audio file.".into()
+    } else if e_l.contains("timed out") || e_l.contains("timeout") {
+        "This track took Aria too long to separate. Try again in a moment.".into()
+    } else if e_l.contains("demucs") || e_l.contains("vocals") {
+        "Aria couldn't separate the vocals from this track.".into()
+    } else {
+        "Aria couldn't transcribe this track.".into()
+    }
 }
 
 fn set_job(st: &AppState, id: &str, v: Value) {
     if let Some(mut j) = st.lyrics_jobs.get_mut(id) {
-        j.state = v;
+        // A cancelled job stays cancelled (the engine may still report once).
+        if j.state["status"] != "cancelled" {
+            j.state = v;
+        }
     }
-}
-
-async fn probe_duration(body: &[u8]) -> Option<f64> {
-    let tmp = std::env::temp_dir().join(format!("lyr-{}.audio", uuid::Uuid::new_v4().simple()));
-    tokio::fs::write(&tmp, body).await.ok()?;
-    let d = crate::analysis::duration_of(&tmp).await;
-    let _ = tokio::fs::remove_file(&tmp).await;
-    (d > 0.0).then_some(d)
 }
 
 /// Plain lyrics text to align against: the app's hint, else LRCLIB / our cache.
@@ -338,23 +378,54 @@ async fn reference_text(st: &AppState, title: &str, artist: &str, dur: Option<f6
     data.and_then(|d| d["plainLyrics"].as_str().filter(|s| !s.is_empty()).map(str::to_string))
 }
 
-async fn run_transcribe(st: AppState, id: String, body: Bytes, mime: String, title: String, artist: String, hint: Option<String>) {
-    set_job(&st, &id, json!({"status": "running", "stage": "queued"}));
-    let dur = probe_duration(&body).await;
+async fn run_transcribe(st: AppState, id: String, source: LyricsSource, title: String, artist: String, hint: Option<String>, cancel: std::sync::Arc<std::sync::atomic::AtomicBool>) {
+    set_job(&st, &id, json!({"status": "running", "stage": "queued", "progress": 0.0}));
     // Aria Lyrics engine (crate::lyricsgen): Demucs vocals, voice phrases,
     // on-server whisper, alignment to known text when there is any.
-    let ext = match mime.as_str() { m if m.contains("mp4") || m.contains("m4a") || m.contains("aac") => "m4a", m if m.contains("ogg") || m.contains("opus") => "ogg", m if m.contains("wav") => "wav", m if m.contains("flac") => "flac", m if m.contains("webm") => "webm", _ => "mp3" };
-    let tmp = std::env::temp_dir().join(format!("aria-in-{}.{ext}", uuid::Uuid::new_v4().simple()));
-    if tokio::fs::write(&tmp, &body).await.is_err() {
-        set_job(&st, &id, json!({"status": "error", "detail": "Couldn't read the audio"}));
+    let mut tmp: Option<PathBuf> = None;
+    let mut _readable = None;
+    let audio: PathBuf = match source {
+        LyricsSource::Upload(body, mime) => {
+            let ext = match mime.as_str() { m if m.contains("mp4") || m.contains("m4a") || m.contains("aac") => "m4a", m if m.contains("ogg") || m.contains("opus") => "ogg", m if m.contains("wav") => "wav", m if m.contains("flac") => "flac", m if m.contains("webm") => "webm", _ => "mp3" };
+            let p = std::env::temp_dir().join(format!("aria-in-{}.{ext}", uuid::Uuid::new_v4().simple()));
+            if tokio::fs::write(&p, &body).await.is_err() {
+                set_job(&st, &id, json!({"status": "error", "detail": "Couldn't read the audio"}));
+                return;
+            }
+            tmp = Some(p.clone());
+            p
+        }
+        LyricsSource::Cloud(p) => {
+            // A locked (.lms) cloud file is exported to its plain container.
+            let r = crate::storage::readable_copy(&p).await;
+            let path = r.path().to_path_buf();
+            _readable = Some(r);
+            path
+        }
+    };
+    let dur = Some(crate::analysis::duration_of(&audio).await).filter(|d| *d > 0.0);
+    let reference = reference_text(&st, &title, &artist, dur, hint).await;
+    let (st2, jid) = (st.clone(), id.clone());
+    let started = Instant::now();
+    let progress: crate::lyricsgen::Progress = std::sync::Arc::new(move |stage: &str, fraction: f64, heard: Option<String>| {
+        let mut v = json!({"status": "running", "stage": stage, "progress": (fraction * 1000.0).round() / 1000.0, "elapsed": started.elapsed().as_secs()});
+        if let Some(h) = heard {
+            v["heard"] = json!(h);
+        } else if let Some(prev) = st2.lyrics_jobs.get(&jid).and_then(|j| j.state.get("heard").cloned()) {
+            v["heard"] = prev;
+        }
+        set_job(&st2, &jid, v);
+    });
+    let r = crate::lyricsgen::generate(&st, &audio, &title, &artist, reference.as_deref(), progress, cancel.clone()).await;
+    if let Some(t) = tmp {
+        let _ = tokio::fs::remove_file(&t).await;
+    }
+    drop(_readable);
+    if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+        tracing::info!("aria lyrics: {title:?} cancelled after {:.0}s", started.elapsed().as_secs_f64());
+        set_job(&st, &id, json!({"status": "cancelled"}));
         return;
     }
-    let reference = reference_text(&st, &title, &artist, dur, hint).await;
-    let st2 = st.clone();
-    let jid = id.clone();
-    let started = Instant::now();
-    let r = crate::lyricsgen::generate(&st, &tmp, &title, &artist, reference.as_deref(), move |stage| set_job(&st2, &jid, json!({"status": "running", "stage": stage}))).await;
-    let _ = tokio::fs::remove_file(&tmp).await;
     let result = match r {
         Ok(o) => {
             tracing::info!("aria lyrics: {title:?} -> {} line(s), instrumental {}, lang {:?}, aligned {:?}, {:.0}s", o.lines.len(), o.instrumental, o.language, o.aligned, started.elapsed().as_secs_f64());
@@ -362,34 +433,21 @@ async fn run_transcribe(st: AppState, id: String, body: Bytes, mime: String, tit
         }
         Err(e) => {
             tracing::warn!("aria lyrics failed for {title:?}: {e}");
-            set_job(&st, &id, json!({"status": "error", "detail": "Aria couldn't transcribe this track."}));
+            set_job(&st, &id, json!({"status": "error", "detail": lyrics_error_detail(&e)}));
             return;
         }
     };
-    let _ = &mime;
+    let extras = json!({"language": result.get("language").cloned().unwrap_or(Value::Null), "aligned": result.get("aligned").cloned().unwrap_or(Value::Null), "elapsed": started.elapsed().as_secs()});
     let lines: Vec<Value> = result["lines"].as_array().cloned().unwrap_or_default();
     if result["instrumental"].as_bool().unwrap_or(false) || lines.is_empty() {
-        set_job(&st, &id, json!({"status": "done", "lrc": "", "instrumental": result["instrumental"].as_bool().unwrap_or(false), "confidence": result.get("confidence").cloned().unwrap_or(json!("low"))}));
+        set_job(&st, &id, merged(json!({"status": "done", "lrc": "", "instrumental": result["instrumental"].as_bool().unwrap_or(false), "confidence": result.get("confidence").cloned().unwrap_or(json!("low"))}), &extras));
         return;
     }
-    let cache = lyrics_cache_id(&title, &artist);
     if !result["timings_ok"].as_bool().unwrap_or(true) {
         let plain: Vec<String> = lines.iter().filter_map(|l| text_of(l)).collect();
         let plain = plain.join("\n");
         tracing::warn!("lyrics transcription: returning {} line(s) UNSYNCED for {title:?}", lines.len());
-        set_job(&st, &id, json!({"status": "done", "lrc": "", "plain": plain, "synced": false, "instrumental": false, "confidence": "low"}));
-        if !plain.is_empty() {
-            let _ = sqlx::query(
-                "INSERT INTO ios_lyrics_cache (id, title, artist, synced_lyrics, plain_lyrics, found) VALUES ($1, $2, $3, NULL, $4, TRUE) \
-                 ON CONFLICT (id) DO UPDATE SET plain_lyrics = EXCLUDED.plain_lyrics, found = TRUE",
-            )
-            .bind(&cache)
-            .bind(&title)
-            .bind(&artist)
-            .bind(&plain)
-            .execute(&st.db)
-            .await;
-        }
+        set_job(&st, &id, merged(json!({"status": "done", "lrc": "", "plain": plain, "synced": false, "instrumental": false, "confidence": "low"}), &extras));
         return;
     }
     let mut sorted = lines.clone();
@@ -404,23 +462,9 @@ async fn run_transcribe(st: AppState, id: String, body: Bytes, mime: String, tit
         })
         .collect();
     let lrc = lrc.join("\n");
-    set_job(&st, &id, json!({"status": "done", "lrc": lrc, "synced": true, "instrumental": false, "confidence": result.get("confidence").cloned().unwrap_or(json!("medium"))}));
-    if !lrc.is_empty() {
-        let r = sqlx::query(
-            "INSERT INTO ios_lyrics_cache (id, title, artist, synced_lyrics, plain_lyrics, found, is_user_submitted) VALUES ($1, $2, $3, $4, NULL, TRUE, TRUE) \
-             ON CONFLICT (id) DO UPDATE SET synced_lyrics = EXCLUDED.synced_lyrics, found = TRUE, is_user_submitted = TRUE",
-        )
-        .bind(&cache)
-        .bind(&title)
-        .bind(&artist)
-        .bind(&lrc)
-        .execute(&st.db)
-        .await;
-        match r {
-            Ok(_) => tracing::info!("lyrics-transcribe: cached Aria's lyrics for {title:?} by {artist:?}"),
-            Err(e) => tracing::warn!("lyrics-transcribe: could not cache result for {title:?}: {e}"),
-        }
-    }
+    set_job(&st, &id, merged(json!({"status": "done", "lrc": lrc, "synced": true, "instrumental": false, "confidence": result.get("confidence").cloned().unwrap_or(json!("medium"))}), &extras));
+    // Not cached here: the app shows a preview, and only "Use these lyrics"
+    // stores them for the account (POST /user/lyrics with replace).
 }
 
 fn text_of(l: &Value) -> Option<String> {
@@ -432,210 +476,23 @@ fn time_of(l: &Value) -> f64 {
     l["time_seconds"].as_f64().unwrap_or(0.0)
 }
 
-pub fn timings_plausible(lines: &[Value], dur: Option<f64>) -> bool {
-    let Some(d) = dur.filter(|d| *d > 0.0) else { return true };
-    let times: Vec<f64> = lines.iter().filter(|l| text_of(l).is_some()).map(time_of).collect();
-    times.is_empty() || times.iter().cloned().fold(f64::MIN, f64::max) <= d + 3.0
-}
-
-fn audio_part(bytes: &[u8], mime: &str) -> Value {
-    json!({"inlineData": {"mimeType": mime, "data": base64::engine::general_purpose::STANDARD.encode(bytes)}})
-}
-
-/// `lyrics_ai.transcribe_lyrics`.
-async fn transcribe(st: &AppState, audio: &[u8], mime: &str, title: &str, artist: &str, hint: Option<&str>, dur: Option<f64>) -> Option<Value> {
-    st.cfg.gemini_api_key.as_ref()?;
-    const TASK: &str = "lyrics_transcribe";
-    if st.gemini.cooling(TASK) {
-        tracing::info!("transcribe_lyrics: skipping, cooling down after a recent 429");
-        return None;
-    }
-    let started = Instant::now();
-    let mut models = vec![crate::gemini::model()];
-    let fb = crate::gemini::fallback_model();
-    if !fb.is_empty() && fb != models[0] {
-        models.push(fb);
-    }
-    let system = format!("{}\n{}", prompt("ARIA_PERSONA"), prompt("_SYSTEM_PROMPT"));
-    let input = json!({"title": title, "artist": artist, "candidate_lyrics": hint.filter(|h| !h.is_empty()),
-        "track_duration_seconds": dur.map(|d| crate::analysis::pyround(d, 2))});
-    let parts = vec![json!({"text": py_dumps(&input, false)}), audio_part(audio, mime)];
-    let mut whole: Option<Value> = None;
-    'models: for m in &models {
-        for attempt in 1..=3 {
-            if started.elapsed() > Duration::from_secs(420) {
-                tracing::warn!("transcribe_lyrics: giving up after {:.0}s", started.elapsed().as_secs_f64());
-                return None;
-            }
-            match st.gemini_raw(m, &system, parts.clone(), &schema("_LYRICS_SCHEMA"), Duration::from_secs(240)).await {
-                Ok(text) => {
-                    let Ok(mut parsed) = serde_json::from_str::<Value>(&text) else {
-                        tracing::warn!("transcribe_lyrics: {m} returned unparseable JSON");
-                        return None;
-                    };
-                    let Some(lines) = parsed["lines"].as_array().cloned() else {
-                        tracing::warn!("transcribe_lyrics: {m} returned no usable 'lines' array");
-                        return None;
-                    };
-                    let ok = timings_plausible(&lines, dur);
-                    parsed["timings_ok"] = json!(ok);
-                    if !ok {
-                        tracing::warn!("transcribe_lyrics: {m} timings overrun the track for {title:?} — attempt {attempt}/3");
-                        whole = Some(parsed);
-                        break 'models;
-                    }
-                    return Some(parsed);
-                }
-                Err(CallError::Status(code, msg)) => {
-                    let retry = [500, 502, 503, 504].contains(&code);
-                    tracing::warn!("transcribe_lyrics: {m} attempt {attempt}/3 failed (code={code}, retryable={retry}): {msg}");
-                    if code == 429 {
-                        st.gemini.start_cooldown(TASK);
-                    }
-                    if !retry {
-                        break;
-                    }
-                    if attempt < 3 {
-                        tokio::time::sleep(Duration::from_secs(if attempt == 1 { 3 } else { 9 })).await;
-                    }
-                }
-                Err(CallError::Other(e)) => {
-                    tracing::error!("transcribe_lyrics: unexpected failure on {m}: {e}");
-                    return None;
-                }
-            }
+fn merged(mut a: Value, b: &Value) -> Value {
+    if let (Some(a), Some(b)) = (a.as_object_mut(), b.as_object()) {
+        for (k, v) in b {
+            a.insert(k.clone(), v.clone());
         }
     }
-    let whole = whole?;
-    if let Some(d) = dur.filter(|d| *d >= 90.0) {
-        if started.elapsed() < Duration::from_secs(420) {
-            tracing::info!("transcribe_lyrics: repairing {title:?} with windowed transcription");
-            if let Some(mut w) = windowed(st, audio, title, artist, hint, d, &models).await {
-                let lines = w["lines"].as_array().cloned().unwrap_or_default();
-                let ok = timings_plausible(&lines, dur);
-                w["timings_ok"] = json!(ok);
-                if ok {
-                    return Some(w);
-                }
-                tracing::warn!("transcribe_lyrics: windowed repair also overran for {title:?}");
-            }
-        }
-    }
-    tracing::warn!("transcribe_lyrics: {title:?} returning UNSYNCED — no trustworthy timing");
-    Some(whole)
+    a
 }
 
-fn chunk_windows(dur: f64) -> Vec<(f64, f64)> {
-    let chunk: f64 = std::env::var("LUMISOUND_LYRICS_CHUNK_SECONDS").ok().and_then(|v| v.parse().ok()).unwrap_or(60.0);
-    let max_w: f64 = std::env::var("LUMISOUND_LYRICS_MAX_WINDOWS").ok().and_then(|v| v.parse().ok()).unwrap_or(4.0);
-    let step = chunk.max(dur / max_w);
-    let mut w = Vec::new();
-    let mut s = 0.0;
-    while s < dur {
-        w.push((s, (step + 6.0).min(dur - s)));
-        s += step;
-    }
-    if w.len() >= 2 && w.last().unwrap().1 <= 7.0 {
-        let (ps, _) = w[w.len() - 2];
-        let n = w.len();
-        w[n - 2] = (ps, dur - ps);
-        w.pop();
-    }
-    w
-}
-
-async fn windowed(st: &AppState, audio: &[u8], title: &str, artist: &str, hint: Option<&str>, dur: f64, models: &[String]) -> Option<Value> {
-    let windows = chunk_windows(dur);
-    if windows.len() < 2 {
-        return None;
-    }
-    let src = std::env::temp_dir().join(format!("lyr-{}.src", uuid::Uuid::new_v4().simple()));
-    tokio::fs::write(&src, audio).await.ok()?;
-    let sem = tokio::sync::Semaphore::new(std::env::var("LUMISOUND_LYRICS_CHUNK_CONCURRENCY").ok().and_then(|v| v.parse().ok()).unwrap_or(3usize).max(1));
-    let futs = windows.iter().map(|&(s, l)| {
-        let (src, sem) = (&src, &sem);
-        async move {
-            let _p = sem.acquire().await.ok()?;
-            let out = src.with_extension(format!("{}.m4a", s as i64));
-            let args: Vec<String> = ["-y", "-v", "quiet", "-ss", &format!("{s:.3}"), "-t", &format!("{l:.3}"), "-i", &src.to_string_lossy(), "-vn", "-ac", "1", "-ar", "24000",
-                "-c:a", "aac", "-b:a", "48k", &out.to_string_lossy()].map(String::from).to_vec();
-            let ok = matches!(st.ytdlp.run("ffmpeg", &args, Duration::from_secs(90)).await, Ok(o) if o.status == Some(0));
-            let bytes = if ok { tokio::fs::read(&out).await.ok() } else { None };
-            let _ = tokio::fs::remove_file(&out).await;
-            let bytes = bytes?;
-            Some(chunk_lines(st, &bytes, s, l, title, artist, hint, models).await)
-        }
-    });
-    let groups: Vec<Vec<Value>> = futures_util::future::join_all(futs).await.into_iter().map(|g| g.unwrap_or_default()).collect();
-    let _ = tokio::fs::remove_file(&src).await;
-    let produced = groups.iter().filter(|g| !g.is_empty()).count();
-    let mut all: Vec<Value> = groups.into_iter().flatten().collect();
-    all.sort_by(|a, b| time_of(a).partial_cmp(&time_of(b)).unwrap_or(std::cmp::Ordering::Equal));
-    let norm = |v: &Value| v["text"].as_str().unwrap_or("").to_lowercase().split_whitespace().collect::<Vec<_>>().join(" ");
-    let mut merged: Vec<Value> = Vec::new();
-    for line in all {
-        let key = norm(&line);
-        let dup = merged.iter().rev().take_while(|k| time_of(&line) - time_of(k) <= 6.0).any(|k| norm(k) == key);
-        if !dup {
-            merged.push(line);
-        }
-    }
-    tracing::info!("lyrics windowed transcription: {} window(s), {produced} produced lines, {} lines merged for {title:?}", windows.len(), merged.len());
-    if merged.is_empty() || produced < (windows.len() / 3).max(1) {
-        return None;
-    }
-    Some(json!({"instrumental": false, "confidence": "medium", "lines": merged, "windowed": true}))
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn chunk_lines(st: &AppState, bytes: &[u8], start: f64, len: f64, title: &str, artist: &str, hint: Option<&str>, models: &[String]) -> Vec<Value> {
-    let system = format!("{}\n{}", prompt("ARIA_PERSONA"), prompt("_CHUNK_SYSTEM_PROMPT"));
-    let input = json!({"title": title, "artist": artist, "candidate_lyrics": hint.filter(|h| !h.is_empty()), "excerpt_duration_seconds": crate::analysis::pyround(len, 2)});
-    let parts = vec![json!({"text": py_dumps(&input, false)}), audio_part(bytes, "audio/mp4")];
-    for m in models {
-        for attempt in 1..=2 {
-            match st.gemini_raw(m, &system, parts.clone(), &schema("_LYRICS_SCHEMA"), Duration::from_secs(120)).await {
-                Ok(text) => {
-                    let Ok(p) = serde_json::from_str::<Value>(&text) else { return vec![] };
-                    let Some(lines) = p["lines"].as_array() else { return vec![] };
-                    return lines
-                        .iter()
-                        .filter_map(|e| {
-                            let t = text_of(e)?;
-                            let rel = time_of(e);
-                            if rel < -1.0 || rel > len + 1.0 {
-                                return None;
-                            }
-                            Some(json!({"time_seconds": start + rel.max(0.0), "text": t}))
-                        })
-                        .collect();
-                }
-                Err(CallError::Status(429, _)) => {
-                    st.gemini.start_cooldown("lyrics_transcribe");
-                    tracing::warn!("lyrics chunk at {start:.1}s: {m} is rate-limited, trying next model");
-                    break;
-                }
-                Err(CallError::Status(c, e)) if [500, 502, 503, 504].contains(&c) && attempt < 2 => {
-                    tracing::debug!("lyrics chunk retry: {e}");
-                    tokio::time::sleep(Duration::from_secs(3)).await;
-                }
-                Err(e) => {
-                    let msg = match e { CallError::Status(c, m) => format!("{c} {m}"), CallError::Other(m) => m };
-                    tracing::warn!("lyrics chunk at {start:.1}s failed on {m}: {msg}");
-                    break;
-                }
-            }
-        }
-    }
-    vec![]
-}
-
-async fn transcribe_status(State(st): State<AppState>, _u: User, Q(q): Q<TranscribeQ>) -> ApiResult<Json<Value>> {
+async fn transcribe_status(State(st): State<AppState>, u: User, Q(q): Q<TranscribeQ>) -> ApiResult<Json<Value>> {
     let id = q.job_id.ok_or_else(|| invalid("job_id", "Field required"))?;
-    let j = st.lyrics_jobs.get(&id).ok_or_else(|| AppError::not_found("Lyrics transcription job not found"))?;
+    let j = st.lyrics_jobs.get(&id).filter(|j| j.user == u.id).ok_or_else(|| AppError::not_found("Lyrics transcription job not found"))?;
     let s = &j.state;
     let g = |k: &str| s.get(k).cloned().unwrap_or(Value::Null);
-    Ok(Json(json!({"status": g("status"), "detail": g("detail"), "lrc": g("lrc"), "plain": g("plain"), "synced": g("synced"), "instrumental": g("instrumental"), "confidence": g("confidence")})))
+    Ok(Json(json!({"status": g("status"), "stage": g("stage"), "progress": g("progress"), "heard": g("heard"), "elapsed": g("elapsed"),
+        "detail": g("detail"), "lrc": g("lrc"), "plain": g("plain"), "synced": g("synced"), "instrumental": g("instrumental"),
+        "confidence": g("confidence"), "language": g("language"), "aligned": g("aligned")})))
 }
 
 // ---- DJ / stations / picks / liner notes ------------------------------------------------------
@@ -916,6 +773,10 @@ struct LyricsBody {
     artist: String,
     synced_lyrics: Option<String>,
     plain_lyrics: Option<String>,
+    /// Overwrite this user's own earlier submission (accepting Aria's lyrics
+    /// for a track they already had lyrics for). Never someone else's.
+    #[serde(default)]
+    replace: bool,
 }
 
 async fn api_lyrics_put(State(st): State<AppState>, k: ApiKey, J(b): J<LyricsBody>) -> ApiResult<Json<Value>> {
@@ -975,8 +836,8 @@ async fn user_lyrics_post(State(st): State<AppState>, u: User, J(b): J<LyricsBod
     }
     sqlx::query(
         "INSERT INTO ios_lyrics_cache (id, title, artist, synced_lyrics, plain_lyrics, found, is_user_submitted, submitted_by_user_id) VALUES ($1, $2, $3, $4, $5, TRUE, TRUE, $6) \
-         ON CONFLICT (id) DO UPDATE SET synced_lyrics = CASE WHEN ios_lyrics_cache.is_user_submitted THEN ios_lyrics_cache.synced_lyrics ELSE EXCLUDED.synced_lyrics END, \
-           plain_lyrics = CASE WHEN ios_lyrics_cache.is_user_submitted THEN ios_lyrics_cache.plain_lyrics ELSE EXCLUDED.plain_lyrics END, found = TRUE, is_user_submitted = TRUE, \
+         ON CONFLICT (id) DO UPDATE SET synced_lyrics = CASE WHEN ios_lyrics_cache.is_user_submitted AND NOT ($7 AND ios_lyrics_cache.submitted_by_user_id IS NOT DISTINCT FROM $6) THEN ios_lyrics_cache.synced_lyrics ELSE EXCLUDED.synced_lyrics END, \
+           plain_lyrics = CASE WHEN ios_lyrics_cache.is_user_submitted AND NOT ($7 AND ios_lyrics_cache.submitted_by_user_id IS NOT DISTINCT FROM $6) THEN ios_lyrics_cache.plain_lyrics ELSE EXCLUDED.plain_lyrics END, found = TRUE, is_user_submitted = TRUE, \
            submitted_by_user_id = COALESCE(ios_lyrics_cache.submitted_by_user_id, EXCLUDED.submitted_by_user_id)",
     )
     .bind(lyrics_cache_id(&title, &b.artist))
@@ -985,6 +846,7 @@ async fn user_lyrics_post(State(st): State<AppState>, u: User, J(b): J<LyricsBod
     .bind(s)
     .bind(p)
     .bind(&u.id)
+    .bind(b.replace)
     .execute(&st.db)
     .await?;
     Ok(StatusCode::NO_CONTENT)

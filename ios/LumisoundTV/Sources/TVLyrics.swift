@@ -219,8 +219,8 @@ enum TVLyricsService {
     /// reached once lrclib has genuinely returned nothing usable.
     private static func fetchPlainFallback(title: String, artist: String) async -> [TVLyricLine]? {
         guard !title.isEmpty, !artist.isEmpty,
-              let encodedArtist = artist.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
-              let encodedTitle = title.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
+              let encodedArtist = urlComponent(s: artist) as String?,
+              let encodedTitle = urlComponent(s: title) as String?,
               let url = URL(string: "https://api.lyrics.ovh/v1/\(encodedArtist)/\(encodedTitle)")
         else { return nil }
 

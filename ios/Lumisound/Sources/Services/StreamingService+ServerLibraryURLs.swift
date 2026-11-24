@@ -9,13 +9,13 @@ extension StreamingService {
     /// session or ticket for the server library, and players and image views
     /// do not carry our headers.
     fileprivate static var ticketQuery: String {
-        guard let t = freshCachedTicket?.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else { return "" }
+        guard let t = freshCachedTicket.map({ urlComponent(s: $0) }) else { return "" }
         return "&ticket=\(t)"
     }
 
     /// Returns the direct stream URL for a server library track.
     func serverStreamURL(for track: ServerTrack) -> URL? {
-        guard let encoded = track.serverPath.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else {
+        guard let encoded = (urlComponent(s: track.serverPath) as String?) else {
             return nil
         }
         let base = bridgeURL.trimmingCharacters(in: .init(charactersIn: "/"))
@@ -25,7 +25,7 @@ extension StreamingService {
     /// Returns the artwork URL for a server library track.
     func serverArtworkURL(for track: ServerTrack) -> URL? {
         guard track.hasArtwork,
-              let encoded = track.serverPath.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else {
+              let encoded = (urlComponent(s: track.serverPath) as String?) else {
             return nil
         }
         let base = bridgeURL.trimmingCharacters(in: .init(charactersIn: "/"))

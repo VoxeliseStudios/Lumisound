@@ -56,7 +56,7 @@ extension AccountService {
         var query = "limit=\(limit)"
         for (key, value) in [("level", level), ("category", category), ("user_id", userID), ("search", search), ("before", before)] {
             guard let value, !value.isEmpty,
-                  let encoded = value.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)
+                  let encoded = (urlComponent(s: value) as String?)
             else { continue }
             query += "&\(key)=\(encoded)"
         }
