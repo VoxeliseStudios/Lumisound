@@ -26,7 +26,10 @@ pub fn routes() -> Router<AppState> {
         .route("/user/playlists/{id}/tracks/{track_id}", delete(remove_track))
         .route("/shared/{token}", get(get_shared))
         .route("/user/favorites", get(list_favorites).post(add_favorite))
-        .route("/user/favorites/{song_id}", delete(remove_favorite))
+        // Catch-all: an iPhone favourite id is a library path with slashes in
+        // it ("local:Imported Music/Album/Song.opus.lms"); a single-segment
+        // route 404'd every un-favourite the phone sent.
+        .route("/user/favorites/{*song_id}", delete(remove_favorite))
         .route("/user/settings", get(get_settings).put(update_settings))
         .route("/user/settings/expanded", get(get_expanded).put(put_expanded))
         .route("/user/appearance", get(get_appearance).put(put_appearance))
@@ -343,8 +346,19 @@ async fn add_favorite(State(st): State<AppState>, u: User, J(b): J<FavBody>) -> 
     Ok((StatusCode::CREATED, Json(json!({"song_id": b.song_id, "status": "added"}))).into_response())
 }
 
+/// Deletes a favourite and every other device's row for the same song (same
+/// `lumi_fav_key`): the iPhone stores "local:<path>", the TV and Android the
+/// cloud file name, and leaving one behind brought the favourite straight
+/// back on the next sync. Two of the iPhone's own rows (same file name in two
+/// folders) are different songs, so `local:` rows are only matched by key
+/// against non-`local:` ids.
+const DELETE_FAVORITE_SAME_SONG: &str = "DELETE FROM ios_user_favorites WHERE user_id = $1 AND (song_id = ANY($2) OR EXISTS ( \
+     SELECT 1 FROM unnest($2::text[]) g(id) WHERE lumi_fav_key(g.id) = lumi_fav_key(song_id) \
+       AND NOT (g.id LIKE 'local:%' AND song_id LIKE 'local:%')))";
+
 async fn remove_favorite(State(st): State<AppState>, u: User, Path(song_id): Path<String>) -> ApiResult<StatusCode> {
-    sqlx::query("DELETE FROM ios_user_favorites WHERE user_id = $1 AND song_id = $2").bind(&u.id).bind(&song_id).execute(&st.db).await?;
+    let song_id = song_id.trim_start_matches('/').to_string();
+    sqlx::query(DELETE_FAVORITE_SAME_SONG).bind(&u.id).bind(vec![song_id.clone()]).execute(&st.db).await?;
     ev(&st, "favorites", "favorite_removed", &u.id, json!({"song_id": song_id})).await;
     st.push_live(&u.id, json!({"type": "sync_changed"}));
     Ok(StatusCode::NO_CONTENT)
@@ -695,7 +709,7 @@ fn row_identity(local_song_id: Option<&str>, title: &str, artist: Option<&str>) 
 ///   since its last pull, or songs it doesn't have.
 async fn merge_library(tx: &mut Transaction<'_, Postgres>, user_id: &str, favorites: &[Value], playlists: &[Value], gone_favs: &[String], gone_pls: &[String]) -> ApiResult<()> {
     if !gone_favs.is_empty() {
-        sqlx::query("DELETE FROM ios_user_favorites WHERE user_id = $1 AND song_id = ANY($2)").bind(user_id).bind(gone_favs).execute(&mut **tx).await?;
+        sqlx::query(DELETE_FAVORITE_SAME_SONG).bind(user_id).bind(gone_favs).execute(&mut **tx).await?;
     }
     if !favorites.is_empty() {
         sqlx::query(

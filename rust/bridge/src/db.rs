@@ -35,6 +35,7 @@ pub const MIGRATIONS: &[(&str, &str)] = &[
     ("0003_download_retry", include_str!("../migrations/0003_download_retry.sql")),
     ("0004_track_profiles", include_str!("../migrations/0004_track_profiles.sql")),
     ("0006_metadata_since", include_str!("../migrations/0006_metadata_since.sql")),
+    ("0007_favorite_keys", include_str!("../migrations/0007_favorite_keys.sql")),
 ];
 
 /// Brings the database up to date in one transaction under an advisory lock:

@@ -578,7 +578,8 @@ struct TVFavoritesGridView: View {
             }
         }
         .task {
-            if client.favoriteSongIDs.isEmpty { await client.fetchFavorites(token: token) }
+            // Always: favourites change on the other devices too.
+            await client.fetchFavorites(token: token)
         }
         // Keyed on both counts — either the library or the favorites set
         // changing is exactly when this needs to recompute, and nothing

@@ -55,6 +55,7 @@ const AUDIO_EXTS: &[&str] = &["opus", "mp3", "m4a", "aac", "flac", "wav", "ogg",
 
 /// "local:Imported Music/A/Song Name.opus.lms" -> "song name".
 pub fn file_key(path: &str) -> Option<String> {
+    let path = path.strip_prefix("local:").unwrap_or(path);
     let name = path.rsplit(['/', '\\']).next()?.trim();
     let mut stem = name.to_lowercase();
     if let Some(s) = stem.strip_suffix(".lms") {
@@ -227,6 +228,13 @@ mod tests {
             cat("a/Intro.mp3", "Intro", "Band One", Some("a/Intro.mp3"), None, Some(60.0)),
             cat("b/Intro.mp3", "Intro", "Band Two", Some("b/Intro.mp3"), None, Some(95.0)),
         ])
+    }
+
+    #[test]
+    fn file_key_drops_local_scheme_without_folder() {
+        assert_eq!(file_key("local:Song.MP3").as_deref(), Some("song"));
+        assert_eq!(file_key("local:Imported Music/A/Song.opus.lms").as_deref(), Some("song"));
+        assert_eq!(file_key("Song.opus.lms").as_deref(), Some("song"));
     }
 
     #[test]

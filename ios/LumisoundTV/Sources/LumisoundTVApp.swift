@@ -38,6 +38,11 @@ struct LumisoundTVApp: App {
                     // than a phone does, so without this the periodic snapshot
                     // would be almost entirely launch-time samples.
                     TVDiagnosticsSnapshot.noteDidBecomeActive()
+                    // Favourites saved or removed on the iPhone / Android while
+                    // this sat suspended.
+                    if let token = TVAccount.shared.token {
+                        Task { await TVBridgeClient.shared.fetchFavorites(token: token) }
+                    }
                 }
         }
     }

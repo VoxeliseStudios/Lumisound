@@ -580,20 +580,20 @@ final class TVBridgeClient: ObservableObject {
     @Published var playlistMutationError: String?
 
     // Favorites (Personal Cloud Library tracks only — see `TVFavorite`)
+    //
+    // The account's favourites are stored under the id of whichever device
+    // saved them: the iPhone's library path ("local:Imported Music/A/Song.opus.lms"),
+    // Android's and this app's cloud path ("Song.opus.lms"). `favoriteSongIDs`
+    // is the resolved form — the ids of THIS library's tracks that are
+    // favourites — matched by the Rust core's `TrackResolver` (same id → same
+    // source → same file name → same title + artist), the same matcher the
+    // iPhone and Android use, so every device agrees on which songs they are.
     @Published var favoriteSongIDs: Set<String> = []
-    /// Filename-only forms of `favoriteSongIDs`, for cross-device matching.
-    ///
-    /// The two platforms identify the same song with different ids: the phone
-    /// stores `local:Imported Music/<folder>/<file>` (its own on-device path),
-    /// while a cloud track here is keyed by a server-side content hash. Those
-    /// can never be equal, so favourites made on the phone simply never showed
-    /// up on the Apple TV even though both devices were reading the same
-    /// account's favourites list.
-    ///
-    /// The filename is the one part both sides genuinely share — it is what
-    /// the phone uploads and what the cloud library stores. Verified against
-    /// the real account: 14 of 14 favourites match their cloud track this way.
-    @Published var favoriteKeys: Set<String> = []
+    /// The account's rows as the bridge holds them.
+    private var favoriteRows: [TVFavorite] = []
+    /// Library track id → every row that makes it a favourite (one per device
+    /// that saved it); un-favouriting deletes them all.
+    private var favoriteRowsByTrack: [String: [String]] = [:]
     @Published var isLoadingFavorites = false
 
     // Discovery / stats
@@ -791,6 +791,7 @@ final class TVBridgeClient: ObservableObject {
             }
             library = decoded.tracks
             rebuildLibraryIndex()
+            if !favoriteRows.isEmpty { await resolveFavorites() }
         } catch {
             libraryError = "Couldn’t load your library. Tap Retry."
             library = []
@@ -947,34 +948,57 @@ final class TVBridgeClient: ObservableObject {
               let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
               let favorites = try? JSONDecoder().decode([TVFavorite].self, from: data)
         else { return }
-        favoriteSongIDs = Set(favorites.map { $0.songID })
-        favoriteKeys = Set(favorites.map { Self.favoriteKey(for: $0.songID) })
+        favoriteRows = favorites
+        await resolveFavorites()
     }
 
-    /// Reduces any favourite id to the part every device agrees on — the bare
-    /// filename, with the "local:" scheme prefix and any directory components
-    /// removed.
-    static func favoriteKey(for songID: String) -> String {
-        var s = songID
-        if let colon = s.firstIndex(of: ":"), s.hasPrefix("local:") {
-            s = String(s[s.index(after: colon)...])
+    /// Maps the account's favourite rows onto this library's tracks (off the
+    /// main thread: it indexes the whole library). Runs again whenever either
+    /// side changes.
+    func resolveFavorites() async {
+        let rows = favoriteRows
+        let catalog = library.map {
+            CatalogTrack(id: $0.id, title: $0.title, artist: $0.artist,
+                         filename: $0.filename.isEmpty ? $0.serverPath : $0.filename,
+                         trackUrl: nil, durationSeconds: $0.duration > 0 ? $0.duration : nil)
         }
-        return s.split(separator: "/").last.map(String.init) ?? s
+        guard !rows.isEmpty, !catalog.isEmpty else {
+            favoriteRowsByTrack = [:]
+            favoriteSongIDs = []
+            return
+        }
+        let refs = rows.map { TrackRef(id: $0.songID, trackUrl: nil, title: $0.title, artist: $0.artist, durationSeconds: nil) }
+        let hits = await Task.detached(priority: .userInitiated) {
+            TrackResolver(catalog: catalog).resolveAll(rows: refs)
+        }.value
+        var byTrack: [String: [String]] = [:]
+        for (row, hit) in zip(rows, hits) {
+            guard let trackID = hit else { continue }
+            byTrack[trackID, default: []].append(row.songID)
+        }
+        favoriteRowsByTrack = byTrack
+        favoriteSongIDs = Set(byTrack.keys)
     }
 
     func isFavorite(_ songID: String) -> Bool {
-        if favoriteSongIDs.contains(songID) { return true }
-        // Fall back to the shared filename key so a favourite made on another
-        // device (different id scheme) still reads as favourited here.
-        return favoriteKeys.contains(Self.favoriteKey(for: songID))
+        favoriteSongIDs.contains(songID)
     }
 
-    /// Whether a Personal Cloud Library track is favourited. Matches on the
-    /// FILENAME rather than the track's server id, which is what makes a
-    /// favourite created on the phone visible here.
     func isFavorite(track: UserMusicTrack) -> Bool {
-        if favoriteSongIDs.contains(track.id) { return true }
-        return favoriteKeys.contains(Self.favoriteKey(for: track.filename))
+        favoriteSongIDs.contains(track.id)
+    }
+
+    /// The id a favourite saved here is stored under: the cloud path, which is
+    /// Android's own id for the track and resolves by file name on the iPhone
+    /// (never the server's content hash, which no other device knows).
+    private static func favoriteRowID(for track: UserMusicTrack) -> String {
+        track.serverPath.isEmpty ? track.filename : track.serverPath
+    }
+
+    /// One path segment, slashes included ("local:Imported Music/A/Song.opus.lms").
+    private static func favoritePathSegment(_ id: String) -> String {
+        let allowed = CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/?#%;"))
+        return id.addingPercentEncoding(withAllowedCharacters: allowed) ?? id
     }
 
     /// Optimistically flips local state, then reconciles with the server —
@@ -982,31 +1006,42 @@ final class TVBridgeClient: ObservableObject {
     /// round-trip, but self-heals if the request actually failed.
     func toggleFavorite(track: UserMusicTrack, token: String) async {
         let songID = track.id
-        let wasFavorite = isFavorite(songID)
+        let wasFavorite = favoriteSongIDs.contains(songID)
         if wasFavorite {
             favoriteSongIDs.remove(songID)
-            favoriteKeys.remove(Self.favoriteKey(for: songID))
+            // Every device's row for this song, or it stays a favourite
+            // through the others.
+            let rows = favoriteRowsByTrack[songID] ?? [Self.favoriteRowID(for: track)]
+            var ok = true
+            for row in rows {
+                let done = await mutate("/user/favorites/\(Self.favoritePathSegment(row))", method: "DELETE", token: token)
+                ok = ok && done
+            }
+            if ok {
+                favoriteRowsByTrack[songID] = nil
+                let gone = Set(rows)
+                favoriteRows.removeAll { gone.contains($0.songID) }
+            } else {
+                favoriteSongIDs.insert(songID)
+            }
+            TVRemoteLogger.log(category: "favorites", event: ok ? "favorite_removed" : "favorite_remove_failed",
+                               detail: ["song_id": songID, "rows": String(rows.count)], authToken: token)
         } else {
             favoriteSongIDs.insert(songID)
-            favoriteKeys.insert(Self.favoriteKey(for: songID))
-        }
-
-        let ok: Bool
-        if wasFavorite {
-            ok = await mutate("/user/favorites/\(songID)", method: "DELETE", token: token)
-        } else {
+            let rowID = Self.favoriteRowID(for: track)
             let payload: [String: String] = [
-                "song_id": songID, "title": track.title, "artist": track.artist, "album": track.album,
+                "song_id": rowID, "title": track.title, "artist": track.artist, "album": track.album,
             ]
             guard let body = try? JSONEncoder().encode(payload) else { return }
-            ok = await mutate("/user/favorites", method: "POST", token: token, jsonBody: body)
-        }
-        if !ok {
-            // Revert the optimistic flip.
-            if wasFavorite { favoriteSongIDs.insert(songID) } else { favoriteSongIDs.remove(songID) }
-        } else {
-            TVRemoteLogger.log(category: "favorites", event: wasFavorite ? "favorite_removed" : "favorite_added",
-                                detail: ["song_id": songID], authToken: token)
+            let ok = await mutate("/user/favorites", method: "POST", token: token, jsonBody: body)
+            if ok {
+                favoriteRowsByTrack[songID, default: []].append(rowID)
+                favoriteRows.append(TVFavorite(songID: rowID, title: track.title, artist: track.artist, album: track.album))
+            } else {
+                favoriteSongIDs.remove(songID)
+            }
+            TVRemoteLogger.log(category: "favorites", event: ok ? "favorite_added" : "favorite_add_failed",
+                               detail: ["song_id": rowID], authToken: token)
         }
     }
 

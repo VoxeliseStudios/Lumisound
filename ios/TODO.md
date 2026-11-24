@@ -2,6 +2,16 @@
 
 Full history and decisions: [`../RUST-PORT.md`](../RUST-PORT.md). Swift is views + app shell only.
 
+## Done (2026-11-23) — favourites follow the account across iPhone, Apple TV and Android
+- Cause 1 (bridge): `DELETE /user/favorites/{song_id}` was a single-segment route; the iPhone's ids are
+  library paths with slashes, so every un-favourite from the phone 404'd and came back. Now a catch-all
+  route, and a delete removes every device's row for the same song (`lumi_fav_key`, migration 0007).
+- Cause 2 (tvOS): favourites were compared by the server's content hash, so the phone's/Android's rows never
+  matched, and the TV saved favourites under that hash, which no other device knows. tvOS now resolves rows
+  with the core `TrackResolver` (same as iPhone/Android), saves under the cloud path, deletes every row on
+  un-favourite, and refreshes on foreground and when Favorites opens. 3 old hash rows repaired in the DB.
+- core `file_key` also drops a bare `local:` prefix ("local:Song.mp3").
+
 ## Done (2026-11-23) — tvOS redesign ("Stage")
 - Themes (`TVTheme.swift`, Settings → Lighting): Afterglow (default), Prism, Neon Nocturne, Vinyl Noir,
   Aurora, Synthwave, Studio Mono — ground, two lights, lifted tints and display typeface; `TVPalette` /
